@@ -443,6 +443,21 @@ InstructionARM64 cdq();
 InstructionARM64 movsx_r64_r32(Register dst, Register src);
 
 /*!
+ * ARM64 signed 32-bit divide: SDIV Wd, Wn, Wm — dst = dividend / divisor
+ */
+InstructionARM64 sdiv_gpr32(Register dst, Register dividend, Register divisor);
+
+/*!
+ * ARM64 unsigned 32-bit divide: UDIV Wd, Wn, Wm — dst = dividend / divisor
+ */
+InstructionARM64 udiv_gpr32(Register dst, Register dividend, Register divisor);
+
+/*!
+ * ARM64 multiply-subtract 32-bit: MSUB Wd, Wn, Wm, Wa — dst = addend - n * m
+ */
+InstructionARM64 msub_gpr32(Register dst, Register n, Register m, Register addend);
+
+/*!
  * Compare gpr64.  This sets the flags for the jumps.
  * todo UNTESTED
  */

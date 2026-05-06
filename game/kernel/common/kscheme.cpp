@@ -3,6 +3,13 @@
 #include "game/kernel/common/fileio.h"
 #include "game/kernel/common/kmalloc.h"
 #include "game/kernel/common/kprint.h"
+#include "game/runtime.h"
+#include "common/goal_constants.h"
+
+#if defined(__APPLE__) && defined(__aarch64__)
+#include <pthread.h>
+#include <libkern/OSCacheControl.h>
+#endif
 
 // total number of symbols in the table
 s32 NumSymbols;
@@ -92,6 +99,15 @@ uint64_t _call_goal_on_stack_asm_systemv(u64 rsp,
                                          void* fptr,
                                          void* st_ptr,
                                          void* offset);
+#elif defined __APPLE__ && defined __aarch64__
+uint64_t _call_goal_asm_arm64(u64 a0, u64 a1, u64 a2, void* fptr, void* st_ptr, void* offset)
+    asm("_call_goal_asm_arm64");
+uint64_t _call_goal_on_stack_asm_arm64(u64 rsp,
+                                       u64 u0,
+                                       u64 u1,
+                                       void* fptr,
+                                       void* st_ptr,
+                                       void* offset) asm("_call_goal_on_stack_asm_arm64");
 #elif defined __APPLE__ && defined __x86_64__
 uint64_t _call_goal_asm_systemv(u64 a0, u64 a1, u64 a2, void* fptr, void* st_ptr, void* offset) asm(
     "_call_goal_asm_systemv");
@@ -118,6 +134,12 @@ u64 call_goal(Ptr<Function> f, u64 a, u64 b, u64 c, u64 st, void* offset) {
   void* fptr = f.c();
 #ifdef __linux__
   return _call_goal_asm_systemv(a, b, c, fptr, st_ptr, offset);
+#elif defined __APPLE__ && defined __aarch64__
+  pthread_jit_write_protect_np(1);
+  sys_icache_invalidate(g_ee_main_mem, EE_MAIN_MEM_SIZE);
+  u64 result = _call_goal_asm_arm64(a, b, c, fptr, st_ptr, offset);
+  pthread_jit_write_protect_np(0);
+  return result;
 #elif defined __APPLE__ && defined __x86_64__
   return _call_goal_asm_systemv(a, b, c, fptr, st_ptr, offset);
 #elif _WIN32
@@ -134,6 +156,12 @@ u64 call_goal_on_stack(Ptr<Function> f, u64 rsp, u64 st, void* offset) {
   void* fptr = f.c();
 #ifdef __linux__
   return _call_goal_on_stack_asm_systemv(rsp, 0, 0, fptr, st_ptr, offset);
+#elif defined __APPLE__ && defined __aarch64__
+  pthread_jit_write_protect_np(1);
+  sys_icache_invalidate(g_ee_main_mem, EE_MAIN_MEM_SIZE);
+  u64 result = _call_goal_on_stack_asm_arm64(rsp, 0, 0, fptr, st_ptr, offset);
+  pthread_jit_write_protect_np(0);
+  return result;
 #elif defined __APPLE__ && defined __x86_64__
   return _call_goal_on_stack_asm_systemv(rsp, 0, 0, fptr, st_ptr, offset);
 #elif _WIN32

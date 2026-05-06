@@ -882,6 +882,37 @@ InstructionARM64 cdq() {
   return InstructionARM64(0b0);
 }
 
+InstructionARM64 sdiv_gpr32(Register dst, Register dividend, Register divisor) {
+  // SDIV Wd, Wn, Wm — 32-bit signed divide: dst = dividend / divisor
+  // Encoding: 0_0_011010_11_0_Rm_000011_Rn_Rd
+  // https://www.scs.stanford.edu/~zyedidia/arm64/sdiv.html
+  ASSERT(dst.is_gpr(instr_set));
+  ASSERT(dividend.is_gpr(instr_set));
+  ASSERT(divisor.is_gpr(instr_set));
+  return InstructionARM64(0x1AC00C00u, Rm(divisor.id()), Rn(dividend.id()), Rd(dst.id()));
+}
+
+InstructionARM64 udiv_gpr32(Register dst, Register dividend, Register divisor) {
+  // UDIV Wd, Wn, Wm — 32-bit unsigned divide: dst = dividend / divisor
+  // Encoding: 0_0_011010_11_0_Rm_000010_Rn_Rd
+  // https://www.scs.stanford.edu/~zyedidia/arm64/udiv.html
+  ASSERT(dst.is_gpr(instr_set));
+  ASSERT(dividend.is_gpr(instr_set));
+  ASSERT(divisor.is_gpr(instr_set));
+  return InstructionARM64(0x1AC00800u, Rm(divisor.id()), Rn(dividend.id()), Rd(dst.id()));
+}
+
+InstructionARM64 msub_gpr32(Register dst, Register n, Register m, Register addend) {
+  // MSUB Wd, Wn, Wm, Wa — 32-bit: dst = addend - n * m
+  // Encoding: 0_0_011011_000_Rm_1_Ra_Rn_Rd
+  // https://www.scs.stanford.edu/~zyedidia/arm64/msub.html
+  ASSERT(dst.is_gpr(instr_set));
+  ASSERT(n.is_gpr(instr_set));
+  ASSERT(m.is_gpr(instr_set));
+  ASSERT(addend.is_gpr(instr_set));
+  return InstructionARM64(0x1B008000u, Rm(m.id()), Field{(u32(addend.id()) << 10)}, Rn(n.id()), Rd(dst.id()));
+}
+
 InstructionARM64 movsx_r64_r32(Register dst, Register src) {
   // SXTW Xd, Wn — sign-extend 32-bit to 64-bit
   // Alias for SBFM Xd, Xn, #0, #31

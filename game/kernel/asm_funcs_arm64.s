@@ -243,38 +243,48 @@ _call_goal8_asm_arm64:
   ret
 
 ;; Call goal, but switch stacks.
+;; Mirror x86 pattern: save old SP onto GOAL stack so it survives across the call.
 .global _call_goal_on_stack_asm_arm64
 .align 4
 _call_goal_on_stack_asm_arm64:
-  stp	x29, x30, [sp, #-16]!
-  mov	x29, sp
-  ;; x0 - stack pointer
+  ;; x0 - new stack pointer (GOAL stack)
   ;; x1 - unused
   ;; x2 - unused
   ;; x3 - function pointer
-  ;; x4  - st (goes in x21 and x20)
-  ;; x5  - offset (goes in x22)
+  ;; x4 - st (goes in x20 and x21)
+  ;; x5 - offset (goes in x22)
 
-  ;; saved registers we need to modify for GOAL should be preserved
-  ; ARM64 requires 16-byte stack pointer alignment
+  ;; Save callee-saved registers on OLD (host) stack
+  stp x29, x30, [sp, #-16]!
+  mov x29, sp
   stp x20, x21, [sp, #-16]!
-  ;; also stash the current stack pointer on the stack
-  ;; NOTE - you cannot directly store or load the `sp` register in arm64
-  mov x9, sp
-  stp x22, x9, [sp, #-16]!
+  stp x22, x23, [sp, #-16]!   ;; save x22 (will be offset) and x23 (scratch)
 
-  ;; switch to new stack
+  ;; Capture old stack pointer into x9
+  mov x9, sp
+
+  ;; Switch to GOAL stack, aligning to 16 bytes (ARM64 ABI requirement)
+  and x0, x0, #0xfffffffffffffff0
   mov sp, x0
 
-  mov x20, x4 ;; set GOAL function pointer  
-  mov x21, x4 ;; symbol table
-  mov x22, x5 ;; offset
-  ;; call GOAL by function pointer
+  ;; Push old sp onto GOAL stack so we can recover it after the call
+  str x9, [sp, #-16]!
+
+  ;; Set GOAL registers
+  mov x20, x4  ;; process pointer (pp)
+  mov x21, x4  ;; symbol table (st)
+  mov x22, x5  ;; offset (g_ee_main_mem)
+
+  ;; Call GOAL function
   blr x3
 
-  ;; restore registers
-  ldp x22, x9, [sp], #16
+  ;; Pop old sp from GOAL stack
+  ldr x9, [sp], #16
+  ;; Switch back to old stack
   mov sp, x9
+
+  ;; Restore callee-saved registers
+  ldp x22, x23, [sp], #16
   ldp x20, x21, [sp], #16
-  ldp	x29, x30, [sp], #16
+  ldp x29, x30, [sp], #16
   ret

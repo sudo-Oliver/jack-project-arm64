@@ -301,7 +301,106 @@ void CodeGenerator::do_goal_function_x86(FunctionEnv* env, int f_idx) {
 }
 
 void CodeGenerator::do_goal_function_arm64(FunctionEnv* env, int f_idx) {
-  throw std::runtime_error("NYI - CodeGenerator::do_goal_function_arm64");
+  auto* debug = &m_debug_info->function_by_name(env->name());
+  auto f_rec = m_gen.get_existing_function_record(f_idx);
+  const auto& allocs = env->alloc_result();
+
+  int stack_offset = 0;
+
+  // ARM64: is_xmm() always false; Q-register (128-bit SIMD) saving is a future concern.
+  // Only GPR callee-saved regs matter here.
+  // push_gpr64 on ARM64 does STR [SP, #-16]! — always 16-byte aligned.
+  for (auto& saved_reg : allocs.used_saved_regs) {
+    if (saved_reg.is_gpr(m_gen.instr_set())) {
+      m_gen.add_instr_no_ir(f_rec, IGen::push_gpr64(m_gen, saved_reg),
+                            InstructionInfo::Kind::PROLOGUE);
+      stack_offset += 16;  // each ARM64 push reserves 16 bytes, not 8
+    }
+  }
+
+  // Spill/var slots: 8 bytes each, but total must be 16-byte aligned on ARM64.
+  int manually_added_stack_offset =
+      GPR_SIZE * (allocs.stack_slots_for_spills + allocs.stack_slots_for_vars);
+  manually_added_stack_offset = (manually_added_stack_offset + 15) & ~15;
+  stack_offset += manually_added_stack_offset;
+
+  if (manually_added_stack_offset || allocs.needs_aligned_stack_for_spills ||
+      env->needs_aligned_stack()) {
+    if (manually_added_stack_offset) {
+      m_gen.add_instr_no_ir(f_rec, IGen::sub_gpr64_imm(m_gen, SP, manually_added_stack_offset),
+                            InstructionInfo::Kind::PROLOGUE);
+    }
+  }
+  debug->stack_usage = stack_offset;
+
+  for (int ir_idx = 0; ir_idx < int(env->code().size()); ir_idx++) {
+    auto& ir = env->code().at(ir_idx);
+    auto i_rec = m_gen.add_ir(f_rec);
+
+    auto& bonus = allocs.stack_ops.at(ir_idx);
+    for (auto& op : bonus.ops) {
+      if (op.load) {
+        if (op.reg.is_gpr(m_gen.instr_set()) && op.reg_class == RegClass::GPR_64) {
+          m_gen.add_instr(IGen::load64_gpr64_plus_s32(
+                              m_gen, op.reg, allocs.get_slot_for_spill(op.slot) * GPR_SIZE, SP),
+                          i_rec);
+        } else if (op.reg.is_xmm(m_gen.instr_set()) && op.reg_class == RegClass::FLOAT) {
+          m_gen.add_instr(IGen::load_reg_offset_xmm32(
+                              m_gen, op.reg, SP, allocs.get_slot_for_spill(op.slot) * GPR_SIZE),
+                          i_rec);
+        } else if (op.reg.is_xmm(m_gen.instr_set()) &&
+                   (op.reg_class == RegClass::VECTOR_FLOAT || op.reg_class == RegClass::INT_128)) {
+          m_gen.add_instr(IGen::load128_xmm128_reg_offset(
+                              m_gen, op.reg, SP, allocs.get_slot_for_spill(op.slot) * GPR_SIZE),
+                          i_rec);
+        } else {
+          ASSERT(false);
+        }
+      }
+    }
+
+    ir->do_codegen_arm64(&m_gen, allocs, i_rec);
+
+    for (auto& op : bonus.ops) {
+      if (op.store) {
+        if (op.reg.is_gpr(m_gen.instr_set()) && op.reg_class == RegClass::GPR_64) {
+          m_gen.add_instr(IGen::store64_gpr64_plus_s32(
+                              m_gen, SP, allocs.get_slot_for_spill(op.slot) * GPR_SIZE, op.reg),
+                          i_rec);
+        } else if (op.reg.is_xmm(m_gen.instr_set()) && op.reg_class == RegClass::FLOAT) {
+          m_gen.add_instr(IGen::store_reg_offset_xmm32(
+                              m_gen, SP, op.reg, allocs.get_slot_for_spill(op.slot) * GPR_SIZE),
+                          i_rec);
+        } else if (op.reg.is_xmm(m_gen.instr_set()) &&
+                   (op.reg_class == RegClass::VECTOR_FLOAT || op.reg_class == RegClass::INT_128)) {
+          m_gen.add_instr(IGen::store128_xmm128_reg_offset(
+                              m_gen, SP, op.reg, allocs.get_slot_for_spill(op.slot) * GPR_SIZE),
+                          i_rec);
+        } else {
+          ASSERT(false);
+        }
+      }
+    }
+  }
+
+  // EPILOGUE
+  if (manually_added_stack_offset || allocs.needs_aligned_stack_for_spills ||
+      env->needs_aligned_stack()) {
+    if (manually_added_stack_offset) {
+      m_gen.add_instr_no_ir(f_rec, IGen::add_gpr64_imm(m_gen, SP, manually_added_stack_offset),
+                            InstructionInfo::Kind::EPILOGUE);
+    }
+  }
+
+  for (int i = int(allocs.used_saved_regs.size()); i-- > 0;) {
+    auto& saved_reg = allocs.used_saved_regs.at(i);
+    if (saved_reg.is_gpr(m_gen.instr_set())) {
+      m_gen.add_instr_no_ir(f_rec, IGen::pop_gpr64(m_gen, saved_reg),
+                            InstructionInfo::Kind::EPILOGUE);
+    }
+  }
+
+  m_gen.add_instr_no_ir(f_rec, IGen::ret(m_gen), InstructionInfo::Kind::EPILOGUE);
 }
 
 void CodeGenerator::do_asm_function_x86(FunctionEnv* env, int f_idx, bool allow_saved_regs) {
