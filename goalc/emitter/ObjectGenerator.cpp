@@ -270,6 +270,15 @@ void ObjectGenerator::link_instruction_symbol_ptr(const InstructionRecord& rec,
   m_symbol_instr_temp_links_by_seg.at(rec.seg)[name].push_back({rec, false});
 }
 
+void ObjectGenerator::link_instruction_symbol_arm64_movw(const InstructionRecord& movz_rec,
+                                                         const InstructionRecord& movk_rec,
+                                                         const std::string& name,
+                                                         SymbolLinkMode mode) {
+  ASSERT(movz_rec.seg == movk_rec.seg);
+  m_symbol_arm64_movw_temp_links_by_seg.at(movz_rec.seg)[name].push_back(
+      {movz_rec, movk_rec, mode});
+}
+
 /*!
  * Insert a GOAL pointer to a symbol inside of static data. This patching will happen during runtime
  * linking.
@@ -530,6 +539,27 @@ void ObjectGenerator::emit_link_symbol(int seg) {
   }
 }
 
+void ObjectGenerator::emit_link_symbol_arm64_movw(int seg) {
+  auto& out = m_link_by_seg.at(seg);
+  for (auto& rec : m_symbol_arm64_movw_temp_links_by_seg.at(seg)) {
+    out.push_back(LINK_SYMBOL_OFFSET_ARM64_MOVW);
+    for (char c : rec.first) {
+      out.push_back(c);
+    }
+    out.push_back(0);
+
+    push_data<u32>(rec.second.size(), out);
+
+    for (auto& link : rec.second) {
+      const auto& movz_func = m_function_data_by_seg.at(seg).at(link.movz_rec.func_id);
+      const auto& movk_func = m_function_data_by_seg.at(seg).at(link.movk_rec.func_id);
+      push_data<s32>(movz_func.instruction_to_byte_in_data.at(link.movz_rec.instr_id), out);
+      push_data<s32>(movk_func.instruction_to_byte_in_data.at(link.movk_rec.instr_id), out);
+      push_data<u8>(static_cast<u8>(link.mode), out);
+    }
+  }
+}
+
 void ObjectGenerator::emit_link_ptr(int seg) {
   auto& out = m_link_by_seg.at(seg);
   for (auto& rec : m_pointer_links_by_seg.at(seg)) {
@@ -571,6 +601,7 @@ void ObjectGenerator::emit_link_rip(int seg) {
 
 void ObjectGenerator::emit_link_table(int seg, const TypeSystem* ts) {
   emit_link_symbol(seg);
+  emit_link_symbol_arm64_movw(seg);
   emit_link_type_pointer(seg, ts);
   emit_link_rip(seg);
   emit_link_ptr(seg);

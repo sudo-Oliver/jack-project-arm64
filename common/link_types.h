@@ -14,6 +14,7 @@ enum LinkKind {
   LINK_DISTANCE_TO_OTHER_SEG_64 = 3,  //! link to another segment
   LINK_DISTANCE_TO_OTHER_SEG_32 = 4,  //! link to another segment
   LINK_PTR = 5,                       //! link a pointer within this segment
+  LINK_SYMBOL_OFFSET_ARM64_MOVW = 6,  //! patch ARM64 MOVZ/MOVK symbol immediates
 };
 
 enum SegmentTypes { MAIN_SEGMENT = 0, DEBUG_SEGMENT = 1, TOP_LEVEL_SEGMENT = 2 };

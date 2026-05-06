@@ -64,6 +64,12 @@ struct ObjectGeneratorStats {
 
 class ObjectGenerator {
  public:
+  enum class SymbolLinkMode : u8 {
+    ST_OFFSET = 0,
+    SYM_ADDRESS = 1,
+    ST_OFFSET_MINUS_ONE = 2,
+  };
+
   ObjectGenerator(GameVersion version);
   ObjectGenerator(GameVersion version, InstructionSet instr_set);
   ObjectFileData generate_data_v3(const TypeSystem* ts);
@@ -83,6 +89,10 @@ class ObjectGenerator {
 
   void link_instruction_symbol_mem(const InstructionRecord& rec, const std::string& name);
   void link_instruction_symbol_ptr(const InstructionRecord& rec, const std::string& name);
+  void link_instruction_symbol_arm64_movw(const InstructionRecord& movz_rec,
+                                          const InstructionRecord& movk_rec,
+                                          const std::string& name,
+                                          SymbolLinkMode mode);
   void link_static_symbol_ptr(StaticRecord rec, int offset, const std::string& name);
   void link_static_pointer_to_data(const StaticRecord& source,
                                    int source_offset,
@@ -115,6 +125,7 @@ class ObjectGenerator {
   void emit_link_table(int seg, const TypeSystem* ts);
   void emit_link_type_pointer(int seg, const TypeSystem* ts);
   void emit_link_symbol(int seg);
+  void emit_link_symbol_arm64_movw(int seg);
   void emit_link_rip(int seg);
   void emit_link_ptr(int seg);
   std::vector<u8> generate_header_v3();
@@ -178,6 +189,12 @@ class ObjectGenerator {
     bool is_mem_access = false;
   };
 
+  struct SymbolArm64MovwLink {
+    InstructionRecord movz_rec;
+    InstructionRecord movk_rec;
+    SymbolLinkMode mode = SymbolLinkMode::ST_OFFSET;
+  };
+
   struct RipFuncLink {
     InstructionRecord instr;
     FunctionRecord target;
@@ -227,6 +244,7 @@ class ObjectGenerator {
   seg_map<StaticTypeLink> m_static_type_temp_links_by_seg;
   seg_vector<JumpLink> m_jump_temp_links_by_seg;
   seg_map<SymbolInstrLink> m_symbol_instr_temp_links_by_seg;
+  seg_map<SymbolArm64MovwLink> m_symbol_arm64_movw_temp_links_by_seg;
   seg_map<StaticSymbolLink> m_static_sym_temp_links_by_seg;
   seg_vector<StaticDataPointerLink> m_static_data_temp_ptr_links_by_seg;
   seg_vector<StaticFunctionPointerLink> m_static_function_temp_ptr_links_by_seg;

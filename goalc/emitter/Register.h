@@ -132,7 +132,8 @@ class Register {
     if (instr_set == emitter::InstructionSet::X86) {
       return m_id >= XMM0 && m_id <= XMM15;
     } else if (instr_set == emitter::InstructionSet::ARM64) {
-      return m_id >= Q0 && m_id <= Q15;
+      // Accept both native ARM64 Q-register ids and legacy x86 XMM ids used by regalloc paths.
+      return (m_id >= Q0 && m_id <= Q15) || (m_id >= XMM0 && m_id <= XMM15);
     } else {
       ASSERT_MSG(false, "is_128bit_simd: instruction set not supported");
     }
@@ -142,7 +143,7 @@ class Register {
     if (instr_set == emitter::InstructionSet::X86) {
       return m_id >= XMM0 && m_id <= XMM15;
     } else if (instr_set == emitter::InstructionSet::ARM64) {
-      return false;
+      return is_128bit_simd(instr_set);
     } else {
       ASSERT_MSG(false, "is_xmm: instruction set not supported");
     }

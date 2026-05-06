@@ -82,7 +82,7 @@ class IR_LoadSymbolPointer : public IR {
 
 class IR_SetSymbolValue : public IR {
  public:
-  IR_SetSymbolValue(const SymbolVal* dest, const RegVal* src);
+  IR_SetSymbolValue(const SymbolVal* dest, const RegVal* src, const RegVal* addr_temp);
   std::string print() override;
   RegAllocInstr to_rai() override;
   void do_codegen_x86(emitter::ObjectGenerator* gen,
@@ -95,6 +95,7 @@ class IR_SetSymbolValue : public IR {
  protected:
   const SymbolVal* m_dest = nullptr;
   const RegVal* m_src = nullptr;
+  const RegVal* m_addr_temp = nullptr;
 };
 
 class IR_GetSymbolValue : public IR {

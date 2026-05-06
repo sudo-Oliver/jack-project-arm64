@@ -18,6 +18,14 @@
 #include "fmt/format.h"
 #include "third-party/CLI11.hpp"
 
+namespace {
+#if defined(__aarch64__)
+constexpr emitter::InstructionSet kHostInstructionSet = emitter::InstructionSet::ARM64;
+#else
+constexpr emitter::InstructionSet kHostInstructionSet = emitter::InstructionSet::X86;
+#endif
+}  // namespace
+
 void setup_logging(const bool disable_ansi_colors) {
   lg::set_file_level(lg::level::info);
   lg::set_stdout_level(lg::level::info);
@@ -103,7 +111,7 @@ int main(int argc, char** argv) {
   // if a command is provided on the command line, no REPL just run the compiler on it
   try {
     if (!cmd.empty()) {
-      compiler = std::make_unique<Compiler>(game_version, emitter::InstructionSet::X86);
+      compiler = std::make_unique<Compiler>(game_version, kHostInstructionSet);
       compiler->run_front_end_on_string(cmd);
       return 0;
     }
@@ -130,7 +138,7 @@ int main(int argc, char** argv) {
   // the compiler may throw an exception if it fails to load its standard library.
   try {
     compiler = std::make_unique<Compiler>(
-        game_version, emitter::InstructionSet::X86, std::make_optional(repl_config), username,
+        game_version, kHostInstructionSet, std::make_optional(repl_config), username,
         std::make_unique<REPL::Wrapper>(username, repl_config, startup_file, nrepl_server_ok));
     // Start nREPL Server if it spun up successfully
     if (nrepl_server_ok) {
@@ -158,7 +166,7 @@ int main(int argc, char** argv) {
           compiler->save_repl_history();
         }
         compiler = std::make_unique<Compiler>(
-            game_version, emitter::InstructionSet::X86, std::make_optional(repl_config), username,
+            game_version, kHostInstructionSet, std::make_optional(repl_config), username,
             std::make_unique<REPL::Wrapper>(username, repl_config, startup_file, nrepl_server_ok));
         status = ReplStatus::OK;
       }

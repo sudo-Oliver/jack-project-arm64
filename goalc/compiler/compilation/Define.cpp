@@ -92,7 +92,8 @@ Val* Compiler::compile_define(const goos::Object& form, const goos::Object& rest
     m_symbol_info.add_global(symbol_string(sym), in_gpr->type().base_type(), form, docstring);
   }
 
-  env->emit(form, std::make_unique<IR_SetSymbolValue>(sym_val, in_gpr));
+  auto addr_temp = env->make_gpr(TypeSpec("object"));
+  env->emit(form, std::make_unique<IR_SetSymbolValue>(sym_val, in_gpr, addr_temp));
   return in_gpr;
 }
 
@@ -313,7 +314,8 @@ Val* Compiler::do_set(const goos::Object& form, Val* dest, RegVal* src_in_reg, V
   } else if (as_sym_val) {
     typecheck_reg_type_allow_false(form, as_sym_val->type(), src, "set! global symbol");
     auto result_in_gpr = src_in_reg->to_gpr(form, env);
-    env->emit_ir<IR_SetSymbolValue>(form, as_sym_val->sym(), result_in_gpr);
+    auto addr_temp = env->make_gpr(TypeSpec("object"));
+    env->emit_ir<IR_SetSymbolValue>(form, as_sym_val->sym(), result_in_gpr, addr_temp);
     return result_in_gpr;
   } else if (as_bitfield) {
     set_bitfield(form, as_bitfield, src_in_reg, env);

@@ -260,15 +260,12 @@ _call_goal_on_stack_asm_arm64:
   stp x20, x21, [sp, #-16]!
   stp x22, x23, [sp, #-16]!   ;; save x22 (will be offset) and x23 (scratch)
 
-  ;; Capture old stack pointer into x9
-  mov x9, sp
+  ;; Capture old stack pointer into x23 (callee-saved, already preserved above)
+  mov x23, sp
 
   ;; Switch to GOAL stack, aligning to 16 bytes (ARM64 ABI requirement)
   and x0, x0, #0xfffffffffffffff0
   mov sp, x0
-
-  ;; Push old sp onto GOAL stack so we can recover it after the call
-  str x9, [sp, #-16]!
 
   ;; Set GOAL registers
   mov x20, x4  ;; process pointer (pp)
@@ -278,10 +275,8 @@ _call_goal_on_stack_asm_arm64:
   ;; Call GOAL function
   blr x3
 
-  ;; Pop old sp from GOAL stack
-  ldr x9, [sp], #16
   ;; Switch back to old stack
-  mov sp, x9
+  mov sp, x23
 
   ;; Restore callee-saved registers
   ldp x22, x23, [sp], #16

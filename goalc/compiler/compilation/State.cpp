@@ -140,7 +140,8 @@ Val* Compiler::compile_define_state_hook(const goos::Object& form,
 
   m_symbol_info.add_state(state_name.name_ptr, state_parent_type.print(), false, arg_info, form,
                           docstring);
-  env->emit_ir<IR_SetSymbolValue>(form, sym_val, state_object);
+  auto addr_temp = env->make_gpr(TypeSpec("object"));
+  env->emit_ir<IR_SetSymbolValue>(form, sym_val, state_object, addr_temp);
 
   return get_none();
 }

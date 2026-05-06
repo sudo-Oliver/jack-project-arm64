@@ -596,6 +596,63 @@ uint32_t symlink_v3(Ptr<uint8_t> link, Ptr<uint8_t> data) {
 
   return seek;
 }
+
+uint32_t symlink_v3_arm64_movw(Ptr<uint8_t> link, Ptr<uint8_t> data) {
+  uint32_t seek = 0;
+  char sym_name[256];
+  while (link.c()[seek]) {
+    sym_name[seek] = link.c()[seek];
+    seek++;
+    ASSERT(seek < 256);
+  }
+  sym_name[seek] = 0;
+  seek++;
+
+  auto sym = jakx::intern_from_c(-1, 0, sym_name);
+  int32_t sym_offset = sym.cast<u32>() - s7;
+  uint32_t sym_addr = sym.cast<u32>().offset;
+
+  Ptr<uint32_t> entries = link.cast<uint32_t>() + seek;
+  uint32_t entry_count = *entries;
+  entries = entries + 4;
+  seek += 4;
+
+  for (uint32_t i = 0; i < entry_count; i++) {
+    uint32_t movz_offset = entries.c()[i * 2 + 0];
+    uint32_t movk_offset = entries.c()[i * 2 + 1];
+    seek += 8;
+
+    u8 mode = link.c()[seek];
+    seek += 1;
+
+    uint32_t value = 0;
+    switch (mode) {
+      case 0:
+        value = (uint32_t)sym_offset;
+        break;
+      case 1:
+        value = sym_addr;
+        break;
+      case 2:
+        value = (uint32_t)(sym_offset - 1);
+        break;
+      default:
+        ASSERT_MSG(false, fmt::format("unknown ARM64 symbol link mode {}", mode));
+        break;
+    }
+
+    auto movz_ptr = (data + movz_offset).cast<uint32_t>();
+    auto movk_ptr = (data + movk_offset).cast<uint32_t>();
+    uint32_t movz = *movz_ptr;
+    uint32_t movk = *movk_ptr;
+    movz = (movz & ~(0xffffu << 5)) | ((value & 0xffffu) << 5);
+    movk = (movk & ~(0xffffu << 5)) | (((value >> 16) & 0xffffu) << 5);
+    *movz_ptr = movz;
+    *movk_ptr = movk;
+  }
+
+  return seek;
+}
 }  // namespace
 
 uint32_t link_control::jakx_work_opengoal() {
@@ -688,6 +745,11 @@ uint32_t link_control::jakx_work_opengoal() {
             case LINK_SYMBOL_OFFSET:
               lp = lp + 1;
               lp = lp + symlink_v3(lp, Ptr<u8>(ofh->code_infos[m_segment_process].offset));
+              break;
+            case LINK_SYMBOL_OFFSET_ARM64_MOVW:
+              lp = lp + 1;
+              lp = lp + symlink_v3_arm64_movw(
+                            lp, Ptr<u8>(ofh->code_infos[m_segment_process].offset));
               break;
             case LINK_TYPE_PTR:
               lp = lp + 1;  // seek past id

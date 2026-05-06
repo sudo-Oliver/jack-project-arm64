@@ -5,6 +5,14 @@
 #include "goalc/compiler/Compiler.h"
 #include "goalc/emitter/InstructionSet.h"
 
+namespace {
+#if defined(__aarch64__)
+constexpr emitter::InstructionSet kHostInstructionSet = emitter::InstructionSet::ARM64;
+#else
+constexpr emitter::InstructionSet kHostInstructionSet = emitter::InstructionSet::X86;
+#endif
+}  // namespace
+
 int main(int argc, char** argv) {
   // logging
   lg::set_stdout_level(lg::level::info);
@@ -28,7 +36,7 @@ int main(int argc, char** argv) {
   std::unique_ptr<Compiler> compiler;
   ReplStatus status = ReplStatus::OK;
   try {
-    compiler = std::make_unique<Compiler>(game_version, emitter::InstructionSet::X86, std::nullopt,
+    compiler = std::make_unique<Compiler>(game_version, kHostInstructionSet, std::nullopt,
                                           "", std::make_unique<REPL::Wrapper>(game_version));
     while (status != ReplStatus::WANT_EXIT) {
       if (status == ReplStatus::WANT_RELOAD) {
@@ -37,7 +45,7 @@ int main(int argc, char** argv) {
           compiler->save_repl_history();
         }
         compiler =
-            std::make_unique<Compiler>(game_version, emitter::InstructionSet::X86, std::nullopt, "",
+            std::make_unique<Compiler>(game_version, kHostInstructionSet, std::nullopt, "",
                                        std::make_unique<REPL::Wrapper>(game_version));
         status = ReplStatus::OK;
       }
