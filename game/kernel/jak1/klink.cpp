@@ -188,16 +188,16 @@ uint32_t symlink_v3_arm64_movw(Ptr<uint8_t> link, Ptr<uint8_t> data) {
   int32_t sym_offset = sym.cast<u32>() - s7;
   uint32_t sym_addr = sym.cast<u32>().offset;
 
-  Ptr<uint32_t> entries = link.cast<uint32_t>() + seek;
-  uint32_t entry_count = *entries;
-  entries = entries + 4;
+  uint32_t entry_count = *(link + seek).cast<uint32_t>();
   seek += 4;
 
   for (uint32_t i = 0; i < entry_count; i++) {
-    uint32_t movz_offset = entries.c()[i * 2 + 0];
-    uint32_t movk_offset = entries.c()[i * 2 + 1];
-    seek += 8;
-
+    // Read each field sequentially via seek to avoid stride misalignment
+    // caused by the mode (u8) byte between entries.
+    uint32_t movz_offset = *(link + seek).cast<uint32_t>();
+    seek += 4;
+    uint32_t movk_offset = *(link + seek).cast<uint32_t>();
+    seek += 4;
     u8 mode = link.c()[seek];
     seek += 1;
 
@@ -228,6 +228,22 @@ uint32_t symlink_v3_arm64_movw(Ptr<uint8_t> link, Ptr<uint8_t> data) {
   }
 
   return seek;
+}
+
+uint32_t cross_seg_dist_link_v3_arm64_movw(Ptr<uint8_t> link,
+                                            ObjectFileHeader* ofh,
+                                            int current_seg) {
+  uint8_t target_seg = *link;
+  ASSERT(target_seg < ofh->segment_count);
+  uint32_t* link_data = (link + 1).cast<uint32_t>().c();
+  uint32_t tgt = link_data[0] + ofh->code_infos[target_seg].offset;
+  uint32_t movz_addr = link_data[1] + ofh->code_infos[current_seg].offset;
+  uint32_t movk_addr = link_data[2] + ofh->code_infos[current_seg].offset;
+  auto movz_ptr = Ptr<uint32_t>(movz_addr).c();
+  auto movk_ptr = Ptr<uint32_t>(movk_addr).c();
+  *movz_ptr = (*movz_ptr & ~(0xffffu << 5)) | ((tgt & 0xffffu) << 5);
+  *movk_ptr = (*movk_ptr & ~(0xffffu << 5)) | (((tgt >> 16) & 0xffffu) << 5);
+  return 1 + 3 * 4;
 }
 
 }  // namespace
@@ -340,6 +356,10 @@ uint32_t link_control::jak1_work_v3() {
             case LINK_DISTANCE_TO_OTHER_SEG_32:
               lp = lp + 1;
               lp = lp + cross_seg_dist_link_v3(lp, ofh, m_segment_process, 4);
+              break;
+            case LINK_DISTANCE_TO_OTHER_SEG_ARM64_MOVW:
+              lp = lp + 1;
+              lp = lp + cross_seg_dist_link_v3_arm64_movw(lp, ofh, m_segment_process);
               break;
             case LINK_PTR:
               lp = lp + 1;

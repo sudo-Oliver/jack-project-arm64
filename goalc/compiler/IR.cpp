@@ -197,6 +197,9 @@ void emit_arm64_symbol_offset_load(ObjectGenerator* gen,
   auto movk = gen->add_instr(
       InstructionARM64(0xF2800000u, ARM64::Field{1u << 21}, ARM64::Rd(dst.id())), irec);
   gen->link_instruction_symbol_arm64_movw(movz, movk, sym_name, sym_offset_mode_for_version(gen->version()));
+  // Symbol offset is signed 32-bit; zero-extended MOVZ/MOVK must be sign-extended to 64-bit
+  // before adding to the symbol table base pointer, otherwise negative offsets wrap around.
+  gen->add_instr(IGen::ARM64::movsx_r64_r32(dst, dst), irec);
 }
 }  // namespace
 
@@ -310,25 +313,22 @@ void IR_LoadSymbolPointer::do_codegen_x86(emitter::ObjectGenerator* gen,
   if (m_name == "#f") {
     static_assert(false_symbol_offset() == 0, "false symbol location");
     if (dest_reg.is_xmm(gen->instr_set())) {
-      gen->add_instr(IGen::movq_xmm64_gpr64(*gen, dest_reg, gRegInfo.get_st_reg()), irec);
+      gen->add_instr(IGen::movq_xmm64_gpr64(*gen, dest_reg, gen->get_st_reg()), irec);
     } else {
-      gen->add_instr(IGen::mov_gpr64_gpr64(*gen, dest_reg, gRegInfo.get_st_reg()), irec);
+      gen->add_instr(IGen::mov_gpr64_gpr64(*gen, dest_reg, gen->get_st_reg()), irec);
     }
   } else if (m_name == "#t") {
-    gen->add_instr(IGen::lea_reg_plus_off8(*gen, dest_reg, gRegInfo.get_st_reg(),
+    gen->add_instr(IGen::lea_reg_plus_off8(*gen, dest_reg, gen->get_st_reg(),
                                            true_symbol_offset(gen->version())),
                    irec);
   } else if (m_name == "_empty_") {
-    gen->add_instr(IGen::lea_reg_plus_off8(*gen, dest_reg, gRegInfo.get_st_reg(),
+    gen->add_instr(IGen::lea_reg_plus_off8(*gen, dest_reg, gen->get_st_reg(),
                                            empty_pair_offset_from_s7(gen->version())),
                    irec);
   } else {
-    auto movz = gen->add_instr(InstructionARM64(0xD2800000u, ARM64::Rd(dest_reg.id())), irec);
-    auto movk = gen->add_instr(
-        InstructionARM64(0xF2800000u, ARM64::Field{1u << 21}, ARM64::Rd(dest_reg.id())), irec);
-    gen->link_instruction_symbol_arm64_movw(movz, movk, m_name,
-                                            ObjectGenerator::SymbolLinkMode::ST_OFFSET);
-    gen->add_instr(IGen::add_gpr64_gpr64(*gen, dest_reg, gRegInfo.get_st_reg()), irec);
+    auto instr = gen->add_instr(
+        IGen::lea_reg_plus_off32(*gen, dest_reg, gen->get_st_reg(), 0x0afecafe), irec);
+    gen->link_instruction_symbol_ptr(instr, m_name);
   }
 }
 
@@ -338,19 +338,22 @@ void IR_LoadSymbolPointer::do_codegen_arm64(emitter::ObjectGenerator* gen,
   auto dest_reg = get_reg(m_dest, allocs, irec);
   if (m_name == "#f") {
     static_assert(false_symbol_offset() == 0, "false symbol location");
-    gen->add_instr(IGen::mov_gpr64_gpr64(*gen, dest_reg, gRegInfo.get_st_reg()), irec);
+    gen->add_instr(IGen::mov_gpr64_gpr64(*gen, dest_reg, gen->get_st_reg()), irec);
   } else if (m_name == "#t") {
-    gen->add_instr(IGen::lea_reg_plus_off8(*gen, dest_reg, gRegInfo.get_st_reg(),
+    gen->add_instr(IGen::lea_reg_plus_off8(*gen, dest_reg, gen->get_st_reg(),
                                            true_symbol_offset(gen->version())),
                    irec);
   } else if (m_name == "_empty_") {
-    gen->add_instr(IGen::lea_reg_plus_off8(*gen, dest_reg, gRegInfo.get_st_reg(),
+    gen->add_instr(IGen::lea_reg_plus_off8(*gen, dest_reg, gen->get_st_reg(),
                                            empty_pair_offset_from_s7(gen->version())),
                    irec);
   } else {
-    auto instr = gen->add_instr(
-        IGen::lea_reg_plus_off32(*gen, dest_reg, gRegInfo.get_st_reg(), 0x0afecafe), irec);
-    gen->link_instruction_symbol_ptr(instr, m_name);
+    auto movz = gen->add_instr(InstructionARM64(0xD2800000u, ARM64::Rd(dest_reg.id())), irec);
+    auto movk = gen->add_instr(
+        InstructionARM64(0xF2800000u, ARM64::Field{1u << 21}, ARM64::Rd(dest_reg.id())), irec);
+    gen->link_instruction_symbol_arm64_movw(movz, movk, m_name,
+                                            ObjectGenerator::SymbolLinkMode::ST_OFFSET);
+    gen->add_instr(IGen::add_gpr64_gpr64(*gen, dest_reg, gen->get_st_reg()), irec);
   }
 }
 
@@ -380,7 +383,7 @@ void IR_SetSymbolValue::do_codegen_x86(emitter::ObjectGenerator* gen,
   auto src_reg = get_reg(m_src, allocs, irec);
   auto instr = gen->add_instr(
       IGen::store32_gpr64_gpr64_plus_gpr64_plus_s32(
-          *gen, gRegInfo.get_st_reg(), gRegInfo.get_offset_reg(), src_reg, LINK_SYM_NO_OFFSET_FLAG),
+          *gen, gen->get_st_reg(), gen->get_offset_reg(), src_reg, LINK_SYM_NO_OFFSET_FLAG),
       irec);
   gen->link_instruction_symbol_mem(instr, m_dest->name());
 }
@@ -391,8 +394,8 @@ void IR_SetSymbolValue::do_codegen_arm64(emitter::ObjectGenerator* gen,
   auto src_reg = get_reg(m_src, allocs, irec);
   auto addr_reg = get_reg(m_addr_temp, allocs, irec);
   emit_arm64_symbol_offset_load(gen, irec, addr_reg, m_dest->name());
-  gen->add_instr(IGen::add_gpr64_gpr64(*gen, addr_reg, gRegInfo.get_st_reg()), irec);
-  gen->add_instr(IGen::store32_gpr64_gpr64_plus_gpr64(*gen, addr_reg, gRegInfo.get_offset_reg(),
+  gen->add_instr(IGen::add_gpr64_gpr64(*gen, addr_reg, gen->get_st_reg()), irec);
+  gen->add_instr(IGen::store32_gpr64_gpr64_plus_gpr64(*gen, addr_reg, gen->get_offset_reg(),
                                                       src_reg),
                  irec);
 }
@@ -420,13 +423,13 @@ void IR_GetSymbolValue::do_codegen_x86(emitter::ObjectGenerator* gen,
   auto dst_reg = get_reg(m_dest, allocs, irec);
   if (m_sext) {
     auto instr = gen->add_instr(IGen::load32s_gpr64_gpr64_plus_gpr64_plus_s32(
-                                    *gen, dst_reg, gRegInfo.get_st_reg(), gRegInfo.get_offset_reg(),
+                                    *gen, dst_reg, gen->get_st_reg(), gen->get_offset_reg(),
                                     LINK_SYM_NO_OFFSET_FLAG),
                                 irec);
     gen->link_instruction_symbol_mem(instr, m_src->name());
   } else {
     auto instr = gen->add_instr(IGen::load32u_gpr64_gpr64_plus_gpr64_plus_s32(
-                                    *gen, dst_reg, gRegInfo.get_st_reg(), gRegInfo.get_offset_reg(),
+                                    *gen, dst_reg, gen->get_st_reg(), gen->get_offset_reg(),
                                     LINK_SYM_NO_OFFSET_FLAG),
                                 irec);
     gen->link_instruction_symbol_mem(instr, m_src->name());
@@ -438,14 +441,14 @@ void IR_GetSymbolValue::do_codegen_arm64(emitter::ObjectGenerator* gen,
                                          emitter::IR_Record irec) {
   auto dst_reg = get_reg(m_dest, allocs, irec);
   emit_arm64_symbol_offset_load(gen, irec, dst_reg, m_src->name());
-  gen->add_instr(IGen::add_gpr64_gpr64(*gen, dst_reg, gRegInfo.get_st_reg()), irec);
+  gen->add_instr(IGen::add_gpr64_gpr64(*gen, dst_reg, gen->get_st_reg()), irec);
   if (m_sext) {
     gen->add_instr(IGen::load32s_gpr64_gpr64_plus_gpr64(*gen, dst_reg, dst_reg,
-                                                        gRegInfo.get_offset_reg()),
+                                                        gen->get_offset_reg()),
                    irec);
   } else {
     gen->add_instr(IGen::load32u_gpr64_gpr64_plus_gpr64(*gen, dst_reg, dst_reg,
-                                                        gRegInfo.get_offset_reg()),
+                                                        gen->get_offset_reg()),
                    irec);
   }
 }
@@ -594,7 +597,7 @@ void IR_FunctionCall::do_codegen_x86(emitter::ObjectGenerator* gen,
                                      const AllocationResult& allocs,
                                      emitter::IR_Record irec) {
   auto freg = get_reg(m_func, allocs, irec);
-  gen->add_instr(IGen::add_gpr64_gpr64(*gen, freg, emitter::gRegInfo.get_offset_reg()), irec);
+  gen->add_instr(IGen::add_gpr64_gpr64(*gen, freg, gen->get_offset_reg()), irec);
   gen->add_instr(IGen::call_r64(*gen, freg), irec);
   // todo, can we do a sub to undo the modification to the register? does that actually work?
 }
@@ -603,7 +606,7 @@ void IR_FunctionCall::do_codegen_arm64(emitter::ObjectGenerator* gen,
                                        const AllocationResult& allocs,
                                        emitter::IR_Record irec) {
   auto freg = get_reg(m_func, allocs, irec);
-  gen->add_instr(IGen::add_gpr64_gpr64(*gen, freg, emitter::gRegInfo.get_offset_reg()), irec);
+  gen->add_instr(IGen::add_gpr64_gpr64(*gen, freg, gen->get_offset_reg()), irec);
   gen->add_instr(IGen::call_r64(*gen, freg), irec);
 }
 
@@ -632,7 +635,7 @@ void IR_RegValAddr::do_codegen_x86(emitter::ObjectGenerator* gen,
   // x86 pointer to var
   gen->add_instr(IGen::lea_reg_plus_off(*gen, dst, RSP, stack_offset), irec);
   // x86 -> GOAL pointer
-  gen->add_instr(IGen::sub_gpr64_gpr64(*gen, dst, emitter::gRegInfo.get_offset_reg()), irec);
+  gen->add_instr(IGen::sub_gpr64_gpr64(*gen, dst, gen->get_offset_reg()), irec);
 }
 
 void IR_RegValAddr::do_codegen_arm64(emitter::ObjectGenerator* gen,
@@ -641,7 +644,7 @@ void IR_RegValAddr::do_codegen_arm64(emitter::ObjectGenerator* gen,
   int stack_offset = get_stack_offset(m_src, allocs);
   auto dst = get_reg(m_dest, allocs, irec);
   gen->add_instr(IGen::lea_reg_plus_off(*gen, dst, SP, stack_offset), irec);
-  gen->add_instr(IGen::sub_gpr64_gpr64(*gen, dst, emitter::gRegInfo.get_offset_reg()), irec);
+  gen->add_instr(IGen::sub_gpr64_gpr64(*gen, dst, gen->get_offset_reg()), irec);
 }
 
 /////////////////////
@@ -667,16 +670,16 @@ void IR_StaticVarAddr::do_codegen_x86(emitter::ObjectGenerator* gen,
   auto dr = get_reg(m_dest, allocs, irec);
   auto instr = gen->add_instr(IGen::static_addr(*gen, dr, 0), irec);
   gen->link_instruction_static(instr, m_src->rec, m_src->get_addr_offset());
-  gen->add_instr(IGen::sub_gpr64_gpr64(*gen, dr, emitter::gRegInfo.get_offset_reg()), irec);
+  gen->add_instr(IGen::sub_gpr64_gpr64(*gen, dr, gen->get_offset_reg()), irec);
 }
 
 void IR_StaticVarAddr::do_codegen_arm64(emitter::ObjectGenerator* gen,
                                         const AllocationResult& allocs,
                                         emitter::IR_Record irec) {
   auto dr = get_reg(m_dest, allocs, irec);
-  auto instr = gen->add_instr(IGen::static_addr(*gen, dr, 0), irec);
-  gen->link_instruction_static(instr, m_src->rec, m_src->get_addr_offset());
-  gen->add_instr(IGen::sub_gpr64_gpr64(*gen, dr, emitter::gRegInfo.get_offset_reg()), irec);
+  auto movz = gen->add_instr(InstructionARM64(0xD2800000u, ARM64::Rd(dr.id())), irec);
+  auto movk = gen->add_instr(InstructionARM64(0xF2A00000u, ARM64::Rd(dr.id())), irec);
+  gen->link_instruction_static_arm64_movw(movz, movk, m_src->rec, m_src->get_addr_offset());
 }
 
 /////////////////////
@@ -701,16 +704,17 @@ void IR_FunctionAddr::do_codegen_x86(emitter::ObjectGenerator* gen,
   auto dr = get_reg(m_dest, allocs, irec);
   auto instr = gen->add_instr(IGen::static_addr(*gen, dr, 0), irec);
   gen->link_instruction_to_function(instr, gen->get_existing_function_record(m_src->idx_in_file));
-  gen->add_instr(IGen::sub_gpr64_gpr64(*gen, dr, emitter::gRegInfo.get_offset_reg()), irec);
+  gen->add_instr(IGen::sub_gpr64_gpr64(*gen, dr, gen->get_offset_reg()), irec);
 }
 
 void IR_FunctionAddr::do_codegen_arm64(emitter::ObjectGenerator* gen,
                                        const AllocationResult& allocs,
                                        emitter::IR_Record irec) {
   auto dr = get_reg(m_dest, allocs, irec);
-  auto instr = gen->add_instr(IGen::static_addr(*gen, dr, 0), irec);
-  gen->link_instruction_to_function(instr, gen->get_existing_function_record(m_src->idx_in_file));
-  gen->add_instr(IGen::sub_gpr64_gpr64(*gen, dr, emitter::gRegInfo.get_offset_reg()), irec);
+  auto movz = gen->add_instr(InstructionARM64(0xD2800000u, ARM64::Rd(dr.id())), irec);
+  auto movk = gen->add_instr(InstructionARM64(0xF2A00000u, ARM64::Rd(dr.id())), irec);
+  gen->link_instruction_to_function_arm64_movw(
+      movz, movk, gen->get_existing_function_record(m_src->idx_in_file));
 }
 
 /////////////////////
@@ -1163,17 +1167,27 @@ void IR_StaticVarLoad::do_codegen_arm64(emitter::ObjectGenerator* gen,
   auto load_info = m_src->get_load_info();
   ASSERT(m_src->get_addr_offset() == 0);
 
+  // Use x16 (IP0, never allocated) as a scratch GPR to hold the static data address.
+  // MOVZ/MOVK loads the 32-bit EE offset; then load from [x16 + off_reg (x22)].
+  Register scratch = Register(ARM64_REG::X16);
+
   if (m_dest->ireg().reg_class == RegClass::FLOAT) {
     ASSERT(load_info.load_signed == false);
     ASSERT(load_info.load_size == 4);
     ASSERT(load_info.requires_load == true);
-    auto instr =
-        gen->add_instr(IGen::static_load_xmm32(*gen, get_reg(m_dest, allocs, irec), 0), irec);
-    gen->link_instruction_static(instr, m_src->rec, 0);
+    auto movz = gen->add_instr(InstructionARM64(0xD2800000u, ARM64::Rd(scratch.id())), irec);
+    auto movk = gen->add_instr(InstructionARM64(0xF2A00000u, ARM64::Rd(scratch.id())), irec);
+    gen->link_instruction_static_arm64_movw(movz, movk, m_src->rec, 0);
+    gen->add_instr(IGen::load_goal_xmm32(*gen, get_reg(m_dest, allocs, irec), scratch,
+                                         gen->get_offset_reg(), 0),
+                   irec);
   } else if (m_dest->ireg().reg_class == RegClass::VECTOR_FLOAT) {
-    auto instr =
-        gen->add_instr(IGen::loadvf_rip_plus_s32(*gen, get_reg(m_dest, allocs, irec), 0), irec);
-    gen->link_instruction_static(instr, m_src->rec, 0);
+    auto movz = gen->add_instr(InstructionARM64(0xD2800000u, ARM64::Rd(scratch.id())), irec);
+    auto movk = gen->add_instr(InstructionARM64(0xF2A00000u, ARM64::Rd(scratch.id())), irec);
+    gen->link_instruction_static_arm64_movw(movz, movk, m_src->rec, 0);
+    gen->add_instr(IGen::load_goal_xmm128(*gen, get_reg(m_dest, allocs, irec), scratch,
+                                          gen->get_offset_reg(), 0),
+                   irec);
   } else {
     ASSERT(false);
   }
@@ -1354,20 +1368,20 @@ void IR_LoadConstOffset::do_codegen_x86(emitter::ObjectGenerator* gen,
   auto base_reg = m_use_coloring ? get_reg(m_base, allocs, irec) : get_no_color_reg(m_base);
 
   if (m_dest->ireg().reg_class == RegClass::GPR_64) {
-    gen->add_instr(IGen::load_goal_gpr(*gen, dest_reg, base_reg, emitter::gRegInfo.get_offset_reg(),
+    gen->add_instr(IGen::load_goal_gpr(*gen, dest_reg, base_reg, gen->get_offset_reg(),
                                        m_offset, m_info.size, m_info.sign_extend),
                    irec);
   } else if (m_dest->ireg().reg_class == RegClass::FLOAT && m_info.size == 4 &&
              m_info.sign_extend == false && m_info.reg == RegClass::FLOAT) {
     gen->add_instr(IGen::load_goal_xmm32(*gen, dest_reg, base_reg,
-                                         emitter::gRegInfo.get_offset_reg(), m_offset),
+                                         gen->get_offset_reg(), m_offset),
                    irec);
   } else if ((m_dest->ireg().reg_class == RegClass::VECTOR_FLOAT ||
               m_dest->ireg().reg_class == RegClass::INT_128) &&
              m_info.size == 16 && m_info.sign_extend == false &&
              m_info.reg == m_dest->ireg().reg_class) {
     gen->add_instr(IGen::load_goal_xmm128(*gen, dest_reg, base_reg,
-                                          emitter::gRegInfo.get_offset_reg(), m_offset),
+                                          gen->get_offset_reg(), m_offset),
                    irec);
   } else {
     throw std::runtime_error("IR_LoadConstOffset::do_codegen_x86 not supported");
@@ -1379,23 +1393,30 @@ void IR_LoadConstOffset::do_codegen_arm64(emitter::ObjectGenerator* gen,
                                           emitter::IR_Record irec) {
   auto dest_reg = m_use_coloring ? get_reg(m_dest, allocs, irec) : get_no_color_reg(m_dest);
   auto base_reg = m_use_coloring ? get_reg(m_base, allocs, irec) : get_no_color_reg(m_base);
+  auto off_reg = gen->get_offset_reg();
+
+  // ARM64 load_goal_* only support offset==0; for non-zero, adjust base first.
+  // dest = base + m_offset, then load from dest + x22.
+  auto effective_base = base_reg;
+  if (m_offset != 0) {
+    ASSERT_MSG(m_offset >= -4095 && m_offset <= 4095,
+               "IR_LoadConstOffset::do_codegen_arm64: offset exceeds 12-bit range");
+    gen->add_instr(IGen::lea_reg_plus_off32(*gen, dest_reg, base_reg, m_offset), irec);
+    effective_base = dest_reg;
+  }
 
   if (m_dest->ireg().reg_class == RegClass::GPR_64) {
-    gen->add_instr(IGen::load_goal_gpr(*gen, dest_reg, base_reg, emitter::gRegInfo.get_offset_reg(),
-                                       m_offset, m_info.size, m_info.sign_extend),
+    gen->add_instr(IGen::load_goal_gpr(*gen, dest_reg, effective_base, off_reg,
+                                       0, m_info.size, m_info.sign_extend),
                    irec);
   } else if (m_dest->ireg().reg_class == RegClass::FLOAT && m_info.size == 4 &&
              m_info.sign_extend == false && m_info.reg == RegClass::FLOAT) {
-    gen->add_instr(IGen::load_goal_xmm32(*gen, dest_reg, base_reg,
-                                         emitter::gRegInfo.get_offset_reg(), m_offset),
-                   irec);
+    gen->add_instr(IGen::load_goal_xmm32(*gen, dest_reg, effective_base, off_reg, 0), irec);
   } else if ((m_dest->ireg().reg_class == RegClass::VECTOR_FLOAT ||
               m_dest->ireg().reg_class == RegClass::INT_128) &&
              m_info.size == 16 && m_info.sign_extend == false &&
              m_info.reg == m_dest->ireg().reg_class) {
-    gen->add_instr(IGen::load_goal_xmm128(*gen, dest_reg, base_reg,
-                                          emitter::gRegInfo.get_offset_reg(), m_offset),
-                   irec);
+    gen->add_instr(IGen::load_goal_xmm128(*gen, dest_reg, effective_base, off_reg, 0), irec);
   } else {
     throw std::runtime_error("IR_LoadConstOffset::do_codegen_arm64 not supported");
   }
@@ -1430,17 +1451,17 @@ void IR_StoreConstOffset::do_codegen_x86(emitter::ObjectGenerator* gen,
 
   if (m_value->ireg().reg_class == RegClass::GPR_64) {
     gen->add_instr(IGen::store_goal_gpr(*gen, base_reg, value_reg,
-                                        emitter::gRegInfo.get_offset_reg(), m_offset, m_size),
+                                        gen->get_offset_reg(), m_offset, m_size),
                    irec);
   } else if (m_value->ireg().reg_class == RegClass::FLOAT && m_size == 4) {
     gen->add_instr(IGen::store_goal_xmm32(*gen, base_reg, value_reg,
-                                          emitter::gRegInfo.get_offset_reg(), m_offset),
+                                          gen->get_offset_reg(), m_offset),
                    irec);
   } else if ((m_value->ireg().reg_class == RegClass::VECTOR_FLOAT ||
               m_value->ireg().reg_class == RegClass::INT_128) &&
              m_size == 16) {
     gen->add_instr(IGen::store_goal_vf(*gen, base_reg, value_reg,
-                                       emitter::gRegInfo.get_offset_reg(), m_offset),
+                                       gen->get_offset_reg(), m_offset),
                    irec);
   } else {
     throw std::runtime_error(
@@ -1454,25 +1475,38 @@ void IR_StoreConstOffset::do_codegen_arm64(emitter::ObjectGenerator* gen,
                                            emitter::IR_Record irec) {
   auto base_reg = m_use_coloring ? get_reg(m_base, allocs, irec) : get_no_color_reg(m_base);
   auto value_reg = m_use_coloring ? get_reg(m_value, allocs, irec) : get_no_color_reg(m_value);
+  auto off_reg = gen->get_offset_reg();
+
+  // ARM64 store_goal_* only support offset==0; for non-zero, adjust base into value_reg temporarily.
+  // We need a scratch GPR. Use value_reg if it's a GPR, else use base_reg with ADD (and restore later
+  // is not needed since base_reg is a read-only input here). Actually, safest: use a push/pop-free
+  // approach — store value into a known scratch, adjust base, store, done. But we have no scratch.
+  // Instead: temporarily adjust base_reg itself, do the store, then un-adjust. This works because
+  // base_reg is not written by the store, so we can restore it after.
+  if (m_offset != 0) {
+    ASSERT_MSG(m_offset >= -4095 && m_offset <= 4095,
+               "IR_StoreConstOffset::do_codegen_arm64: offset exceeds 12-bit range");
+    // base_reg = base_reg + m_offset
+    gen->add_instr(IGen::lea_reg_plus_off32(*gen, base_reg, base_reg, m_offset), irec);
+  }
 
   if (m_value->ireg().reg_class == RegClass::GPR_64) {
-    gen->add_instr(IGen::store_goal_gpr(*gen, base_reg, value_reg,
-                                        emitter::gRegInfo.get_offset_reg(), m_offset, m_size),
-                   irec);
+    gen->add_instr(IGen::store_goal_gpr(*gen, base_reg, value_reg, off_reg, 0, m_size), irec);
   } else if (m_value->ireg().reg_class == RegClass::FLOAT && m_size == 4) {
-    gen->add_instr(IGen::store_goal_xmm32(*gen, base_reg, value_reg,
-                                          emitter::gRegInfo.get_offset_reg(), m_offset),
-                   irec);
+    gen->add_instr(IGen::store_goal_xmm32(*gen, base_reg, value_reg, off_reg, 0), irec);
   } else if ((m_value->ireg().reg_class == RegClass::VECTOR_FLOAT ||
               m_value->ireg().reg_class == RegClass::INT_128) &&
              m_size == 16) {
-    gen->add_instr(IGen::store_goal_vf(*gen, base_reg, value_reg,
-                                       emitter::gRegInfo.get_offset_reg(), m_offset),
-                   irec);
+    gen->add_instr(IGen::store_goal_vf(*gen, base_reg, value_reg, off_reg, 0), irec);
   } else {
     throw std::runtime_error(
         fmt::format("IR_StoreConstOffset::do_codegen_arm64 can't handle this (c {} sz {})",
                     fmt::underlying(m_value->ireg().reg_class), m_size));
+  }
+
+  // Restore base_reg if we adjusted it
+  if (m_offset != 0) {
+    gen->add_instr(IGen::lea_reg_plus_off32(*gen, base_reg, base_reg, -m_offset), irec);
   }
 }
 
@@ -1632,12 +1666,12 @@ void IR_GetStackAddr::do_codegen_x86(emitter::ObjectGenerator* gen,
 
   if (offset == 0) {
     gen->add_instr(IGen::mov_gpr64_gpr64(*gen, dest_reg, RSP), irec);
-    gen->add_instr(IGen::sub_gpr64_gpr64(*gen, dest_reg, gRegInfo.get_offset_reg()), irec);
+    gen->add_instr(IGen::sub_gpr64_gpr64(*gen, dest_reg, gen->get_offset_reg()), irec);
   } else {
     // dest = offset + RSP
     gen->add_instr(IGen::lea_reg_plus_off(*gen, dest_reg, RSP, offset), irec);
     // dest = offset + RSP - offset
-    gen->add_instr(IGen::sub_gpr64_gpr64(*gen, dest_reg, gRegInfo.get_offset_reg()), irec);
+    gen->add_instr(IGen::sub_gpr64_gpr64(*gen, dest_reg, gen->get_offset_reg()), irec);
   }
 }
 
@@ -1649,10 +1683,10 @@ void IR_GetStackAddr::do_codegen_arm64(emitter::ObjectGenerator* gen,
 
   if (offset == 0) {
     gen->add_instr(IGen::mov_gpr64_gpr64(*gen, dest_reg, SP), irec);
-    gen->add_instr(IGen::sub_gpr64_gpr64(*gen, dest_reg, gRegInfo.get_offset_reg()), irec);
+    gen->add_instr(IGen::sub_gpr64_gpr64(*gen, dest_reg, gen->get_offset_reg()), irec);
   } else {
     gen->add_instr(IGen::lea_reg_plus_off(*gen, dest_reg, SP, offset), irec);
-    gen->add_instr(IGen::sub_gpr64_gpr64(*gen, dest_reg, gRegInfo.get_offset_reg()), irec);
+    gen->add_instr(IGen::sub_gpr64_gpr64(*gen, dest_reg, gen->get_offset_reg()), irec);
   }
 }
 
@@ -1978,13 +2012,13 @@ void IR_GetSymbolValueAsm::do_codegen_x86(emitter::ObjectGenerator* gen,
   auto dst_reg = m_use_coloring ? get_reg(m_dest, allocs, irec) : get_no_color_reg(m_dest);
   if (m_sext) {
     auto instr = gen->add_instr(IGen::load32s_gpr64_gpr64_plus_gpr64_plus_s32(
-                                    *gen, dst_reg, gRegInfo.get_st_reg(), gRegInfo.get_offset_reg(),
+                                    *gen, dst_reg, gen->get_st_reg(), gen->get_offset_reg(),
                                     LINK_SYM_NO_OFFSET_FLAG),
                                 irec);
     gen->link_instruction_symbol_mem(instr, m_sym_name);
   } else {
     auto instr = gen->add_instr(IGen::load32u_gpr64_gpr64_plus_gpr64_plus_s32(
-                                    *gen, dst_reg, gRegInfo.get_st_reg(), gRegInfo.get_offset_reg(),
+                                    *gen, dst_reg, gen->get_st_reg(), gen->get_offset_reg(),
                                     LINK_SYM_NO_OFFSET_FLAG),
                                 irec);
     gen->link_instruction_symbol_mem(instr, m_sym_name);
@@ -1996,14 +2030,14 @@ void IR_GetSymbolValueAsm::do_codegen_arm64(emitter::ObjectGenerator* gen,
                                             emitter::IR_Record irec) {
   auto dst_reg = m_use_coloring ? get_reg(m_dest, allocs, irec) : get_no_color_reg(m_dest);
   emit_arm64_symbol_offset_load(gen, irec, dst_reg, m_sym_name);
-  gen->add_instr(IGen::add_gpr64_gpr64(*gen, dst_reg, gRegInfo.get_st_reg()), irec);
+  gen->add_instr(IGen::add_gpr64_gpr64(*gen, dst_reg, gen->get_st_reg()), irec);
   if (m_sext) {
     gen->add_instr(IGen::load32s_gpr64_gpr64_plus_gpr64(*gen, dst_reg, dst_reg,
-                                                        gRegInfo.get_offset_reg()),
+                                                        gen->get_offset_reg()),
                    irec);
   } else {
     gen->add_instr(IGen::load32u_gpr64_gpr64_plus_gpr64(*gen, dst_reg, dst_reg,
-                                                        gRegInfo.get_offset_reg()),
+                                                        gen->get_offset_reg()),
                    irec);
   }
 }

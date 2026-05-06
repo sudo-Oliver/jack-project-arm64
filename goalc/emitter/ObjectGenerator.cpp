@@ -29,6 +29,21 @@ ObjectGenerator::ObjectGenerator(GameVersion version)
 ObjectGenerator::ObjectGenerator(GameVersion version, InstructionSet instr_set)
     : m_version(version), m_instruction_set(instr_set) {}
 
+Register ObjectGenerator::get_offset_reg() const {
+  if (m_instruction_set == InstructionSet::ARM64) return Register(ARM64_REG::x22);
+  return gRegInfo.get_offset_reg();
+}
+
+Register ObjectGenerator::get_st_reg() const {
+  if (m_instruction_set == InstructionSet::ARM64) return Register(ARM64_REG::x21);
+  return gRegInfo.get_st_reg();
+}
+
+Register ObjectGenerator::get_process_reg() const {
+  if (m_instruction_set == InstructionSet::ARM64) return Register(ARM64_REG::x20);
+  return gRegInfo.get_process_reg();
+}
+
 /*!
  * Build an object file with the v3 format.
  */
@@ -99,6 +114,7 @@ ObjectFileData ObjectGenerator::generate_data_v3(const TypeSystem* ts) {
     handle_temp_instr_sym_links(seg);
     handle_temp_rip_func_links(seg);
     handle_temp_rip_data_links(seg);
+    handle_temp_rip_arm64_movw_links(seg);
     handle_temp_static_ptr_links(seg);
   }
 
@@ -332,6 +348,23 @@ void ObjectGenerator::link_instruction_to_function(const InstructionRecord& inst
   m_rip_func_temp_links_by_seg.at(instr.seg).push_back({instr, target_func});
 }
 
+void ObjectGenerator::link_instruction_static_arm64_movw(const InstructionRecord& movz_rec,
+                                                         const InstructionRecord& movk_rec,
+                                                         const StaticRecord& target_static,
+                                                         int offset) {
+  ASSERT(movz_rec.seg == movk_rec.seg);
+  m_rip_arm64_movw_data_temp_links_by_seg.at(movz_rec.seg).push_back(
+      {movz_rec, movk_rec, target_static, offset});
+}
+
+void ObjectGenerator::link_instruction_to_function_arm64_movw(const InstructionRecord& movz_rec,
+                                                               const InstructionRecord& movk_rec,
+                                                               const FunctionRecord& target_func) {
+  ASSERT(movz_rec.seg == movk_rec.seg);
+  m_rip_arm64_movw_func_temp_links_by_seg.at(movz_rec.seg).push_back(
+      {movz_rec, movk_rec, target_func});
+}
+
 /*!
  * Convert:
  * m_static_type_temp_links_by_seg -> m_type_ptr_links_by_seg
@@ -398,29 +431,47 @@ void ObjectGenerator::handle_temp_static_ptr_links(int seg) {
  */
 void ObjectGenerator::handle_temp_jump_links(int seg) {
   for (const auto& link : m_jump_temp_links_by_seg.at(seg)) {
-    // we need to compute three offsets, all relative to the start of data.
-    // 1). the location of the patch (the immediate of the opcode)
-    // 2). the value of RIP at the jump (the instruction after the jump, on x86)
-    // 3). the value of RIP we want
     const auto& function = m_function_data_by_seg.at(seg).at(link.jump_instr.func_id);
     ASSERT(link.jump_instr.func_id == link.dest.func_id);
     ASSERT(link.jump_instr.seg == seg);
     ASSERT(link.dest.seg == seg);
-    const auto& jump_instr = function.instructions.at(link.jump_instr.instr_id);
-    ASSERT(jump_instr.get_imm_size() == 4);
 
-    // 1). patch = instruction location + location of imm in instruction.
-    int patch_location = function.instruction_to_byte_in_data.at(link.jump_instr.instr_id) +
-                         jump_instr.offset_of_imm();
-
-    // 2). source rip = jump instr + 1 location
-    int source_rip = function.instruction_to_byte_in_data.at(link.jump_instr.instr_id + 1);
-
-    // 3). dest rip = first instruction of dest IR
     int dest_rip =
         function.instruction_to_byte_in_data.at(function.ir_to_instruction.at(link.dest.ir_id));
 
-    patch_data<s32>(seg, patch_location, dest_rip - source_rip);
+    if (m_instruction_set == InstructionSet::ARM64) {
+      // ARM64: branch immediate is PC-relative from the branch instruction itself.
+      // B  (unconditional): imm26 in bits 25:0, value = delta_insns
+      // B.cond (conditional): imm19 in bits 23:5, value = delta_insns
+      int branch_pc = function.instruction_to_byte_in_data.at(link.jump_instr.instr_id);
+      int delta_bytes = dest_rip - branch_pc;
+      ASSERT_MSG(delta_bytes % 4 == 0, "ARM64 jump delta not instruction-aligned");
+      int delta_insns = delta_bytes / 4;
+
+      u32 encoding;
+      memcpy(&encoding, m_data_by_seg.at(seg).data() + branch_pc, 4);
+
+      if ((encoding & 0xFC000000u) == 0x14000000u) {
+        // Unconditional B: imm26 at bits 25:0
+        ASSERT_MSG(delta_insns >= -(1 << 25) && delta_insns < (1 << 25), "B imm26 out of range");
+        encoding = (encoding & 0xFC000000u) | (static_cast<u32>(delta_insns) & 0x3FFFFFFu);
+      } else if ((encoding & 0xFF000000u) == 0x54000000u) {
+        // Conditional B.cond: imm19 at bits 23:5
+        ASSERT_MSG(delta_insns >= -(1 << 18) && delta_insns < (1 << 18), "B.cond imm19 out of range");
+        encoding = (encoding & 0xFF00001Fu) | ((static_cast<u32>(delta_insns) & 0x7FFFFu) << 5);
+      } else {
+        ASSERT_MSG(false, fmt::format("handle_temp_jump_links: unknown ARM64 branch encoding 0x{:08X}", encoding));
+      }
+      patch_data<u32>(seg, branch_pc, encoding);
+    } else {
+      // x86_64: 4-byte relative immediate, RIP = next instruction
+      const auto& jump_instr = function.instructions.at(link.jump_instr.instr_id);
+      ASSERT(jump_instr.get_imm_size() == 4);
+      int patch_location = function.instruction_to_byte_in_data.at(link.jump_instr.instr_id) +
+                           jump_instr.offset_of_imm();
+      int source_rip = function.instruction_to_byte_in_data.at(link.jump_instr.instr_id + 1);
+      patch_data<s32>(seg, patch_location, dest_rip - source_rip);
+    }
   }
 }
 
@@ -468,6 +519,27 @@ void ObjectGenerator::handle_temp_rip_data_links(int seg) {
     const auto& target = m_static_data_by_seg.at(link.data.seg).at(link.data.static_id);
     result.offset_in_segment = target.location + link.offset;
     m_rip_links_by_seg.at(seg).push_back(result);
+  }
+}
+
+void ObjectGenerator::handle_temp_rip_arm64_movw_links(int seg) {
+  for (const auto& link : m_rip_arm64_movw_data_temp_links_by_seg.at(seg)) {
+    RipArm64MovwLink result;
+    result.movz_rec = link.movz_rec;
+    result.movk_rec = link.movk_rec;
+    result.target_segment = link.data.seg;
+    const auto& target = m_static_data_by_seg.at(link.data.seg).at(link.data.static_id);
+    result.offset_in_segment = target.location + link.offset;
+    m_rip_arm64_movw_links_by_seg.at(seg).push_back(result);
+  }
+  for (const auto& link : m_rip_arm64_movw_func_temp_links_by_seg.at(seg)) {
+    RipArm64MovwLink result;
+    result.movz_rec = link.movz_rec;
+    result.movk_rec = link.movk_rec;
+    result.target_segment = link.target.seg;
+    const auto& target_func = m_function_data_by_seg.at(link.target.seg).at(link.target.func_id);
+    result.offset_in_segment = target_func.instruction_to_byte_in_data.at(0);
+    m_rip_arm64_movw_links_by_seg.at(seg).push_back(result);
   }
 }
 
@@ -599,11 +671,26 @@ void ObjectGenerator::emit_link_rip(int seg) {
   }
 }
 
+void ObjectGenerator::emit_link_rip_arm64_movw(int seg) {
+  auto& out = m_link_by_seg.at(seg);
+  for (auto& rec : m_rip_arm64_movw_links_by_seg.at(seg)) {
+    out.push_back(LINK_DISTANCE_TO_OTHER_SEG_ARM64_MOVW);
+    out.push_back(rec.target_segment);
+    ASSERT(rec.offset_in_segment >= 0);
+    push_data<u32>(rec.offset_in_segment, out);
+    const auto& movz_func = m_function_data_by_seg.at(seg).at(rec.movz_rec.func_id);
+    const auto& movk_func = m_function_data_by_seg.at(seg).at(rec.movk_rec.func_id);
+    push_data<u32>(movz_func.instruction_to_byte_in_data.at(rec.movz_rec.instr_id), out);
+    push_data<u32>(movk_func.instruction_to_byte_in_data.at(rec.movk_rec.instr_id), out);
+  }
+}
+
 void ObjectGenerator::emit_link_table(int seg, const TypeSystem* ts) {
   emit_link_symbol(seg);
   emit_link_symbol_arm64_movw(seg);
   emit_link_type_pointer(seg, ts);
   emit_link_rip(seg);
+  emit_link_rip_arm64_movw(seg);
   emit_link_ptr(seg);
   m_link_by_seg.at(seg).push_back(LINK_TABLE_END);
 }

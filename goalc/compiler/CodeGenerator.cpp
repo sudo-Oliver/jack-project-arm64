@@ -444,5 +444,41 @@ void CodeGenerator::do_asm_function_x86(FunctionEnv* env, int f_idx, bool allow_
 }
 
 void CodeGenerator::do_asm_function_arm64(FunctionEnv* env, int f_idx, bool allow_saved_regs) {
-  throw std::runtime_error("NYI - CodeGenerator::do_asm_function");
+  auto f_rec = m_gen.get_existing_function_record(f_idx);
+  const auto& allocs = env->alloc_result();
+
+  if (!allow_saved_regs && !allocs.used_saved_regs.empty()) {
+    std::string err = fmt::format(
+        "ASM Function {}'s coloring using the following callee-saved registers: ", env->name());
+    for (auto& x : allocs.used_saved_regs) {
+      err += x.print();
+      err += " ";
+    }
+    err.pop_back();
+    err.push_back('.');
+    throw std::runtime_error(err);
+  }
+
+  if (allocs.stack_slots_for_spills) {
+    fmt::print("[ARM64 ASM] Function {} needs {} stack spill slots\n", env->name(),
+               allocs.stack_slots_for_spills);
+    for (int ir_idx = 0; ir_idx < int(env->code().size()); ir_idx++) {
+      fmt::print("  IR[{}]: {}\n", ir_idx, env->code().at(ir_idx)->print());
+    }
+    throw std::runtime_error(
+        fmt::format("ASM Function {} has used the stack for spills.", env->name()));
+  }
+
+  if (allocs.stack_slots_for_vars) {
+    throw std::runtime_error("ASM Function has variables on the stack.");
+  }
+
+  for (int ir_idx = 0; ir_idx < int(env->code().size()); ir_idx++) {
+    auto& ir = env->code().at(ir_idx);
+    auto i_rec = m_gen.add_ir(f_rec);
+    if (!allocs.stack_ops.at(ir_idx).ops.empty()) {
+      throw std::runtime_error("ASM Function used a bonus op.");
+    }
+    ir->do_codegen_arm64(&m_gen, allocs, i_rec);
+  }
 }

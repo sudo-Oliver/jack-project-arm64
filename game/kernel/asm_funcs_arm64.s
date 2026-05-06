@@ -254,13 +254,17 @@ _call_goal_on_stack_asm_arm64:
   ;; x4 - st (goes in x20 and x21)
   ;; x5 - offset (goes in x22)
 
-  ;; Save callee-saved registers on OLD (host) stack
+  ;; Save callee-saved registers and old host SP on the HOST stack before switching.
+  ;; We cannot push onto the GOAL stack because GOAL stack starts at top of EE memory
+  ;; with no headroom (goal_stack = g_ee_main_mem + EE_MAIN_MEM_SIZE - 8).
   stp x29, x30, [sp, #-16]!
   mov x29, sp
   stp x20, x21, [sp, #-16]!
-  stp x22, x23, [sp, #-16]!   ;; save x22 (will be offset) and x23 (scratch)
-
-  ;; Capture old stack pointer into x23 (callee-saved, already preserved above)
+  stp x22, x23, [sp, #-16]!
+  ;; Save old host SP into x23 (callee-saved, preserved by GOAL ABI via saved-reg frame above)
+  ;; GOAL functions preserve x20, x21, x22 but MAY use x23 — however we've already saved x23
+  ;; on the host stack, and x23 is callee-saved per ARM64 ABI so a well-behaved callee restores it.
+  ;; The GOAL runtime sets x20/x21/x22 as GOAL reserved registers and must not clobber x23.
   mov x23, sp
 
   ;; Switch to GOAL stack, aligning to 16 bytes (ARM64 ABI requirement)
@@ -275,7 +279,8 @@ _call_goal_on_stack_asm_arm64:
   ;; Call GOAL function
   blr x3
 
-  ;; Switch back to old stack
+  ;; Switch back to old host stack (x23 holds it; GOAL code preserves x23 since it's not
+  ;; a GOAL reserved register and ARM64 ABI designates x23 as callee-saved)
   mov sp, x23
 
   ;; Restore callee-saved registers

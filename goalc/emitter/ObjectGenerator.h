@@ -11,6 +11,7 @@
 
 #include "Instruction.h"
 #include "ObjectFileData.h"
+#include "Register.h"
 
 #include "common/versions/versions.h"
 
@@ -106,12 +107,24 @@ class ObjectGenerator {
                                int offset);
   void link_instruction_to_function(const InstructionRecord& instr,
                                     const FunctionRecord& target_func);
+  void link_instruction_static_arm64_movw(const InstructionRecord& movz_rec,
+                                          const InstructionRecord& movk_rec,
+                                          const StaticRecord& target_static,
+                                          int offset);
+  void link_instruction_to_function_arm64_movw(const InstructionRecord& movz_rec,
+                                               const InstructionRecord& movk_rec,
+                                               const FunctionRecord& target_func);
   ObjectGeneratorStats get_stats() const;
   void count_eliminated_move();
 
   GameVersion version() const { return m_version; }
 
   InstructionSet instr_set() const { return m_instruction_set; }
+
+  // Arch-aware special register accessors (use these instead of gRegInfo in ARM64 codegen)
+  Register get_offset_reg() const;
+  Register get_st_reg() const;
+  Register get_process_reg() const;
 
  private:
   void handle_temp_static_type_links(int seg);
@@ -120,6 +133,7 @@ class ObjectGenerator {
   void handle_temp_static_sym_links(int seg);
   void handle_temp_rip_data_links(int seg);
   void handle_temp_rip_func_links(int seg);
+  void handle_temp_rip_arm64_movw_links(int seg);
   void handle_temp_static_ptr_links(int seg);
 
   void emit_link_table(int seg, const TypeSystem* ts);
@@ -127,6 +141,7 @@ class ObjectGenerator {
   void emit_link_symbol(int seg);
   void emit_link_symbol_arm64_movw(int seg);
   void emit_link_rip(int seg);
+  void emit_link_rip_arm64_movw(int seg);
   void emit_link_ptr(int seg);
   std::vector<u8> generate_header_v3();
 
@@ -212,6 +227,26 @@ class ObjectGenerator {
     int offset_in_segment = -1;
   };
 
+  struct RipArm64MovwFuncLink {
+    InstructionRecord movz_rec;
+    InstructionRecord movk_rec;
+    FunctionRecord target;
+  };
+
+  struct RipArm64MovwDataLink {
+    InstructionRecord movz_rec;
+    InstructionRecord movk_rec;
+    StaticRecord data;
+    int offset = -1;
+  };
+
+  struct RipArm64MovwLink {
+    InstructionRecord movz_rec;
+    InstructionRecord movk_rec;
+    int target_segment = -1;
+    int offset_in_segment = -1;
+  };
+
   struct JumpLink {
     InstructionRecord jump_instr;
     IR_Record dest;
@@ -250,11 +285,14 @@ class ObjectGenerator {
   seg_vector<StaticFunctionPointerLink> m_static_function_temp_ptr_links_by_seg;
   seg_vector<RipFuncLink> m_rip_func_temp_links_by_seg;
   seg_vector<RipDataLink> m_rip_data_temp_links_by_seg;
+  seg_vector<RipArm64MovwFuncLink> m_rip_arm64_movw_func_temp_links_by_seg;
+  seg_vector<RipArm64MovwDataLink> m_rip_arm64_movw_data_temp_links_by_seg;
 
   // final link stuff
   seg_map<int> m_type_ptr_links_by_seg;
   seg_map<int> m_sym_links_by_seg;
   seg_vector<RipLink> m_rip_links_by_seg;
+  seg_vector<RipArm64MovwLink> m_rip_arm64_movw_links_by_seg;
   seg_vector<PointerLink> m_pointer_links_by_seg;
 
   std::vector<FunctionRecord> m_all_function_records;

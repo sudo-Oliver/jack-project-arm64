@@ -365,3 +365,10 @@ target_link_libraries(gk runtime)
 if(WIN32)
     set_target_properties(gk PROPERTIES VS_DPI_AWARE "PerMonitor")
 endif()
+if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
+    add_custom_command(TARGET gk POST_BUILD
+        COMMAND codesign --force --sign - --entitlements
+            ${CMAKE_CURRENT_SOURCE_DIR}/gk.entitlements $<TARGET_FILE:gk>
+        COMMENT "Signing gk with MAP_JIT entitlements"
+    )
+endif()

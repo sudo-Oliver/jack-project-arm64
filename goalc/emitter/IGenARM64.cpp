@@ -461,19 +461,28 @@ InstructionARM64 store32_xmm32_gpr64_plus_gpr64_plus_s32(Register addr1,
 }
 
 InstructionARM64 lea_reg_plus_off32(Register dest, Register base, s64 offset) {
-  // LEA dest, [base + offset32] → ADD Xd, Xn, #imm12 (if fits) or ASSERT
+  // ADD Xdest, Xbase, #|offset| (or SUB for negative)
   ASSERT_MSG(offset >= -4095 && offset <= 4095, "lea_reg_plus_off32: offset exceeds 12-bit ADD/SUB range on ARM64");
-  return add_gpr64_imm8s(dest, offset);  // add_gpr64_imm8s handles ±4095
+  if (offset < 0) {
+    return InstructionARM64(Base(0b1101000100, 10), Imm12(-offset), Rn(base.id()), Rd(dest.id()));
+  }
+  return InstructionARM64(Base(0b1001000100, 10), Imm12(offset), Rn(base.id()), Rd(dest.id()));
 }
 
 InstructionARM64 lea_reg_plus_off8(Register dest, Register base, s64 offset) {
-  // ADD Xd, Xn, #imm — same encoding, 12-bit range covers all s8 values
-  return add_gpr64_imm8s(dest, offset);
+  // ADD Xdest, Xbase, #|offset| (or SUB for negative), 12-bit range covers all s8 values
+  if (offset < 0) {
+    return InstructionARM64(Base(0b1101000100, 10), Imm12(-offset), Rn(base.id()), Rd(dest.id()));
+  }
+  return InstructionARM64(Base(0b1001000100, 10), Imm12(offset), Rn(base.id()), Rd(dest.id()));
 }
 
 InstructionARM64 lea_reg_plus_off(Register dest, Register base, s64 offset) {
   ASSERT_MSG(offset >= -4095 && offset <= 4095, "lea_reg_plus_off: offset exceeds 12-bit ADD/SUB range on ARM64");
-  return add_gpr64_imm8s(dest, offset);
+  if (offset < 0) {
+    return InstructionARM64(Base(0b1101000100, 10), Imm12(-offset), Rn(base.id()), Rd(dest.id()));
+  }
+  return InstructionARM64(Base(0b1001000100, 10), Imm12(offset), Rn(base.id()), Rd(dest.id()));
 }
 
 InstructionARM64 store32_xmm32_gpr64_plus_s32(Register base, Register xmm_value, s64 offset) {
