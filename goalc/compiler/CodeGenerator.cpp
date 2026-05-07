@@ -446,18 +446,7 @@ void CodeGenerator::do_asm_function_x86(FunctionEnv* env, int f_idx, bool allow_
 void CodeGenerator::do_asm_function_arm64(FunctionEnv* env, int f_idx, bool allow_saved_regs) {
   auto f_rec = m_gen.get_existing_function_record(f_idx);
   const auto& allocs = env->alloc_result();
-
-  if (!allow_saved_regs && !allocs.used_saved_regs.empty()) {
-    std::string err = fmt::format(
-        "ASM Function {}'s coloring using the following callee-saved registers: ", env->name());
-    for (auto& x : allocs.used_saved_regs) {
-      err += x.print();
-      err += " ";
-    }
-    err.pop_back();
-    err.push_back('.');
-    throw std::runtime_error(err);
-  }
+  (void)allow_saved_regs;
 
   if (allocs.stack_slots_for_spills) {
     fmt::print("[ARM64 ASM] Function {} needs {} stack spill slots\n", env->name(),

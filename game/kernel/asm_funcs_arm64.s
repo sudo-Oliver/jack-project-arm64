@@ -267,8 +267,11 @@ _call_goal_on_stack_asm_arm64:
   ;; The GOAL runtime sets x20/x21/x22 as GOAL reserved registers and must not clobber x23.
   mov x23, sp
 
-  ;; Switch to GOAL stack, aligning to 16 bytes (ARM64 ABI requirement)
+  ;; Switch to GOAL stack, aligning to 16 bytes (ARM64 ABI requirement).
+  ;; Reserve headroom below the stack top for compiler-generated prologues/spills.
+  ;; The C++ side passes stack near EE top; without this margin, early pushes can fault.
   and x0, x0, #0xfffffffffffffff0
+  sub x0, x0, #0x4000
   mov sp, x0
 
   ;; Set GOAL registers

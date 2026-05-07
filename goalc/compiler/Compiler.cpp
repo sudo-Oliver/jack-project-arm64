@@ -256,7 +256,9 @@ void Compiler::color_object_file(FileEnv* env) {
   int num_spills_in_file = 0;
   for (auto& f : env->functions()) {
     AllocationInput input;
-    input.is_asm_function = f->is_asm_func;
+    // ARM64 asm functions can safely use the normal allocation order; limiting them to the
+    // x86 temp-only set causes avoidable spills in kernel asm.
+    input.is_asm_function = f->is_asm_func && m_instr_set == emitter::InstructionSet::X86;
     for (auto& i : f->code()) {
       input.instructions.push_back(i->to_rai());
       // input.debug_instruction_names.push_back(i->print());
