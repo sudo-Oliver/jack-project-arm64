@@ -170,8 +170,10 @@ void InitParms(int argc, const char* const* argv) {
  * Removed calls to exit(0) if loading modules fails.
  */
 void InitIOP() {
+  fprintf(stderr, "[EE-DEBUG] InitIOP: start\n"); fflush(stderr);
   // before doing anything with the I/O Processor, we need to set up SIF RPC
   sceSifInitRpc(0);
+  fprintf(stderr, "[EE-DEBUG] InitIOP: after sceSifInitRpc\n"); fflush(stderr);
 
   if ((isodrv == iso_cd) || modsrc || reboot_iop) {
     // we will need the DVD drive to bring up the IOP
@@ -307,14 +309,18 @@ AutoSplitterBlock g_auto_splitter_block_jak1;
  * TODO finish up things which are commented.
  */
 int InitMachine() {
+  fprintf(stderr, "[EE-DEBUG] InitMachine start\n"); fflush(stderr);
   u32 debug_heap_end = (0xffffffff - DEBUG_HEAP_SPACE_FOR_STACK + 1) & 0x7ffffff;
 
   // initialize the global heap
   u32 global_heap_size = GLOBAL_HEAP_END - HEAP_START;
   float size_mb = ((float)global_heap_size) / (float)(1 << 20);
+  fprintf(stderr, "[EE-DEBUG] calling lg::info for global heap\n"); fflush(stderr);
   lg::info("gkernel: global heap 0x{:08x} to 0x{:08x} (size {:.3f} MB)", HEAP_START,
            GLOBAL_HEAP_END, size_mb);
+  fprintf(stderr, "[EE-DEBUG] calling kinitheap global\n"); fflush(stderr);
   kinitheap(kglobalheap, Ptr<u8>(HEAP_START), global_heap_size);
+  fprintf(stderr, "[EE-DEBUG] kinitheap global done\n"); fflush(stderr);
 
   // initialize the debug heap, if appropriate
   if (MasterDebug) {
@@ -329,8 +335,11 @@ int InitMachine() {
     kdebugheap.offset = 0;
   }
 
+  fprintf(stderr, "[EE-DEBUG] calling init_output\n"); fflush(stderr);
   init_output();    // GOAL input/output buffer setup
+  fprintf(stderr, "[EE-DEBUG] calling InitIOP\n"); fflush(stderr);
   jak1::InitIOP();  // start IOP/OVERLORD, loading our legal splash screen
+  fprintf(stderr, "[EE-DEBUG] InitIOP done\n"); fflush(stderr);
 
   // sceGsResetPath(); // reset VIF1, VU1, GIF
 
@@ -621,11 +630,13 @@ void InitMachineScheme() {
 
   // todo remove MasterUseKernel
   if (DiskBoot && MasterUseKernel) {
+    fprintf(stderr, "[EE-DEBUG] load_and_link_dgo_from_c game: start\n"); fflush(stderr);
     *EnableMethodSet = (*EnableMethodSet) + 1;
     load_and_link_dgo_from_c("game", kglobalheap,
                              LINK_FLAG_OUTPUT_LOAD | LINK_FLAG_EXECUTE | LINK_FLAG_PRINT_LOGIN,
                              0x400000, true);
     *EnableMethodSet = (*EnableMethodSet) - 1;
+    fprintf(stderr, "[EE-DEBUG] load_and_link_dgo_from_c game: returned\n"); fflush(stderr);
     using namespace jak1_symbols;
     kernel_packages->value =
         new_pair(s7.offset + FIX_SYM_GLOBAL_HEAP, *((s7 + FIX_SYM_PAIR_TYPE).cast<u32>()),
@@ -638,7 +649,9 @@ void InitMachineScheme() {
                  make_string_from_c("common"), kernel_packages->value);
 
     lg::info("calling play");
+    fprintf(stderr, "[EE-DEBUG] calling play\n"); fflush(stderr);
     call_goal_function_by_name("play");
+    fprintf(stderr, "[EE-DEBUG] play returned\n"); fflush(stderr);
   }
 }
 

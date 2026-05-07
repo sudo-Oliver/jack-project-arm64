@@ -367,8 +367,8 @@ if(WIN32)
 endif()
 if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
     add_custom_command(TARGET gk POST_BUILD
-        COMMAND codesign --force --sign - --entitlements
+        COMMAND codesign --force --sign - --options runtime --entitlements
             ${CMAKE_CURRENT_SOURCE_DIR}/gk.entitlements $<TARGET_FILE:gk>
-        COMMENT "Signing gk with MAP_JIT entitlements"
+        COMMENT "Signing gk with Hardened Runtime + allow-unsigned-executable-memory"
     )
 endif()

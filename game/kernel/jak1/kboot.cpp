@@ -91,10 +91,16 @@ s32 goal_main(int argc, const char* const* argv) {
   // DebugSegment = 0;
 
   // Launch GOAL!
-  if (InitMachine() >= 0) {    // init kernel
+  fprintf(stderr, "[EE-DEBUG] calling InitMachine\n"); fflush(stderr);
+  int init_result = InitMachine();
+  fprintf(stderr, "[EE-DEBUG] InitMachine returned %d\n", init_result); fflush(stderr);
+  if (init_result >= 0) {    // init kernel
+    fprintf(stderr, "[EE-DEBUG] InitMachine OK, calling KernelCheckAndDispatch\n"); fflush(stderr);
     KernelCheckAndDispatch();  // run kernel
+    fprintf(stderr, "[EE-DEBUG] KernelCheckAndDispatch returned\n"); fflush(stderr);
     ShutdownMachine();         // kernel died, we should too.
   } else {
+    fprintf(stderr, "[EE-DEBUG] InitMachine FAILED\n");
     fprintf(stderr, "InitMachine failed\n");
     exit(1);
   }

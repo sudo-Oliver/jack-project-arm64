@@ -6,7 +6,7 @@
 #include "common/common_types.h"
 #ifdef OS_POSIX
 #include <unistd.h>
-
+#include <signal.h>
 #include <sys/mman.h>
 #if defined(__APPLE__) && defined(__aarch64__)
 #include <pthread.h>
@@ -150,16 +150,21 @@ void deci2_runner(SystemThreadInterface& iface) {
  * SystemThread Function for the EE (PS2 Main CPU)
  */
 void ee_runner(SystemThreadInterface& iface) {
+  fprintf(stderr, "[EE-DEBUG] ee_runner started\n");
+  fflush(stderr);
   prof().root_event();
+  fprintf(stderr, "[EE-DEBUG] after prof().root_event()\n");
+  fflush(stderr);
   // Allocate Main RAM. Must have execute enabled.
-  // On Apple Silicon, MAP_JIT enforces per-thread W^X (write-xor-execute). GOAL needs
-  // simultaneous RWX because JIT-compiled code executes from and writes to the same region
-  // (heap, stack, function objects). Use MAP_ANONYMOUS|MAP_PRIVATE without MAP_JIT combined with
-  // the com.apple.security.cs.allow-unsigned-executable-memory entitlement for true RWX.
+  // On Apple Silicon, MAP_JIT is required for executable memory. We use mach_vm_remap to create
+  // a second (non-JIT) writable alias at a different virtual address. GOAL code executes from
+  // the MAP_JIT exec view; data writes go through the write alias (not affected by APRR W^X).
   if (EE_MEM_LOW_MAP) {
     g_ee_main_mem =
         (u8*)mmap((void*)0x10000000, EE_MAIN_MEM_SIZE, PROT_EXEC | PROT_READ | PROT_WRITE,
-#if defined(__APPLE__)
+#if defined(__aarch64__) && defined(__APPLE__)
+                  MAP_ANONYMOUS | MAP_PRIVATE | MAP_JIT, -1, 0);
+#elif defined(__APPLE__)
                   MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
 #else
                   MAP_ANONYMOUS | MAP_32BIT | MAP_PRIVATE | MAP_POPULATE, 0, 0);
@@ -167,16 +172,26 @@ void ee_runner(SystemThreadInterface& iface) {
   } else {
     g_ee_main_mem =
         (u8*)mmap((void*)EE_MAIN_MEM_MAP, EE_MAIN_MEM_SIZE, PROT_EXEC | PROT_READ | PROT_WRITE,
+#if defined(__aarch64__) && defined(__APPLE__)
+                  MAP_ANONYMOUS | MAP_PRIVATE | MAP_JIT, -1, 0);
+#else
                   MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+#endif
   }
 
   if (g_ee_main_mem == (u8*)(-1)) {
+    fprintf(stderr, "[EE-DEBUG] mmap FAILED: %s\n", strerror(errno));
+    fflush(stderr);
     lg::debug("Failed to initialize main memory! {}", strerror(errno));
     iface.initialization_complete();
     return;
   }
 
-  // Non-MAP_JIT mapping: no pthread_jit_write_protect_np needed. Memory is always RWX.
+  fprintf(stderr, "[EE-DEBUG] mmap OK at %p\n", (void*)g_ee_main_mem);
+  fflush(stderr);
+
+  fprintf(stderr, "[EE-DEBUG] EE memory RWX (no MAP_JIT)\n");
+  fflush(stderr);
 
   lg::info("Main memory mapped at 0x{:016x}", (u64)(g_ee_main_mem));
   lg::info("Main memory size 0x{:x} bytes ({:.3f} MB)", EE_MAIN_MEM_SIZE,
@@ -186,13 +201,19 @@ void ee_runner(SystemThreadInterface& iface) {
   iface.initialization_complete();
 
   lg::info("[EE] Run!");
+  fprintf(stderr, "[EE-DEBUG] starting memset\n"); fflush(stderr);
   memset((void*)g_ee_main_mem, 0, EE_MAIN_MEM_SIZE);
+  fprintf(stderr, "[EE-DEBUG] memset done\n"); fflush(stderr);
 
   // prevent access to the first 512 kB of memory.
   // On the PS2 this is the kernel and can't be accessed either.
   // this may not work well on systems with a page size > 1 MB.
-  mprotect((void*)g_ee_main_mem, EE_MAIN_MEM_LOW_PROTECT, PROT_NONE);
+  {
+    int mp_result = mprotect((void*)g_ee_main_mem, EE_MAIN_MEM_LOW_PROTECT, PROT_NONE);
+    fprintf(stderr, "[EE-DEBUG] mprotect LOW_PROTECT result=%d (0=ok, errno=%d)\n", mp_result, errno); fflush(stderr);
+  }
   fileio_init_globals();
+  fprintf(stderr, "[EE-DEBUG] fileio_init done\n"); fflush(stderr);
   jak1::kboot_init_globals();
   jak2::kboot_init_globals();
   jak3::kboot_init_globals();
@@ -224,9 +245,11 @@ void ee_runner(SystemThreadInterface& iface) {
 
   kmemcard_init_globals();
   kprint_init_globals_common();
+  fprintf(stderr, "[EE-DEBUG] all init_globals done, calling allow_debugging\n"); fflush(stderr);
 
   // Added for OpenGOAL's debugger
   xdbg::allow_debugging();
+  fprintf(stderr, "[EE-DEBUG] calling goal_main\n"); fflush(stderr);
 
   switch (g_game_version) {
     case GameVersion::Jak1:
@@ -270,7 +293,6 @@ void ee_worker_runner(SystemThreadInterface& iface) {
  * SystemThread function for running the IOP (separate I/O Processor)
  */
 void iop_runner(SystemThreadInterface& iface, GameVersion version) {
-  // EE memory is non-MAP_JIT RWX; no pthread_jit_write_protect_np needed.
   prof().root_event();
   prof().begin_event("iop-init");
   IOP iop;
@@ -384,7 +406,53 @@ void null_runner(SystemThreadInterface& iface) {
  * Main function to launch the runtime.
  * GOAL kernel arguments are currently ignored.
  */
+static void sigbus_handler(int sig, siginfo_t* info, void* ctx) {
+  (void)sig;
+  fprintf(stderr, "[EE-CRASH] SIGBUS at fault addr %p\n", info->si_addr);
+  // Print PC from ucontext
+  if (ctx) {
+    ucontext_t* uctx = (ucontext_t*)ctx;
+#if defined(__aarch64__)
+    uint64_t pc = uctx->uc_mcontext->__ss.__pc;
+    fprintf(stderr, "[EE-CRASH] faulting PC = %p", (void*)pc);
+    if (g_ee_main_mem) {
+      uintptr_t base = (uintptr_t)g_ee_main_mem;
+      if (pc >= base && pc < base + EE_MAIN_MEM_SIZE) {
+        fprintf(stderr, " (GOAL PC offset 0x%x)", (uint32_t)(pc - base));
+      }
+    }
+    fprintf(stderr, "\n");
+#endif
+  }
+  fflush(stderr);
+  // Print whether fault address is in EE memory
+  if (g_ee_main_mem) {
+    uintptr_t fault = (uintptr_t)info->si_addr;
+    uintptr_t base  = (uintptr_t)g_ee_main_mem;
+    if (fault >= base && fault < base + EE_MAIN_MEM_SIZE) {
+      fprintf(stderr, "[EE-CRASH] fault is at GOAL addr 0x%x (EE base + 0x%lx)\n",
+              (uint32_t)(fault - base), (unsigned long)(fault - base));
+    } else {
+      fprintf(stderr, "[EE-CRASH] fault is OUTSIDE EE memory\n");
+    }
+  }
+  fflush(stderr);
+  // Re-raise default handler so OS gets proper exit code
+  struct sigaction sa{};
+  sa.sa_handler = SIG_DFL;
+  sigaction(SIGBUS, &sa, nullptr);
+  raise(SIGBUS);
+}
+
 RuntimeExitStatus exec_runtime(GameLaunchOptions game_options, int argc, const char** argv) {
+  // Install SIGBUS handler to diagnose MAP_JIT protection faults
+  {
+    struct sigaction sa{};
+    sa.sa_sigaction = sigbus_handler;
+    sa.sa_flags = SA_SIGINFO;
+    sigaction(SIGBUS, &sa, nullptr);
+    fprintf(stderr, "[EE-DEBUG] SIGBUS handler installed\n"); fflush(stderr);
+  }
   prof().root_event();
   g_argc = argc;
   g_argv = argv;

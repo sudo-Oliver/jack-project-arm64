@@ -1,5 +1,6 @@
 #include "kscheme.h"
 
+#include <cstdio>
 #include <cstring>
 #if defined(__aarch64__)
 #include <libkern/OSCacheControl.h>
@@ -1807,13 +1808,18 @@ s32 InitHeapAndSymbol() {
   if (MasterUseKernel) {
     Timer kernel_load_timer;
     method_set_symbol->value++;
+    fprintf(stderr, "[EE-DEBUG] load_and_link_dgo_from_c kernel: start\n"); fflush(stderr);
     load_and_link_dgo_from_c("kernel", kglobalheap,
                              LINK_FLAG_OUTPUT_LOAD | LINK_FLAG_EXECUTE | LINK_FLAG_PRINT_LOGIN,
                              0x400000, true);
+    fprintf(stderr, "[EE-DEBUG] load_and_link_dgo_from_c kernel: returned\n"); fflush(stderr);
     method_set_symbol->value--;
 
     // check the kernel version!
     auto kernel_version = intern_from_c("*kernel-version*")->value;
+    fprintf(stderr, "[EE-DEBUG] kernel_version=0x%x major=%u expected=%u\n",
+            kernel_version, (unsigned)(kernel_version >> 0x13), (unsigned)KERNEL_VERSION_MAJOR);
+    fflush(stderr);
     if (!kernel_version || ((kernel_version >> 0x13) != KERNEL_VERSION_MAJOR)) {
       lg::error(
           "Kernel version mismatch! Compiled C kernel version is {}.{} but"
@@ -1833,8 +1839,10 @@ s32 InitHeapAndSymbol() {
   // load stuff for the listener interface
   InitListener();
 
+  fprintf(stderr, "[EE-DEBUG] calling InitMachineScheme\n"); fflush(stderr);
   // Do final initialization, including loading and initializing the engine.
   jak1::InitMachineScheme();
+  fprintf(stderr, "[EE-DEBUG] InitMachineScheme returned\n"); fflush(stderr);
 
   // testing stuff:
   make_function_symbol_from_c("test-function", (void*)test_function);

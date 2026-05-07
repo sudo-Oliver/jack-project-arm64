@@ -136,15 +136,11 @@ u64 call_goal(Ptr<Function> f, u64 a, u64 b, u64 c, u64 st, void* offset) {
 #ifdef __linux__
   return _call_goal_asm_systemv(a, b, c, fptr, st_ptr, offset);
 #elif defined __APPLE__ && defined __aarch64__
-  // macOS 26+ strips PROT_EXEC from pages after they are written (W^X enforcement for non-MAP_JIT
-  // anonymous memory). klink writes GOAL code into EE pages, stripping their exec permission.
-  // Re-apply PROT_EXEC on the entire executable region before every GOAL call.
-  // Skip the first EE_MAIN_MEM_LOW_PROTECT bytes which are PROT_NONE (PS2 null-ptr guard).
-  mprotect((u8*)g_ee_main_mem + EE_MAIN_MEM_LOW_PROTECT,
-           EE_MAIN_MEM_SIZE - EE_MAIN_MEM_LOW_PROTECT,
-           PROT_READ | PROT_WRITE | PROT_EXEC);
   sys_icache_invalidate(g_ee_main_mem, EE_MAIN_MEM_SIZE);
-  return _call_goal_asm_arm64(a, b, c, fptr, st_ptr, offset);
+  fprintf(stderr, "[EE-DEBUG] call_goal: entering GOAL code at %p\n", fptr); fflush(stderr);
+  u64 result = _call_goal_asm_arm64(a, b, c, fptr, st_ptr, offset);
+  fprintf(stderr, "[EE-DEBUG] call_goal: returned from GOAL code\n"); fflush(stderr);
+  return result;
 #elif defined __APPLE__ && defined __x86_64__
   return _call_goal_asm_systemv(a, b, c, fptr, st_ptr, offset);
 #elif _WIN32
@@ -162,12 +158,20 @@ u64 call_goal_on_stack(Ptr<Function> f, u64 rsp, u64 st, void* offset) {
 #ifdef __linux__
   return _call_goal_on_stack_asm_systemv(rsp, 0, 0, fptr, st_ptr, offset);
 #elif defined __APPLE__ && defined __aarch64__
-  // Same as call_goal: re-apply PROT_EXEC stripped by macOS 26+ W^X on non-MAP_JIT writes.
-  mprotect((u8*)g_ee_main_mem + EE_MAIN_MEM_LOW_PROTECT,
-           EE_MAIN_MEM_SIZE - EE_MAIN_MEM_LOW_PROTECT,
-           PROT_READ | PROT_WRITE | PROT_EXEC);
   sys_icache_invalidate(g_ee_main_mem, EE_MAIN_MEM_SIZE);
-  return _call_goal_on_stack_asm_arm64(rsp, 0, 0, fptr, st_ptr, offset);
+  // Dump first 16 bytes of GOAL entry point
+  {
+    const uint8_t* p = (const uint8_t*)fptr;
+    fprintf(stderr, "[EE-DEBUG] GOAL entry bytes: %02x %02x %02x %02x  %02x %02x %02x %02x  "
+            "%02x %02x %02x %02x  %02x %02x %02x %02x\n",
+            p[0],p[1],p[2],p[3], p[4],p[5],p[6],p[7],
+            p[8],p[9],p[10],p[11], p[12],p[13],p[14],p[15]);
+    fflush(stderr);
+  }
+  fprintf(stderr, "[EE-DEBUG] call_goal_on_stack: entering GOAL at %p rsp=0x%lx\n", fptr, (unsigned long)rsp); fflush(stderr);
+  u64 result = _call_goal_on_stack_asm_arm64(rsp, 0, 0, fptr, st_ptr, offset);
+  fprintf(stderr, "[EE-DEBUG] call_goal_on_stack: returned from GOAL\n"); fflush(stderr);
+  return result;
 #elif defined __APPLE__ && defined __x86_64__
   return _call_goal_on_stack_asm_systemv(rsp, 0, 0, fptr, st_ptr, offset);
 #elif _WIN32
