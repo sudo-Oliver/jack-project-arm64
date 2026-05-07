@@ -2445,6 +2445,19 @@ InstructionX86 vpackuswb(Register dst, Register src0, Register src1) {
                               src0.hw_id(instr_set), false, VexPrefix::P_66);
   return instr;
 }
+
+InstructionX86 uzp1_8h(Register dst, Register src0, Register src1) {
+  // ARM64-only — should never be called on x86.
+  (void)dst; (void)src0; (void)src1;
+  ASSERT_MSG(false, "uzp1_8h is ARM64-only");
+  return InstructionX86(0);
+}
+
+InstructionX86 uzp1_16b(Register dst, Register src0, Register src1) {
+  (void)dst; (void)src0; (void)src1;
+  ASSERT_MSG(false, "uzp1_16b is ARM64-only");
+  return InstructionX86(0);
+}
 }  // namespace X86
 }  // namespace IGen
 }  // namespace emitter

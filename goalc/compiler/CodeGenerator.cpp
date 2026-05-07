@@ -462,11 +462,30 @@ void CodeGenerator::do_asm_function_arm64(FunctionEnv* env, int f_idx, bool allo
     throw std::runtime_error("ASM Function has variables on the stack.");
   }
 
+  // Emit prologue: save any GOAL pseudo-callee-saved GPRs the allocator assigned.
+  // The allocator uses the full alloc order for ARM64 asm functions (is_asm_function=false),
+  // so it may assign X3, X5, X10-X12 which must be preserved per GOAL calling convention.
+  for (auto& saved_reg : allocs.used_saved_regs) {
+    if (saved_reg.is_gpr(m_gen.instr_set())) {
+      m_gen.add_instr_no_ir(f_rec, IGen::push_gpr64(m_gen, saved_reg),
+                            InstructionInfo::Kind::PROLOGUE);
+    }
+  }
+
   for (int ir_idx = 0; ir_idx < int(env->code().size()); ir_idx++) {
     auto& ir = env->code().at(ir_idx);
     auto i_rec = m_gen.add_ir(f_rec);
     if (!allocs.stack_ops.at(ir_idx).ops.empty()) {
       throw std::runtime_error("ASM Function used a bonus op.");
+    }
+    // GOAL asm functions embed their ret in the IR (IR_AsmRet). Pop saved regs before it.
+    if (dynamic_cast<IR_AsmRet*>(ir.get()) && !allocs.used_saved_regs.empty()) {
+      for (int i = int(allocs.used_saved_regs.size()); i-- > 0;) {
+        auto& saved_reg = allocs.used_saved_regs.at(i);
+        if (saved_reg.is_gpr(m_gen.instr_set())) {
+          m_gen.add_instr(IGen::pop_gpr64(m_gen, saved_reg), i_rec);
+        }
+      }
     }
     ir->do_codegen_arm64(&m_gen, allocs, i_rec);
   }

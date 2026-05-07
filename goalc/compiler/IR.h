@@ -692,6 +692,8 @@ class IR_Int128Math3Asm : public IR_Asm {
     PAND,
     PACKUSWB,
     PADDB,
+    UZP1_8H,   // ARM64 native: ppach (pack even int16 elements)
+    UZP1_16B,  // ARM64 native: ppacb (pack even bytes)
   };
   IR_Int128Math3Asm(bool use_color,
                     const RegVal* dst,

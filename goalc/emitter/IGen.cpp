@@ -1085,5 +1085,13 @@ Instruction vpackuswb(const ObjectGenerator& gen, Register dst, Register src0, R
   IGEN_DISPATCH(vpackuswb, dst, src0, src1);
 }
 
+Instruction uzp1_8h(const ObjectGenerator& gen, Register dst, Register src0, Register src1) {
+  IGEN_DISPATCH(uzp1_8h, dst, src0, src1);
+}
+
+Instruction uzp1_16b(const ObjectGenerator& gen, Register dst, Register src0, Register src1) {
+  IGEN_DISPATCH(uzp1_16b, dst, src0, src1);
+}
+
 };  // namespace IGen
 };  // namespace emitter

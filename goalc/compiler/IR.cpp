@@ -1395,13 +1395,33 @@ void IR_LoadConstOffset::do_codegen_arm64(emitter::ObjectGenerator* gen,
   auto base_reg = m_use_coloring ? get_reg(m_base, allocs, irec) : get_no_color_reg(m_base);
   auto off_reg = gen->get_offset_reg();
 
-  // ARM64 load_goal_* only support offset==0; for non-zero, adjust base first.
-  // dest = base + m_offset, then load from dest + x22.
+  // ARM64 load_goal_* only support offset==0; for non-zero, adjust base first into dest_reg.
   auto effective_base = base_reg;
   if (m_offset != 0) {
-    ASSERT_MSG(m_offset >= -4095 && m_offset <= 4095,
-               "IR_LoadConstOffset::do_codegen_arm64: offset exceeds 12-bit range");
-    gen->add_instr(IGen::lea_reg_plus_off32(*gen, dest_reg, base_reg, m_offset), irec);
+    if (m_offset >= -4095 && m_offset <= 4095) {
+      gen->add_instr(IGen::lea_reg_plus_off32(*gen, dest_reg, base_reg, m_offset), irec);
+    } else {
+      // Large offset: two paths depending on whether dest and base alias
+      ASSERT_MSG((m_offset >= 0 ? m_offset : -(int64_t)m_offset) <= (int64_t)0xFFFFFF,
+                 "IR_LoadConstOffset::do_codegen_arm64: offset exceeds 24-bit range");
+      const u32 abs_off = (u32)(m_offset >= 0 ? m_offset : -(int64_t)m_offset);
+      const u32 upper = abs_off >> 12;
+      const u32 lower = abs_off & 0xFFF;
+      if (dest_reg.id() != base_reg.id()) {
+        // dest != base: load constant into dest then add base
+        load_constant((u64)(s64)m_offset, gen, irec, dest_reg);
+        gen->add_instr(IGen::add_gpr64_gpr64(*gen, dest_reg, base_reg), irec);
+      } else {
+        // dest == base: adjust in-place; load will overwrite the adjusted value, no restore needed
+        if (m_offset > 0) {
+          if (upper) gen->add_instr(IGen::ARM64::add_gpr64_imm_lsl12(dest_reg, upper), irec);
+          if (lower) gen->add_instr(IGen::ARM64::add_gpr64_imm8s(dest_reg, (int64_t)lower), irec);
+        } else {
+          if (upper) gen->add_instr(IGen::ARM64::sub_gpr64_imm_lsl12(dest_reg, upper), irec);
+          if (lower) gen->add_instr(IGen::ARM64::sub_gpr64_imm8s(dest_reg, (int64_t)lower), irec);
+        }
+      }
+    }
     effective_base = dest_reg;
   }
 
@@ -1477,17 +1497,26 @@ void IR_StoreConstOffset::do_codegen_arm64(emitter::ObjectGenerator* gen,
   auto value_reg = m_use_coloring ? get_reg(m_value, allocs, irec) : get_no_color_reg(m_value);
   auto off_reg = gen->get_offset_reg();
 
-  // ARM64 store_goal_* only support offset==0; for non-zero, adjust base into value_reg temporarily.
-  // We need a scratch GPR. Use value_reg if it's a GPR, else use base_reg with ADD (and restore later
-  // is not needed since base_reg is a read-only input here). Actually, safest: use a push/pop-free
-  // approach — store value into a known scratch, adjust base, store, done. But we have no scratch.
-  // Instead: temporarily adjust base_reg itself, do the store, then un-adjust. This works because
-  // base_reg is not written by the store, so we can restore it after.
+  // ARM64 store_goal_* only support offset==0; temporarily adjust base_reg and restore after.
   if (m_offset != 0) {
-    ASSERT_MSG(m_offset >= -4095 && m_offset <= 4095,
-               "IR_StoreConstOffset::do_codegen_arm64: offset exceeds 12-bit range");
-    // base_reg = base_reg + m_offset
-    gen->add_instr(IGen::lea_reg_plus_off32(*gen, base_reg, base_reg, m_offset), irec);
+    const int64_t off = m_offset;
+    if (off >= -4095 && off <= 4095) {
+      gen->add_instr(IGen::lea_reg_plus_off32(*gen, base_reg, base_reg, off), irec);
+    } else {
+      // Large offset: split into upper 12 bits (LSL#12) + lower 12 bits
+      ASSERT_MSG((off >= 0 ? off : -off) <= (int64_t)0xFFFFFF,
+                 "IR_StoreConstOffset::do_codegen_arm64: offset exceeds 24-bit range");
+      const u32 abs_off = (u32)(off >= 0 ? off : -off);
+      const u32 upper = abs_off >> 12;
+      const u32 lower = abs_off & 0xFFF;
+      if (off >= 0) {
+        if (upper) gen->add_instr(IGen::ARM64::add_gpr64_imm_lsl12(base_reg, upper), irec);
+        if (lower) gen->add_instr(IGen::ARM64::add_gpr64_imm8s(base_reg, (int64_t)lower), irec);
+      } else {
+        if (upper) gen->add_instr(IGen::ARM64::sub_gpr64_imm_lsl12(base_reg, upper), irec);
+        if (lower) gen->add_instr(IGen::ARM64::sub_gpr64_imm8s(base_reg, (int64_t)lower), irec);
+      }
+    }
   }
 
   if (m_value->ireg().reg_class == RegClass::GPR_64) {
@@ -1504,9 +1533,23 @@ void IR_StoreConstOffset::do_codegen_arm64(emitter::ObjectGenerator* gen,
                     fmt::underlying(m_value->ireg().reg_class), m_size));
   }
 
-  // Restore base_reg if we adjusted it
+  // Restore base_reg
   if (m_offset != 0) {
-    gen->add_instr(IGen::lea_reg_plus_off32(*gen, base_reg, base_reg, -m_offset), irec);
+    const int64_t off = m_offset;
+    if (off >= -4095 && off <= 4095) {
+      gen->add_instr(IGen::lea_reg_plus_off32(*gen, base_reg, base_reg, -off), irec);
+    } else {
+      const u32 abs_off = (u32)(off >= 0 ? off : -off);
+      const u32 upper = abs_off >> 12;
+      const u32 lower = abs_off & 0xFFF;
+      if (off >= 0) {
+        if (lower) gen->add_instr(IGen::ARM64::sub_gpr64_imm8s(base_reg, (int64_t)lower), irec);
+        if (upper) gen->add_instr(IGen::ARM64::sub_gpr64_imm_lsl12(base_reg, upper), irec);
+      } else {
+        if (lower) gen->add_instr(IGen::ARM64::add_gpr64_imm8s(base_reg, (int64_t)lower), irec);
+        if (upper) gen->add_instr(IGen::ARM64::add_gpr64_imm_lsl12(base_reg, upper), irec);
+      }
+    }
   }
 }
 
@@ -2300,6 +2343,12 @@ std::string IR_Int128Math3Asm::print() {
     case Kind::PADDB:
       function = ".paddb";
       break;
+    case Kind::UZP1_8H:
+      function = ".uzp1_8h";
+      break;
+    case Kind::UZP1_16B:
+      function = ".uzp1_16b";
+      break;
     default:
       ASSERT(false);
   }
@@ -2466,6 +2515,13 @@ void IR_Int128Math3Asm::do_codegen_arm64(emitter::ObjectGenerator* gen,
     case Kind::PADDB:
       gen->add_instr(IGen::parallel_add_byte(*gen, dst, src1, src2), irec);
       break;
+    case Kind::UZP1_8H:
+      gen->add_instr(IGen::uzp1_8h(*gen, dst, src1, src2), irec);
+      break;
+    case Kind::UZP1_16B:
+      gen->add_instr(IGen::uzp1_16b(*gen, dst, src1, src2), irec);
+      break;
+
     default:
       ASSERT(false);
   }
@@ -2863,7 +2919,46 @@ void IR_SwizzleVF::do_codegen_arm64(emitter::ObjectGenerator* gen,
                                     emitter::IR_Record irec) {
   auto dst = get_reg_asm(m_dst, allocs, irec, m_use_coloring);
   auto src = get_reg_asm(m_src, allocs, irec, m_use_coloring);
-  gen->add_instr(IGen::swizzle_vf(*gen, dst, src, m_controlBytes), irec);
+  const u8 c = m_controlBytes;
+  // Check for splat (all 4 selectors same)
+  if (c == 0x00 || c == 0x55 || c == 0xAA || c == 0xFF) {
+    Register::VF_ELEMENT elem = (c == 0x00) ? Register::VF_ELEMENT::X
+                               : (c == 0x55) ? Register::VF_ELEMENT::Y
+                               : (c == 0xAA) ? Register::VF_ELEMENT::Z
+                                             : Register::VF_ELEMENT::W;
+    gen->add_instr(IGen::splat_vf(*gen, dst, src, elem), irec);
+    return;
+  }
+  // Identity 0b11100100 = 0xE4 — XYZW → XYZW
+  if (c == 0xE4) {
+    if (dst.id() != src.id()) {
+      gen->add_instr(IGen::mov_vf_vf(*gen, dst, src), irec);
+    }
+    return;
+  }
+  // Pattern 0x09 = 0b00001001: [Y,Z,X,X]
+  // 1. EXT dst.16B, src.16B, src.16B, #4 → [Y,Z,W,X]
+  // 2. INS dst.S[2], dst.S[3]             → [Y,Z,X,X]
+  //    (works for dst==src: after EXT, dst.S[3] = original src.S[0] = X)
+  if (c == 0x09) {
+    gen->add_instr(IGen::ARM64::ext_16b(dst, src, src, 4), irec);
+    gen->add_instr(IGen::ARM64::ins_vf_element(dst, 2, dst, 3), irec);
+    return;
+  }
+  // Pattern 0x12 = 0b00010010: [Z,X,Y,X]
+  // 1. EXT dst.16B, src.16B, src.16B, #8 → [Z,W,X,Y]
+  // 2. REV64 dst.4S, dst.4S               → [W,Z,Y,X]
+  // 3. INS dst.S[0], dst.S[1]             → [Z,Z,Y,X]
+  // 4. INS dst.S[1], dst.S[3]             → [Z,X,Y,X]
+  //    (works for dst==src: all reads happen before conflicting writes)
+  if (c == 0x12) {
+    gen->add_instr(IGen::ARM64::ext_16b(dst, src, src, 8), irec);
+    gen->add_instr(IGen::ARM64::rev64_4s(dst, dst), irec);
+    gen->add_instr(IGen::ARM64::ins_vf_element(dst, 0, dst, 1), irec);
+    gen->add_instr(IGen::ARM64::ins_vf_element(dst, 1, dst, 3), irec);
+    return;
+  }
+  ASSERT_MSG(false, fmt::format("swizzle_vf: unhandled ARM64 pattern 0x{:02X} — implement in IR.cpp", c).c_str());
 }
 
 // ---- Square Root VF

@@ -758,12 +758,18 @@ Val* Compiler::compile_asm_ppach(const goos::Object& form, const goos::Object& r
   auto dest = compile_error_guard(args.unnamed.at(0), env)->to_reg(form, env);
   auto src1 = compile_error_guard(args.unnamed.at(1), env)->to_xmm128(form, env);  // rs
   auto src2 = compile_error_guard(args.unnamed.at(2), env)->to_xmm128(form, env);  // rt
-  auto temp = env->make_ireg(TypeSpec("uint128"), RegClass::INT_128);
 
   if (!dest->settable()) {
     throw_compiler_error(form, "Cannot set destination");
   }
 
+  if (m_instr_set == emitter::InstructionSet::ARM64) {
+    // UZP1.8H: pick even int16 elements — src2 even elems go low, src1 even elems go high.
+    env->emit_ir<IR_Int128Math3Asm>(form, true, dest, src2, src1, IR_Int128Math3Asm::Kind::UZP1_8H);
+    return get_none();
+  }
+
+  auto temp = env->make_ireg(TypeSpec("uint128"), RegClass::INT_128);
   env->emit_ir<IR_Int128Math2Asm>(form, true, temp, src1, IR_Int128Math2Asm::Kind::VPSHUFLW, 0x88);
   env->emit_ir<IR_Int128Math2Asm>(form, true, dest, src2, IR_Int128Math2Asm::Kind::VPSHUFLW, 0x88);
   env->emit_ir<IR_Int128Math2Asm>(form, true, temp, temp, IR_Int128Math2Asm::Kind::VPSHUFHW, 0x88);
@@ -791,6 +797,12 @@ Val* Compiler::compile_asm_ppacb(const goos::Object& form, const goos::Object& r
   if (dest->ireg().reg_class != RegClass::VECTOR_FLOAT &&
       dest->ireg().reg_class != RegClass::INT_128) {
     throw_compiler_error(form, "Destination must be vector float or int128");
+  }
+
+  if (m_instr_set == emitter::InstructionSet::ARM64) {
+    // UZP1.16B: pick even bytes — src2 even bytes go low half, src1 even bytes go high half.
+    env->emit_ir<IR_Int128Math3Asm>(form, true, dest, src2, src1, IR_Int128Math3Asm::Kind::UZP1_16B);
+    return get_none();
   }
 
   env->emit_ir<IR_RegSet>(form, temp, src1);

@@ -837,6 +837,20 @@ InstructionARM64 sub_gpr64_imm(Register reg, int64_t imm) {
   return sub_gpr64_imm8s(reg, imm);
 }
 
+InstructionARM64 add_gpr64_imm_lsl12(Register reg, u32 imm12) {
+  // ADD Xd, Xn, #imm12, LSL #12
+  ASSERT(imm12 <= 4095);
+  ASSERT(reg.is_gpr(instr_set));
+  return InstructionARM64(Base(0b1001000101, 10), Imm12(imm12), Rn(reg.id()), Rd(reg.id()));
+}
+
+InstructionARM64 sub_gpr64_imm_lsl12(Register reg, u32 imm12) {
+  // SUB Xd, Xn, #imm12, LSL #12
+  ASSERT(imm12 <= 4095);
+  ASSERT(reg.is_gpr(instr_set));
+  return InstructionARM64(Base(0b1101000101, 10), Imm12(imm12), Rn(reg.id()), Rd(reg.id()));
+}
+
 InstructionARM64 add_gpr64_gpr64(Register dst, Register src) {
   // ADD Xd, Xn, Xm — data processing (shifted register, shift=0)
   // Encoding: 1_0_0_01011_00_0_Rm_000000_Rn_Rd
@@ -1309,16 +1323,38 @@ InstructionARM64 blend_vf(Register dst, Register src1, Register src2, u8 mask) {
 }
 
 InstructionARM64 shuffle_vf(Register dst, Register src, u8 dx, u8 dy, u8 dz, u8 dw) {
-  // x86 SHUFPS with per-element control. ARM64: TBL with index vector.
-  // Requires preloaded index vector — multi-instruction.
-  ASSERT_MSG(false, "shuffle_vf: requires TBL + preloaded index vector on ARM64 — multi-instruction");
+  (void)dst; (void)src; (void)dx; (void)dy; (void)dz; (void)dw;
+  ASSERT_MSG(false, "shuffle_vf: not reachable on ARM64 — handle in do_codegen_arm64");
   return InstructionARM64(0b0);
 }
 
 InstructionARM64 swizzle_vf(Register dst, Register src, u8 controlBytes) {
-  // x86 SHUFPS with same-source swizzle. ARM64: TBL with index vector.
-  ASSERT_MSG(false, "swizzle_vf: requires TBL + preloaded index vector on ARM64 — multi-instruction");
+  (void)dst; (void)src; (void)controlBytes;
+  ASSERT_MSG(false, "swizzle_vf: not reachable on ARM64 — handled in do_codegen_arm64");
   return InstructionARM64(0b0);
+}
+
+InstructionARM64 ext_16b(Register dst, Register src0, Register src1, u8 imm) {
+  // EXT Vd.16B, Vn.16B, Vm.16B, #imm — byte rotate/extract from concatenation [src0:src1]
+  // Advanced SIMD extract: 0_1_101110_00_0_Rm_0_imm4_0_Rn_Rd
+  ASSERT(imm < 16);
+  return InstructionARM64(0x6E000000u, Rm(src1.id()), Field{(u32)imm << 11}, Rn(src0.id()), Rd(dst.id()));
+}
+
+InstructionARM64 ins_vf_element(Register dst, u8 dstIdx, Register src, u8 srcIdx) {
+  // INS Vd.S[dstIdx], Vn.S[srcIdx] — insert 32-bit float element
+  // Advanced SIMD copy (element): 0_1_1_01110_000_imm5_0_imm4_1_Rn_Rd
+  // imm5 = (dstIdx<<2)|4, imm4 = srcIdx<<1
+  ASSERT(dstIdx < 4 && srcIdx < 4);
+  u32 imm5 = ((u32)dstIdx << 2u) | 4u;
+  u32 imm4 = (u32)srcIdx << 1u;
+  return InstructionARM64(0x6E000400u, Field{imm5 << 16}, Field{imm4 << 11}, Rn(src.id()), Rd(dst.id()));
+}
+
+InstructionARM64 rev64_4s(Register dst, Register src) {
+  // REV64 Vd.4S, Vn.4S — reverse 32-bit elements within each 64-bit lane
+  // Advanced SIMD two-reg misc: 0_1_0_01110_10_1_00000_000010_Rn_Rd
+  return InstructionARM64(0x4EA00800u, Rn(src.id()), Rd(dst.id()));
 }
 
 InstructionARM64 splat_vf(Register dst, Register src, Register::VF_ELEMENT element) {
@@ -1582,35 +1618,46 @@ InstructionARM64 vpsubd(Register dst, Register src0, Register src1) {
 }
 
 InstructionARM64 vpsrldq(Register dst, Register src, u8 imm) {
-  // x86: shift 128-bit right by imm bytes. ARM64: EXT Vd.16B, Vzero.16B, Vn.16B, #(imm*8)
-  // EXT needs a zero register which must be loaded separately — multi-instruction.
-  ASSERT_MSG(false, "vpsrldq: requires EXT + zero vector on ARM64 — multi-instruction, handle in CodeGenerator");
+  // Not emitted on ARM64 — ppach/ppacb use native UZP1 paths instead.
+  (void)dst; (void)src; (void)imm;
+  ASSERT_MSG(false, "vpsrldq: not reachable on ARM64 — use UZP1 path in compile_asm_ppach");
   return InstructionARM64(0b0);
 }
 
 InstructionARM64 vpslldq(Register dst, Register src, u8 imm) {
-  // x86: shift 128-bit left by imm bytes. ARM64: EXT Vd.16B, Vn.16B, Vzero.16B, #(16-imm)
-  ASSERT_MSG(false, "vpslldq: requires EXT + zero vector on ARM64 — multi-instruction, handle in CodeGenerator");
+  (void)dst; (void)src; (void)imm;
+  ASSERT_MSG(false, "vpslldq: not reachable on ARM64");
   return InstructionARM64(0b0);
 }
 
 InstructionARM64 vpshuflw(Register dst, Register src, u8 imm) {
-  // x86: shuffle lower 4 int16 elements. ARM64: TBL with index vector.
-  ASSERT_MSG(false, "vpshuflw: requires TBL + preloaded index vector on ARM64 — multi-instruction");
+  (void)dst; (void)src; (void)imm;
+  ASSERT_MSG(false, "vpshuflw: not reachable on ARM64 — use UZP1 path in compile_asm_ppach");
   return InstructionARM64(0b0);
 }
 
 InstructionARM64 vpshufhw(Register dst, Register src, u8 imm) {
-  ASSERT_MSG(false, "vpshufhw: requires TBL + preloaded index vector on ARM64 — multi-instruction");
+  (void)dst; (void)src; (void)imm;
+  ASSERT_MSG(false, "vpshufhw: not reachable on ARM64 — use UZP1 path in compile_asm_ppach");
   return InstructionARM64(0b0);
 }
 
 InstructionARM64 vpackuswb(Register dst, Register src0, Register src1) {
-  // x86 PACKUSWB: pack 8 signed int16 from each src into 16 unsigned int8, clamping.
-  // ARM64: SQXTUN Vd.8B, Vn.8H (saturate lower half) + SQXTUN2 Vd.16B, Vm.8H (upper half)
-  // Two instructions needed — multi-instruction.
-  ASSERT_MSG(false, "vpackuswb: requires SQXTUN + SQXTUN2 on ARM64 — multi-instruction, handle in CodeGenerator");
+  (void)dst; (void)src0; (void)src1;
+  ASSERT_MSG(false, "vpackuswb: not reachable on ARM64 — use UZP1 path in compile_asm_ppacb");
   return InstructionARM64(0b0);
+}
+
+InstructionARM64 uzp1_8h(Register dst, Register src0, Register src1) {
+  // UZP1 Vd.8H, Vn.8H, Vm.8H — unzip even int16 elements (128-bit, 8x int16)
+  // Advanced SIMD permute: Q=1, size=01, opcode=001 → 0x4E401800
+  return InstructionARM64(0x4E401800u, Rm(src1.id()), Rn(src0.id()), Rd(dst.id()));
+}
+
+InstructionARM64 uzp1_16b(Register dst, Register src0, Register src1) {
+  // UZP1 Vd.16B, Vn.16B, Vm.16B — unzip even bytes (128-bit, 16x uint8)
+  // Advanced SIMD permute: Q=1, size=00, opcode=001 → 0x4E001800
+  return InstructionARM64(0x4E001800u, Rm(src1.id()), Rn(src0.id()), Rd(dst.id()));
 }
 }  // namespace ARM64
 }  // namespace IGen

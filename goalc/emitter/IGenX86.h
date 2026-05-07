@@ -798,6 +798,10 @@ InstructionX86 vpshuflw(Register dst, Register src, u8 imm);
 InstructionX86 vpshufhw(Register dst, Register src, u8 imm);
 
 InstructionX86 vpackuswb(Register dst, Register src0, Register src1);
+
+InstructionX86 uzp1_8h(Register dst, Register src0, Register src1);
+
+InstructionX86 uzp1_16b(Register dst, Register src0, Register src1);
 }  // namespace X86
 }  // namespace IGen
 }  // namespace emitter

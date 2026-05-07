@@ -135,11 +135,11 @@ u64 call_goal(Ptr<Function> f, u64 a, u64 b, u64 c, u64 st, void* offset) {
 #ifdef __linux__
   return _call_goal_asm_systemv(a, b, c, fptr, st_ptr, offset);
 #elif defined __APPLE__ && defined __aarch64__
-  pthread_jit_write_protect_np(1);
+  // Do NOT set protect=1: GOAL code writes to JIT-mapped EE memory (heap, stack) during execution.
+  // protect_np(1) would block those writes, crashing on the first STP to the GOAL stack.
+  // Keep protect=0 (RWX mode) so GOAL code can both execute and write JIT memory.
   sys_icache_invalidate(g_ee_main_mem, EE_MAIN_MEM_SIZE);
-  u64 result = _call_goal_asm_arm64(a, b, c, fptr, st_ptr, offset);
-  pthread_jit_write_protect_np(0);
-  return result;
+  return _call_goal_asm_arm64(a, b, c, fptr, st_ptr, offset);
 #elif defined __APPLE__ && defined __x86_64__
   return _call_goal_asm_systemv(a, b, c, fptr, st_ptr, offset);
 #elif _WIN32
@@ -157,11 +157,9 @@ u64 call_goal_on_stack(Ptr<Function> f, u64 rsp, u64 st, void* offset) {
 #ifdef __linux__
   return _call_goal_on_stack_asm_systemv(rsp, 0, 0, fptr, st_ptr, offset);
 #elif defined __APPLE__ && defined __aarch64__
-  pthread_jit_write_protect_np(1);
+  // Same as call_goal: keep protect=0 so GOAL code can write to JIT-mapped EE memory.
   sys_icache_invalidate(g_ee_main_mem, EE_MAIN_MEM_SIZE);
-  u64 result = _call_goal_on_stack_asm_arm64(rsp, 0, 0, fptr, st_ptr, offset);
-  pthread_jit_write_protect_np(0);
-  return result;
+  return _call_goal_on_stack_asm_arm64(rsp, 0, 0, fptr, st_ptr, offset);
 #elif defined __APPLE__ && defined __x86_64__
   return _call_goal_on_stack_asm_systemv(rsp, 0, 0, fptr, st_ptr, offset);
 #elif _WIN32

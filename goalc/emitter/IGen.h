@@ -987,5 +987,9 @@ Instruction vpshuflw(const ObjectGenerator& gen, Register dst, Register src, u8 
 Instruction vpshufhw(const ObjectGenerator& gen, Register dst, Register src, u8 imm);
 
 Instruction vpackuswb(const ObjectGenerator& gen, Register dst, Register src0, Register src1);
+
+Instruction uzp1_8h(const ObjectGenerator& gen, Register dst, Register src0, Register src1);
+
+Instruction uzp1_16b(const ObjectGenerator& gen, Register dst, Register src0, Register src1);
 };  // namespace IGen
 }  // namespace emitter

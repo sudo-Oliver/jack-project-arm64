@@ -152,30 +152,22 @@ void deci2_runner(SystemThreadInterface& iface) {
 void ee_runner(SystemThreadInterface& iface) {
   prof().root_event();
   // Allocate Main RAM. Must have execute enabled.
-  // On Apple Silicon, W^X is enforced by hardware: cannot mmap RWX without MAP_JIT.
-  // MAP_JIT allows simultaneous RWX; use pthread_jit_write_protect_np to switch modes
-  // when writing vs executing JIT'd code.
-#if defined(__APPLE__) && defined(__aarch64__)
-  constexpr int jit_flags = MAP_ANONYMOUS | MAP_PRIVATE | MAP_JIT;
-#endif
+  // On Apple Silicon, MAP_JIT enforces per-thread W^X (write-xor-execute). GOAL needs
+  // simultaneous RWX because JIT-compiled code executes from and writes to the same region
+  // (heap, stack, function objects). Use MAP_ANONYMOUS|MAP_PRIVATE without MAP_JIT combined with
+  // the com.apple.security.cs.allow-unsigned-executable-memory entitlement for true RWX.
   if (EE_MEM_LOW_MAP) {
     g_ee_main_mem =
         (u8*)mmap((void*)0x10000000, EE_MAIN_MEM_SIZE, PROT_EXEC | PROT_READ | PROT_WRITE,
-#if defined(__APPLE__) && defined(__aarch64__)
-                  jit_flags, -1, 0);
-#elif defined(__APPLE__)
-                  MAP_ANONYMOUS | MAP_32BIT | MAP_PRIVATE, 0, 0);
+#if defined(__APPLE__)
+                  MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
 #else
                   MAP_ANONYMOUS | MAP_32BIT | MAP_PRIVATE | MAP_POPULATE, 0, 0);
 #endif
   } else {
     g_ee_main_mem =
         (u8*)mmap((void*)EE_MAIN_MEM_MAP, EE_MAIN_MEM_SIZE, PROT_EXEC | PROT_READ | PROT_WRITE,
-#if defined(__APPLE__) && defined(__aarch64__)
-                  jit_flags, -1, 0);
-#else
-                  MAP_ANONYMOUS | MAP_PRIVATE, 0, 0);
-#endif
+                  MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
   }
 
   if (g_ee_main_mem == (u8*)(-1)) {
@@ -184,12 +176,7 @@ void ee_runner(SystemThreadInterface& iface) {
     return;
   }
 
-#if defined(__APPLE__) && defined(__aarch64__)
-  // MAP_JIT memory on Apple Silicon defaults to exec-only until write protection is disabled.
-  // Disable it here so the EE thread can write (link) GOAL objects into this region.
-  // Must be re-enabled (and icache flushed) before executing JIT'd code.
-  pthread_jit_write_protect_np(0);
-#endif
+  // Non-MAP_JIT mapping: no pthread_jit_write_protect_np needed. Memory is always RWX.
 
   lg::debug("Main memory mapped at 0x{:016x}", (u64)(g_ee_main_mem));
   lg::debug("Main memory size 0x{:x} bytes ({:.3f} MB)", EE_MAIN_MEM_SIZE,
@@ -283,10 +270,7 @@ void ee_worker_runner(SystemThreadInterface& iface) {
  * SystemThread function for running the IOP (separate I/O Processor)
  */
 void iop_runner(SystemThreadInterface& iface, GameVersion version) {
-#if defined(__APPLE__) && defined(__aarch64__)
-  // IOP thread writes to EE MAP_JIT memory (DMA transfers). Must disable write protection.
-  pthread_jit_write_protect_np(0);
-#endif
+  // EE memory is non-MAP_JIT RWX; no pthread_jit_write_protect_np needed.
   prof().root_event();
   prof().begin_event("iop-init");
   IOP iop;

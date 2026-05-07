@@ -412,6 +412,10 @@ InstructionARM64 add_gpr64_gpr64(Register dst, Register src);
 
 InstructionARM64 sub_gpr64_gpr64(Register dst, Register src);
 
+InstructionARM64 add_gpr64_imm_lsl12(Register reg, u32 imm12);
+
+InstructionARM64 sub_gpr64_imm_lsl12(Register reg, u32 imm12);
+
 /*!
  * Multiply gprs (32-bit, signed).
  * (Note - probably worth doing imul on gpr64's to implement the EE's unsigned multiply)
@@ -708,6 +712,12 @@ InstructionARM64 shuffle_vf(Register dst, Register src, u8 dx, u8 dy, u8 dz, u8 
   */
 InstructionARM64 swizzle_vf(Register dst, Register src, u8 controlBytes);
 
+InstructionARM64 ext_16b(Register dst, Register src0, Register src1, u8 imm);
+
+InstructionARM64 ins_vf_element(Register dst, u8 dstIdx, Register src, u8 srcIdx);
+
+InstructionARM64 rev64_4s(Register dst, Register src);
+
 /*
   Splats a single element in 'src' to all elements in 'dst'
   For example (pseudocode):
@@ -813,6 +823,10 @@ InstructionARM64 vpshuflw(Register dst, Register src, u8 imm);
 InstructionARM64 vpshufhw(Register dst, Register src, u8 imm);
 
 InstructionARM64 vpackuswb(Register dst, Register src0, Register src1);
+
+InstructionARM64 uzp1_8h(Register dst, Register src0, Register src1);
+
+InstructionARM64 uzp1_16b(Register dst, Register src0, Register src1);
 }  // namespace ARM64
 }  // namespace IGen
 }  // namespace emitter
