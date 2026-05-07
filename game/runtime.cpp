@@ -178,14 +178,14 @@ void ee_runner(SystemThreadInterface& iface) {
 
   // Non-MAP_JIT mapping: no pthread_jit_write_protect_np needed. Memory is always RWX.
 
-  lg::debug("Main memory mapped at 0x{:016x}", (u64)(g_ee_main_mem));
-  lg::debug("Main memory size 0x{:x} bytes ({:.3f} MB)", EE_MAIN_MEM_SIZE,
-            (double)EE_MAIN_MEM_SIZE / (1 << 20));
+  lg::info("Main memory mapped at 0x{:016x}", (u64)(g_ee_main_mem));
+  lg::info("Main memory size 0x{:x} bytes ({:.3f} MB)", EE_MAIN_MEM_SIZE,
+           (double)EE_MAIN_MEM_SIZE / (1 << 20));
 
-  lg::debug("[EE] Initialization complete!");
+  lg::info("[EE] Initialization complete!");
   iface.initialization_complete();
 
-  lg::debug("[EE] Run!");
+  lg::info("[EE] Run!");
   memset((void*)g_ee_main_mem, 0, EE_MAIN_MEM_SIZE);
 
   // prevent access to the first 512 kB of memory.

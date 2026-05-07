@@ -3,6 +3,9 @@
 
 #include <cstdio>
 #include <cstring>
+#if defined(__aarch64__)
+#include <libkern/OSCacheControl.h>
+#endif
 
 #include "fileio.h"
 
@@ -306,48 +309,52 @@ void _stack_call_arm64();
 Ptr<Function> make_function_from_c_systemv(void* func, bool arg3_is_pp) {
   auto mem = Ptr<u8>(alloc_heap_object(s7.offset + FIX_SYM_GLOBAL_HEAP,
                                        u32_in_fixed_sym(FIX_SYM_FUNCTION_TYPE), 0x40, UNKNOWN_PP));
+#ifndef __aarch64__
   auto f = (uint64_t)func;
   auto target_function = (u8*)&f;
-#ifndef __aarch64__
   auto trampoline_function_addr = _arg_call_systemv;
-#else
-  auto trampoline_function_addr = _arg_call_arm64;
-#endif
   auto trampoline = (u8*)&trampoline_function_addr;
-  // TODO - x86 code still being emitted below
 
-  // movabs rax, target_function
   int offset = 0;
   mem.c()[offset++] = 0x48;
   mem.c()[offset++] = 0xb8;
   for (int i = 0; i < 8; i++) {
     mem.c()[offset++] = target_function[i];
   }
-
-  // push rax
   mem.c()[offset++] = 0x50;
-
-  // movabs rax, trampoline
   mem.c()[offset++] = 0x48;
   mem.c()[offset++] = 0xb8;
   for (int i = 0; i < 8; i++) {
     mem.c()[offset++] = trampoline[i];
   }
-
   if (arg3_is_pp) {
-    // mov rcx, r13. Puts pp in the third argument.
     mem.c()[offset++] = 0x4c;
     mem.c()[offset++] = 0x89;
     mem.c()[offset++] = 0xe9;
   }
-
-  // jmp rax
   mem.c()[offset++] = 0xff;
   mem.c()[offset++] = 0xe0;
-  // the asm function's ret will return to the caller of this (GOAL code) directlyz.
-
-  // CacheFlush(mem, 0x34);
-
+#else
+  uint64_t func_addr = (uint64_t)func;
+  uint64_t trampoline_addr = (uint64_t)_arg_call_arm64;
+  int offset = 0;
+  auto write_u32 = [&](uint32_t val) {
+    mem.c()[offset++] = val & 0xFF;
+    mem.c()[offset++] = (val >> 8) & 0xFF;
+    mem.c()[offset++] = (val >> 16) & 0xFF;
+    mem.c()[offset++] = (val >> 24) & 0xFF;
+  };
+  write_u32(0xD2800000u | ((func_addr & 0xFFFFu) << 5) | 29u);
+  write_u32(0xF2A00000u | (((func_addr >> 16) & 0xFFFFu) << 5) | 29u);
+  write_u32(0xF2C00000u | (((func_addr >> 32) & 0xFFFFu) << 5) | 29u);
+  write_u32(0xF2E00000u | (((func_addr >> 48) & 0xFFFFu) << 5) | 29u);
+  write_u32(0xD2800000u | ((trampoline_addr & 0xFFFFu) << 5) | 8u);
+  write_u32(0xF2A00000u | (((trampoline_addr >> 16) & 0xFFFFu) << 5) | 8u);
+  write_u32(0xF2C00000u | (((trampoline_addr >> 32) & 0xFFFFu) << 5) | 8u);
+  write_u32(0xF2E00000u | (((trampoline_addr >> 48) & 0xFFFFu) << 5) | 8u);
+  write_u32(0xD61F0100u);
+  sys_icache_invalidate(mem.c(), 0x40);
+#endif
   return mem.cast<Function>();
 }
 
@@ -418,39 +425,46 @@ Ptr<Function> make_stack_arg_function_from_c_systemv(void* func) {
   // allocate a function object on the global heap
   auto mem = Ptr<u8>(alloc_heap_object(s7.offset + FIX_SYM_GLOBAL_HEAP,
                                        u32_in_fixed_sym(FIX_SYM_FUNCTION_TYPE), 0x40, UNKNOWN_PP));
+#ifndef __aarch64__
   auto f = (uint64_t)func;
   auto target_function = (u8*)&f;
-#ifndef __aarch64__
   auto trampoline_function_addr = _stack_call_systemv;
-#else
-  auto trampoline_function_addr = _stack_call_arm64;
-#endif
   auto trampoline = (u8*)&trampoline_function_addr;
-
-  // movabs rax, target_function
   int offset = 0;
   mem.c()[offset++] = 0x48;
   mem.c()[offset++] = 0xb8;
   for (int i = 0; i < 8; i++) {
     mem.c()[offset++] = target_function[i];
   }
-
-  // push rax
   mem.c()[offset++] = 0x50;
-
-  // movabs rax, trampoline
   mem.c()[offset++] = 0x48;
   mem.c()[offset++] = 0xb8;
   for (int i = 0; i < 8; i++) {
     mem.c()[offset++] = trampoline[i];
   }
-
-  // jmp rax
   mem.c()[offset++] = 0xff;
   mem.c()[offset++] = 0xe0;
-
-  // CacheFlush(mem, 0x34);
-
+#else
+  uint64_t func_addr = (uint64_t)func;
+  uint64_t trampoline_addr = (uint64_t)_stack_call_arm64;
+  int offset = 0;
+  auto write_u32 = [&](uint32_t val) {
+    mem.c()[offset++] = val & 0xFF;
+    mem.c()[offset++] = (val >> 8) & 0xFF;
+    mem.c()[offset++] = (val >> 16) & 0xFF;
+    mem.c()[offset++] = (val >> 24) & 0xFF;
+  };
+  write_u32(0xD2800000u | ((func_addr & 0xFFFFu) << 5) | 29u);
+  write_u32(0xF2A00000u | (((func_addr >> 16) & 0xFFFFu) << 5) | 29u);
+  write_u32(0xF2C00000u | (((func_addr >> 32) & 0xFFFFu) << 5) | 29u);
+  write_u32(0xF2E00000u | (((func_addr >> 48) & 0xFFFFu) << 5) | 29u);
+  write_u32(0xD2800000u | ((trampoline_addr & 0xFFFFu) << 5) | 8u);
+  write_u32(0xF2A00000u | (((trampoline_addr >> 16) & 0xFFFFu) << 5) | 8u);
+  write_u32(0xF2C00000u | (((trampoline_addr >> 32) & 0xFFFFu) << 5) | 8u);
+  write_u32(0xF2E00000u | (((trampoline_addr >> 48) & 0xFFFFu) << 5) | 8u);
+  write_u32(0xD61F0100u);
+  sys_icache_invalidate(mem.c(), 0x40);
+#endif
   return mem.cast<Function>();
 }
 

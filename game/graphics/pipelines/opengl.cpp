@@ -773,6 +773,11 @@ u32 gl_sync_path() {
  */
 void gl_send_chain(const void* data, u32 offset) {
   if (g_gfx_data) {
+    static bool first_chain = true;
+    if (first_chain) {
+      lg::info("[GFX] First gl_send_chain call — GOAL is submitting frames");
+      first_chain = false;
+    }
     std::unique_lock<std::mutex> lock(g_gfx_data->dma_mutex);
     if (g_gfx_data->has_data_to_render) {
       lg::error(

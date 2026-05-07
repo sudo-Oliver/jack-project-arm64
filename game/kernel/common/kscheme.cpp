@@ -9,6 +9,7 @@
 #if defined(__APPLE__) && defined(__aarch64__)
 #include <pthread.h>
 #include <libkern/OSCacheControl.h>
+#include <sys/mman.h>
 #endif
 
 // total number of symbols in the table
@@ -135,9 +136,13 @@ u64 call_goal(Ptr<Function> f, u64 a, u64 b, u64 c, u64 st, void* offset) {
 #ifdef __linux__
   return _call_goal_asm_systemv(a, b, c, fptr, st_ptr, offset);
 #elif defined __APPLE__ && defined __aarch64__
-  // Do NOT set protect=1: GOAL code writes to JIT-mapped EE memory (heap, stack) during execution.
-  // protect_np(1) would block those writes, crashing on the first STP to the GOAL stack.
-  // Keep protect=0 (RWX mode) so GOAL code can both execute and write JIT memory.
+  // macOS 26+ strips PROT_EXEC from pages after they are written (W^X enforcement for non-MAP_JIT
+  // anonymous memory). klink writes GOAL code into EE pages, stripping their exec permission.
+  // Re-apply PROT_EXEC on the entire executable region before every GOAL call.
+  // Skip the first EE_MAIN_MEM_LOW_PROTECT bytes which are PROT_NONE (PS2 null-ptr guard).
+  mprotect((u8*)g_ee_main_mem + EE_MAIN_MEM_LOW_PROTECT,
+           EE_MAIN_MEM_SIZE - EE_MAIN_MEM_LOW_PROTECT,
+           PROT_READ | PROT_WRITE | PROT_EXEC);
   sys_icache_invalidate(g_ee_main_mem, EE_MAIN_MEM_SIZE);
   return _call_goal_asm_arm64(a, b, c, fptr, st_ptr, offset);
 #elif defined __APPLE__ && defined __x86_64__
@@ -157,7 +162,10 @@ u64 call_goal_on_stack(Ptr<Function> f, u64 rsp, u64 st, void* offset) {
 #ifdef __linux__
   return _call_goal_on_stack_asm_systemv(rsp, 0, 0, fptr, st_ptr, offset);
 #elif defined __APPLE__ && defined __aarch64__
-  // Same as call_goal: keep protect=0 so GOAL code can write to JIT-mapped EE memory.
+  // Same as call_goal: re-apply PROT_EXEC stripped by macOS 26+ W^X on non-MAP_JIT writes.
+  mprotect((u8*)g_ee_main_mem + EE_MAIN_MEM_LOW_PROTECT,
+           EE_MAIN_MEM_SIZE - EE_MAIN_MEM_LOW_PROTECT,
+           PROT_READ | PROT_WRITE | PROT_EXEC);
   sys_icache_invalidate(g_ee_main_mem, EE_MAIN_MEM_SIZE);
   return _call_goal_on_stack_asm_arm64(rsp, 0, 0, fptr, st_ptr, offset);
 #elif defined __APPLE__ && defined __x86_64__

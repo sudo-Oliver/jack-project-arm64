@@ -107,8 +107,14 @@ s32 goal_main(int argc, const char* const* argv) {
  */
 void KernelCheckAndDispatch() {
   u64 goal_stack = u64(g_ee_main_mem) + EE_MAIN_MEM_SIZE - 8;
+  int dispatch_count = 0;
+  lg::info("[EE] KernelCheckAndDispatch starting, stack at 0x{:016x}", goal_stack);
 
   while (MasterExit == RuntimeExitStatus::RUNNING) {
+    dispatch_count++;
+    if (dispatch_count <= 3 || (dispatch_count % 100) == 0) {
+      lg::info("[EE] Kernel dispatch #{}", dispatch_count);
+    }
     // try to get a message from the listener, and process it if needed
     Ptr<char> new_message = WaitForMessageAndAck();
     if (new_message.offset) {
