@@ -11,80 +11,90 @@
 
 ;; Call C++ code on arm64 systems, from GOAL.
 ;; Following the macOS documentation which mostly aligns with standard arm64
+;;
+;; Entry state (set by EE-memory stub via movz/movk + br):
+;;   x29 = C function pointer
+;;   x30 = GOAL return address (br x8 in stub does not update x30)
+;;   x0-x7 = GOAL arguments passed through unchanged
 .global _arg_call_arm64
 .align 4
 _arg_call_arm64:
-  stp	x29, x30, [sp, #-16]!
-  mov	x29, sp
-  ldr x8, [sp], #16
+  ;; Standard prologue: save frame-pointer (= C func ptr!) and link reg (= GOAL lr).
+  ;; DO NOT pop this frame early — we need x30 alive until the final ldp/ret.
+  stp  x29, x30, [sp, #-16]!
+  mov  x29, sp                  ; frame pointer into the saved pair
 
-  ; Putting an exclamation point after the close-bracket 
-  ; means that the calculated effective address is written back to the base register. (pre-indexing)
+  ;; Save callee-saved SIMD registers below the frame.
   stp q15, q14, [sp, #-32]!
   stp q13, q12, [sp, #-32]!
   stp q11, q10, [sp, #-32]!
   stp q9, q8, [sp, #-32]!
 
+  ;; Load the C function pointer from the saved frame slot.
+  ;; [x29] == original x29 == C function pointer.
+  ldr x8, [x29]
+
+  ;; Call the C function.  x0-x7 still hold the GOAL arguments.
   blr x8
 
+  ;; Restore callee-saved SIMD registers.
   ldp q9, q8, [sp], #32
   ldp q10, q11, [sp], #32
   ldp q12, q13, [sp], #32
   ldp q14, q15, [sp], #32
 
-  ldp	x29, x30, [sp], #16
+  ;; Restore frame pointer and GOAL return address, then return to GOAL code.
+  ldp  x29, x30, [sp], #16
   ret
 
 
-;; Call C++ code on arm64 systems, from GOAL. 
-;; 
-;; Put arguments on the stack and put a pointer to this array in the first arg.
-;; this function pushes all 8 OpenGOAL registers into a stack array.
-;; then it calls the function pointed to by x0 (RAX in x86) with a pointer to this array.
-;; it returns the return value of the called function.
+;; Call C++ code on arm64 systems, from GOAL.
+;;
+;; Passes all 8 GOAL argument registers as an array; the C function receives
+;; x0 = pointer to that array.
+;;
+;; Entry state (set by EE-memory stub):
+;;   x29 = C function pointer
+;;   x30 = GOAL return address
+;;   x0-x7 = GOAL arguments
 .global _stack_call_arm64
 .align 4
 _stack_call_arm64:
-  stp	x29, x30, [sp, #-16]!
-  mov	x29, sp
-  ldr x8, [sp], #16
+  ;; Standard prologue: save C func ptr (x29) and GOAL lr (x30).
+  stp  x29, x30, [sp, #-16]!
+  mov  x29, sp
 
+  ;; Save callee-saved SIMD registers.
   stp q15, q14, [sp, #-32]!
   stp q13, q12, [sp, #-32]!
   stp q11, q10, [sp, #-32]!
   stp q9, q8, [sp, #-32]!
 
-  ; create stack array of arguments
-  ; arg 7 (R11 in x86)
-  ; arg 6 (R10 in x86)
-  ; arg 5 (R8 in x86)
-  ; arg 4 (R8 in x86)
-  ; arg 3 (RCX in x86)
-  ; arg 2 (RDX in x86)
-  ; arg 1 (RSI in x86)
-  ; arg 0 (RDI in x86)
+  ;; Push all 8 GOAL argument registers onto the stack as a contiguous array.
   stp x7, x6, [sp, #-16]!
   stp x5, x4, [sp, #-16]!
   stp x3, x2, [sp, #-16]!
   stp x1, x0, [sp, #-16]!
 
-  ; set first argument
-  mov x19, sp
-  ; call function
-  blr x8
-  ; restore arguments
-  ldp x1, x0, [sp], #16
-  ldp x3, x2, [sp], #16
-  ldp x5, x4, [sp], #16
-  ldp x7, x6, [sp], #16
+  ;; x0 = pointer to the argument array (first C argument).
+  mov x0, sp
 
+  ;; Load C function pointer from the saved frame and call.
+  ldr x8, [x29]
+  blr x8
+
+  ;; Discard the argument array from the stack (8 regs * 8 bytes = 64 bytes).
+  ;; Use add rather than ldp so we don't clobber x0 (the return value).
+  add sp, sp, #64
+
+  ;; Restore callee-saved SIMD registers.
   ldp q9, q8, [sp], #32
   ldp q10, q11, [sp], #32
   ldp q12, q13, [sp], #32
   ldp q14, q15, [sp], #32
 
-  ldp	x29, x30, [sp], #16
-  ; return!
+  ;; Restore frame pointer and GOAL return address, then return to GOAL code.
+  ldp  x29, x30, [sp], #16
   ret
 
 ;; Call c++ code through mips2c.

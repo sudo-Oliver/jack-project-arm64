@@ -136,9 +136,13 @@ u64 call_goal(Ptr<Function> f, u64 a, u64 b, u64 c, u64 st, void* offset) {
 #ifdef __linux__
   return _call_goal_asm_systemv(a, b, c, fptr, st_ptr, offset);
 #elif defined __APPLE__ && defined __aarch64__
+  // Darwin 25: switch EE thread to exec mode before entering GOAL code.
+  // GOAL heap writes cause SIGBUS which are emulated by the sigbus_handler in runtime.cpp.
+  pthread_jit_write_protect_np(1);
   sys_icache_invalidate(g_ee_main_mem, EE_MAIN_MEM_SIZE);
   fprintf(stderr, "[EE-DEBUG] call_goal: entering GOAL code at %p\n", fptr); fflush(stderr);
   u64 result = _call_goal_asm_arm64(a, b, c, fptr, st_ptr, offset);
+  pthread_jit_write_protect_np(0);  // back to write mode for any subsequent C EE writes
   fprintf(stderr, "[EE-DEBUG] call_goal: returned from GOAL code\n"); fflush(stderr);
   return result;
 #elif defined __APPLE__ && defined __x86_64__
@@ -158,8 +162,10 @@ u64 call_goal_on_stack(Ptr<Function> f, u64 rsp, u64 st, void* offset) {
 #ifdef __linux__
   return _call_goal_on_stack_asm_systemv(rsp, 0, 0, fptr, st_ptr, offset);
 #elif defined __APPLE__ && defined __aarch64__
+  // Darwin 25: switch to exec mode before entering GOAL code.
+  pthread_jit_write_protect_np(1);
   sys_icache_invalidate(g_ee_main_mem, EE_MAIN_MEM_SIZE);
-  // Dump first 16 bytes of GOAL entry point
+  // Dump first 16 bytes of GOAL entry point (code is readable in exec mode)
   {
     const uint8_t* p = (const uint8_t*)fptr;
     fprintf(stderr, "[EE-DEBUG] GOAL entry bytes: %02x %02x %02x %02x  %02x %02x %02x %02x  "
@@ -170,6 +176,7 @@ u64 call_goal_on_stack(Ptr<Function> f, u64 rsp, u64 st, void* offset) {
   }
   fprintf(stderr, "[EE-DEBUG] call_goal_on_stack: entering GOAL at %p rsp=0x%lx\n", fptr, (unsigned long)rsp); fflush(stderr);
   u64 result = _call_goal_on_stack_asm_arm64(rsp, 0, 0, fptr, st_ptr, offset);
+  pthread_jit_write_protect_np(0);  // back to write mode for C code
   fprintf(stderr, "[EE-DEBUG] call_goal_on_stack: returned from GOAL\n"); fflush(stderr);
   return result;
 #elif defined __APPLE__ && defined __x86_64__

@@ -1,5 +1,9 @@
 #include "klink.h"
 
+#if defined(__APPLE__) && defined(__aarch64__)
+#include <pthread.h>
+#endif
+
 #include "common/log/log.h"
 #include "common/symbols.h"
 
@@ -623,7 +627,12 @@ void link_control::jak1_finish(bool jump_from_c_to_goal) {
     // execute top level!
     if (m_entry.offset && (m_flags & LINK_FLAG_EXECUTE)) {
       if (jump_from_c_to_goal) {
+#if defined(__APPLE__) && defined(__aarch64__)
+        extern u8* g_goal_jit_stack_top;
+        u64 goal_stack = (u64)g_goal_jit_stack_top - 8;
+#else
         u64 goal_stack = u64(g_ee_main_mem) + EE_MAIN_MEM_SIZE - 8;
+#endif
         call_goal_on_stack(m_entry.cast<Function>(), goal_stack, s7.offset, g_ee_main_mem);
       } else {
         call_goal(m_entry.cast<Function>(), 0, 0, 0, s7.offset, g_ee_main_mem);
@@ -677,10 +686,17 @@ Ptr<uint8_t> link_and_exec(Ptr<uint8_t> data,
  * Wrapper so this can be called from GOAL. Not in original game.
  */
 u64 link_and_exec_wrapper(u64* args) {
+#if defined(__APPLE__) && defined(__aarch64__)
+  pthread_jit_write_protect_np(0);
+#endif
   // data, name, size, heap, flags
-  return link_and_exec(Ptr<u8>(args[0]), Ptr<char>(args[1]).c(), args[2], Ptr<kheapinfo>(args[3]),
-                       args[4], false)
-      .offset;
+  auto result = link_and_exec(Ptr<u8>(args[0]), Ptr<char>(args[1]).c(), args[2],
+                              Ptr<kheapinfo>(args[3]), args[4], false)
+                    .offset;
+#if defined(__APPLE__) && defined(__aarch64__)
+  pthread_jit_write_protect_np(1);
+#endif
+  return result;
 }
 
 /*!
@@ -689,6 +705,9 @@ u64 link_and_exec_wrapper(u64* args) {
  * 39 -> no 8 (s7)
  */
 uint64_t link_begin(u64* args) {
+#if defined(__APPLE__) && defined(__aarch64__)
+  pthread_jit_write_protect_np(0);
+#endif
   // object data, name size, heap flags
   saved_link_control.jak1_jak2_begin(Ptr<u8>(args[0]), Ptr<char>(args[1]).c(), args[2],
                                      Ptr<kheapinfo>(args[3]), args[4]);
@@ -698,7 +717,9 @@ uint64_t link_begin(u64* args) {
     // called from goal
     saved_link_control.jak1_finish(false);
   }
-
+#if defined(__APPLE__) && defined(__aarch64__)
+  pthread_jit_write_protect_np(1);
+#endif
   return work_result != 0;
 }
 
@@ -706,11 +727,17 @@ uint64_t link_begin(u64* args) {
  * GOAL exported function for doing a small amount of linking work on the saved_link_control
  */
 uint64_t link_resume() {
+#if defined(__APPLE__) && defined(__aarch64__)
+  pthread_jit_write_protect_np(0);
+#endif
   auto work_result = saved_link_control.jak1_work();
   if (work_result) {
     // called from goal
     saved_link_control.jak1_finish(false);
   }
+#if defined(__APPLE__) && defined(__aarch64__)
+  pthread_jit_write_protect_np(1);
+#endif
   return work_result != 0;
 }
 

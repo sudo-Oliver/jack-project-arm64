@@ -23,6 +23,10 @@
 // KernelShutdown__3ndii
 // main
 
+#if defined(__APPLE__) && defined(__aarch64__)
+extern u8* g_goal_jit_stack_top;
+#endif
+
 namespace jak3 {
 void KernelCheckAndDispatch();
 
@@ -94,7 +98,11 @@ s32 goal_main(int argc, const char* const* argv) {
 
 void KernelDispatch(u32 dispatcher_func) {
   // place our stack at the end of EE memory
+#if defined(__APPLE__) && defined(__aarch64__)
+  u64 goal_stack = (u64)g_goal_jit_stack_top - 8;
+#else
   u64 goal_stack = u64(g_ee_main_mem) + EE_MAIN_MEM_SIZE - 8;
+#endif
 
   // try to get a message from the listener, and process it if needed
   Ptr<char> new_message = WaitForMessageAndAck();
