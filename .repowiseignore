@@ -1,0 +1,26 @@
+# Riesige Third-Party-Bibliotheken (SDL, draco, tree-sitter, etc.)
+third-party/
+
+# Build-Artefakte (kompilierte Binaries, nicht Quellcode)
+build/
+out/
+
+# Extrahierte Spieldaten (gross, binaer)
+iso_data/
+decompiler_out/
+
+# GOAL-Quellcode (eigene Sprache, nicht C++)
+goal_src/
+
+# Test-Fixtures
+test/fixtures/
+
+# Git-Internals
+.git/
+
+# Binaerdateien
+*.iso
+*.o
+*.a
+*.dylib
+*.so

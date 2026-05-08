@@ -1,0 +1,8 @@
+version: 1
+default_repo: jak-project
+repos:
+- path: .
+  alias: jak-project
+  is_primary: true
+  indexed_at: '2026-05-08T12:31:34.498978+00:00'
+  last_commit_at_index: 9ff664be282d534fee563fa0ecbe2417b359fa74
