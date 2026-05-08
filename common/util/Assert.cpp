@@ -5,6 +5,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string_view>
+#ifdef __APPLE__
+#include <execinfo.h>
+#endif
 
 #include "common/log/log.h"
 
@@ -13,6 +16,17 @@ void private_assert_failed(const char* expr,
                            int line,
                            const char* function,
                            const char* msg) {
+#ifdef __APPLE__
+  void* bt[64];
+  int n = backtrace(bt, 64);
+  char** syms = backtrace_symbols(bt, n);
+  fprintf(stderr, "Backtrace:\n");
+  for (int i = 0; i < n; i++) {
+    fprintf(stderr, "  %s\n", syms[i]);
+  }
+  free(syms);
+  fflush(stderr);
+#endif
   if (!msg || msg[0] == '\0') {
     std::string log = fmt::format("Assertion failed: '{}'\n\tSource: {}:{}\n\tFunction: {}\n", expr,
                                   file, line, function);

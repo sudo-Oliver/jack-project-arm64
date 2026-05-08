@@ -191,6 +191,13 @@ uint32_t symlink_v3_arm64_movw(Ptr<uint8_t> link, Ptr<uint8_t> data) {
   auto sym = jak1::intern_from_c(sym_name);
   int32_t sym_offset = sym.cast<u32>() - s7;
   uint32_t sym_addr = sym.cast<u32>().offset;
+#if defined(__APPLE__) && defined(__aarch64__)
+  if (sym_offset < -(1 << 20) || sym_offset > (1 << 20)) {
+    fprintf(stderr, "[SYMLINK-MOVW] SUSPICIOUS: name='%s' sym=0x%x s7=0x%x off=%d\n",
+            sym_name, sym_addr, s7.offset, sym_offset);
+    fflush(stderr);
+  }
+#endif
 
   uint32_t entry_count = *(link + seek).cast<uint32_t>();
   seek += 4;

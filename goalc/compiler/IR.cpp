@@ -353,6 +353,8 @@ void IR_LoadSymbolPointer::do_codegen_arm64(emitter::ObjectGenerator* gen,
         InstructionARM64(0xF2800000u, ARM64::Field{1u << 21}, ARM64::Rd(dest_reg.id())), irec);
     gen->link_instruction_symbol_arm64_movw(movz, movk, m_name,
                                             ObjectGenerator::SymbolLinkMode::ST_OFFSET);
+    // sym_offset is signed 32-bit; MOVZ/MOVK zero-extends — must sign-extend before adding s7
+    gen->add_instr(IGen::ARM64::movsx_r64_r32(dest_reg, dest_reg), irec);
     gen->add_instr(IGen::add_gpr64_gpr64(*gen, dest_reg, gen->get_st_reg()), irec);
   }
 }

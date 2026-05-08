@@ -87,6 +87,11 @@ u64 delete_illegal(u32 obj) {
  * Wrapper around kmalloc to allow GOAL programs to allocate on kernel heaps.
  */
 u64 goal_malloc(u32 heap, u32 size, u32 flags, u32 name) {
+  if (!name) {
+    fprintf(stderr, "[GOAL-MALLOC] null name! heap=0x%x size=%u flags=%u\n", heap, size, flags);
+    // use anonymous fallback so we can continue booting
+    return kmalloc(Ptr<kheapinfo>(heap), size, flags, "anonymous").offset;
+  }
   return kmalloc(Ptr<kheapinfo>(heap), size, flags, Ptr<String>(name)->data()).offset;
 }
 
@@ -140,10 +145,8 @@ u64 call_goal(Ptr<Function> f, u64 a, u64 b, u64 c, u64 st, void* offset) {
   // GOAL heap writes cause SIGBUS which are emulated by the sigbus_handler in runtime.cpp.
   pthread_jit_write_protect_np(1);
   sys_icache_invalidate(g_ee_main_mem, EE_MAIN_MEM_SIZE);
-  fprintf(stderr, "[EE-DEBUG] call_goal: entering GOAL code at %p\n", fptr); fflush(stderr);
   u64 result = _call_goal_asm_arm64(a, b, c, fptr, st_ptr, offset);
   pthread_jit_write_protect_np(0);  // back to write mode for any subsequent C EE writes
-  fprintf(stderr, "[EE-DEBUG] call_goal: returned from GOAL code\n"); fflush(stderr);
   return result;
 #elif defined __APPLE__ && defined __x86_64__
   return _call_goal_asm_systemv(a, b, c, fptr, st_ptr, offset);
@@ -165,19 +168,8 @@ u64 call_goal_on_stack(Ptr<Function> f, u64 rsp, u64 st, void* offset) {
   // Darwin 25: switch to exec mode before entering GOAL code.
   pthread_jit_write_protect_np(1);
   sys_icache_invalidate(g_ee_main_mem, EE_MAIN_MEM_SIZE);
-  // Dump first 16 bytes of GOAL entry point (code is readable in exec mode)
-  {
-    const uint8_t* p = (const uint8_t*)fptr;
-    fprintf(stderr, "[EE-DEBUG] GOAL entry bytes: %02x %02x %02x %02x  %02x %02x %02x %02x  "
-            "%02x %02x %02x %02x  %02x %02x %02x %02x\n",
-            p[0],p[1],p[2],p[3], p[4],p[5],p[6],p[7],
-            p[8],p[9],p[10],p[11], p[12],p[13],p[14],p[15]);
-    fflush(stderr);
-  }
-  fprintf(stderr, "[EE-DEBUG] call_goal_on_stack: entering GOAL at %p rsp=0x%lx\n", fptr, (unsigned long)rsp); fflush(stderr);
   u64 result = _call_goal_on_stack_asm_arm64(rsp, 0, 0, fptr, st_ptr, offset);
   pthread_jit_write_protect_np(0);  // back to write mode for C code
-  fprintf(stderr, "[EE-DEBUG] call_goal_on_stack: returned from GOAL\n"); fflush(stderr);
   return result;
 #elif defined __APPLE__ && defined __x86_64__
   return _call_goal_on_stack_asm_systemv(rsp, 0, 0, fptr, st_ptr, offset);

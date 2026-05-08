@@ -79,19 +79,19 @@ InstructionARM64 movd_xmm32_gpr32(Register dst, Register src) {
 InstructionARM64 movq_gpr64_xmm64(Register dst, Register src) {
   // FMOV Xd, Dn — move 64-bit float (D) register to 64-bit GPR
   // type=01 (double), opcode2=00110
-  // Encoding: 0_00_11110_01_1_00110_000000_Rn_Rd
+  // Encoding: 1_00_11110_01_1_00110_000000_Rn_Rd  (sf=1 for 64-bit GPR)
   ASSERT(dst.is_gpr(instr_set));
   ASSERT(src.is_128bit_simd(instr_set));
-  return InstructionARM64(0x1E660000u, Rn(src.id()), Rd(dst.id()));
+  return InstructionARM64(0x9E660000u, Rn(src.id()), Rd(dst.id()));
 }
 
 InstructionARM64 movq_xmm64_gpr64(Register dst, Register src) {
   // FMOV Dn, Xn — move 64-bit GPR to 64-bit float (D) register
   // type=01 (double), opcode2=00111
-  // Encoding: 0_00_11110_01_1_00111_000000_Rn_Rd
+  // Encoding: 1_00_11110_01_1_00111_000000_Rn_Rd  (sf=1 for 64-bit GPR)
   ASSERT(dst.is_128bit_simd(instr_set));
   ASSERT(src.is_gpr(instr_set));
-  return InstructionARM64(0x1E670000u, Rn(src.id()), Rd(dst.id()));
+  return InstructionARM64(0x9E670000u, Rn(src.id()), Rd(dst.id()));
 }
 
 InstructionARM64 mov_xmm32_xmm32(Register dst, Register src) {
@@ -988,10 +988,10 @@ InstructionARM64 xor_gpr64_gpr64(Register dst, Register src) {
 
 InstructionARM64 not_gpr64(Register reg) {
   // MVN Xd, Xm — bitwise NOT (alias for ORN Xd, XZR, Xm)
-  // Encoding: 1_01_01110_00_0_Rm_000000_11111_Rd (N=1 in ORR)
+  // Encoding: 1_01_01010_00_1_Rm_000000_11111_Rd  (sf=1, opc=01, fixed=01010, N=1)
   // https://www.scs.stanford.edu/~zyedidia/arm64/mvn_orn_log_shift.html
   ASSERT(reg.is_gpr(instr_set));
-  return InstructionARM64(Base(0b10101110000, 11), Rm(reg.id()), Rn(31), Rd(reg.id()));
+  return InstructionARM64(Base(0b10101010001, 11), Rm(reg.id()), Rn(31), Rd(reg.id()));
 }
 
 //;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

@@ -91,6 +91,14 @@ u64 alloc_from_heap(u32 heapSymbol, u32 type, s32 size, u32 pp) {
     }
 
     Ptr<String> gstr = info(typ->symbol)->str;
+    if (!gstr.offset) {  // str was never written (W^X issue or uninitialised type)
+#if defined(__APPLE__) && defined(__aarch64__)
+      fprintf(stderr, "[ALLOC-FROM-HEAP] null str for type=0x%x sym=0x%x\n", type, typ->symbol.offset);
+      fflush(stderr);
+#endif
+      return kmalloc(*Ptr<Ptr<kheapinfo>>(heapSymbol), size, KMALLOC_MEMSET, "global-object")
+          .offset;
+    }
     if (!gstr->len) {  // string has nothing in it.
       return kmalloc(*Ptr<Ptr<kheapinfo>>(heapSymbol), size, KMALLOC_MEMSET, "global-object")
           .offset;
@@ -789,6 +797,13 @@ Ptr<Symbol> intern_from_c(const char* name) {
   auto symbol = find_symbol_from_c(name);
   if (symbol.offset) {
     // already exists, return it!
+#if defined(__APPLE__) && defined(__aarch64__)
+    if (!info(symbol)->str.offset) {
+      fprintf(stderr, "[INTERN-FROM-C] FOUND '%s' at 0x%x but str=0 hash=0x%x!\n",
+              name, symbol.offset, info(symbol)->hash);
+      fflush(stderr);
+    }
+#endif
     return symbol;
   }
 
@@ -801,6 +816,14 @@ Ptr<Symbol> intern_from_c(const char* name) {
   auto str = make_string_from_c(name);
   info(symbol)->str = Ptr<String>(str);
   info(symbol)->hash = hash;
+
+#if defined(__APPLE__) && defined(__aarch64__)
+  if (info(symbol)->str.offset != str || info(symbol)->hash != hash) {
+    fprintf(stderr, "[INTERN-FROM-C] WRITE FAILED for '%s': str=%u->%u hash=%u->%u\n",
+            name, str, info(symbol)->str.offset, hash, info(symbol)->hash);
+    fflush(stderr);
+  }
+#endif
 
   NumSymbols++;
   return symbol;
@@ -971,6 +994,16 @@ Ptr<Type> set_fixed_type(u32 offset,
  */
 u64 new_type(u32 symbol, u32 parent, u64 flags) {
   //  printf("flags 0x%lx\n", flags);
+#if defined(__APPLE__) && defined(__aarch64__)
+  {
+    auto sym_info = info(Ptr<Symbol>(symbol));
+    int32_t sym_off = (int32_t)(symbol - s7.offset);
+    const char* sym_name = sym_info->str.offset ? Ptr<String>(sym_info->str.offset)->data() : "<bad-str>";
+    fprintf(stderr, "[NEW-TYPE] sym=0x%x s7=0x%x off=%d name='%s' str.offset=0x%x hash=0x%x\n",
+            symbol, s7.offset, sym_off, sym_name, sym_info->str.offset, sym_info->hash);
+    fflush(stderr);
+  }
+#endif
   u32 n_methods = (flags >> 32) & 0xffff;
   if (n_methods == 0) {
     // 12 methods used as default, if the user has not provided us with a number
