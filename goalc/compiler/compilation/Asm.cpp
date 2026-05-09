@@ -7,7 +7,39 @@ const char* reg_names[] = {
     "xmm6", "xmm7", "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13", "xmm14", "xmm15",
 };
 
+#if defined(__aarch64__)
+// Map x86 GOAL register roles to ARM64 physical registers.
+// Arg positions: x86 uses RDI/RSI/RDX/RCX/R8-R11 (ids 7,6,2,1,8-11)
+//               ARM64 uses X0-X7 (ids 0-7).
+// Return/scratch: RAX(0) -> X8(8) [X0 is arg0+return; X8 is scratch].
+// Special: pp=R13->x20, st=R14->x21, off=R15->x22, sp=RSP->SP(31).
+// Saved: RBX->x19, RBP->X23, R12->X26.
+// XMM regs (16-31) pass through unchanged -- translated at emit time.
+int translate_x86_reg_to_arm64(int x86_id) {
+  using namespace emitter;
+  switch (x86_id) {
+    case RAX: return X8;   // 0  -> 8  (scratch, not arg0)
+    case RCX: return X3;   // 1  -> 3  (arg3)
+    // RDX(2)->X2: same id, no translation needed
+    case RBX: return x19;  // 3  -> 19 (callee-saved)
+    case RSP: return SP;   // 4  -> 31 (stack pointer)
+    case RBP: return X23;  // 5  -> 23 (callee-saved)
+    case RSI: return X1;   // 6  -> 1  (arg1)
+    case RDI: return X0;   // 7  -> 0  (arg0)
+    case R8:  return X4;   // 8  -> 4  (arg4)
+    case R9:  return X5;   // 9  -> 5  (arg5)
+    case R10: return X6;   // 10 -> 6  (arg6)
+    case R11: return X7;   // 11 -> 7  (arg7)
+    case R12: return X26;  // 12 -> 26 (callee-saved)
+    case R13: return x20;  // 13 -> 20 (pp)
+    case R14: return x21;  // 14 -> 21 (st)
+    case R15: return x22;  // 15 -> 22 (off)
+    default:  return x86_id; // XMM0-XMM15 (16-31): pass through
+  }
 }
+#endif
+
+}  // namespace
 
 emitter::Register Compiler::parse_register(const goos::Object& code) {
   if (!code.is_symbol()) {
@@ -17,7 +49,11 @@ emitter::Register Compiler::parse_register(const goos::Object& code) {
   auto nas = code.as_symbol();
   for (int i = 0; i < 32; i++) {
     if (std::string_view(nas.name_ptr) == reg_names[i]) {
+#if defined(__aarch64__)
+      return emitter::Register(translate_x86_reg_to_arm64(i));
+#else
       return emitter::Register(i);
+#endif
     }
   }
 
@@ -84,6 +120,7 @@ Val* Compiler::compile_rlet(const goos::Object& form, const goos::Object& rest, 
           auto reg_val_ptr = std::make_unique<RegVal>(constr.ireg, ts);
           new_place_reg = fenv->push_reg_val(std::move(reg_val_ptr));
           new_place_reg->mark_as_settable();
+          new_place_reg->set_rlet_constraint(desired_register);
           break;
         }
       }
@@ -94,6 +131,7 @@ Val* Compiler::compile_rlet(const goos::Object& form, const goos::Object& rest, 
             auto reg_val_ptr = std::make_unique<RegVal>(constr.ireg, ts);
             new_place_reg = fenv->push_reg_val(std::move(reg_val_ptr));
             new_place_reg->mark_as_settable();
+            new_place_reg->set_rlet_constraint(desired_register);
             break;
           }
         }

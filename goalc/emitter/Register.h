@@ -223,10 +223,17 @@ class RegisterInfo {
   Register get_xmm_arg_reg(int id) const { return m_xmm_arg_regs.at(id); }
   Register get_saved_gpr(int id) const { return m_saved_gprs.at(id); }
   Register get_saved_xmm(int id) const { return m_saved_xmms.at(id); }
+#if defined(__aarch64__)
+  Register get_process_reg() const { return x20; }
+  Register get_st_reg() const { return x21; }
+  Register get_offset_reg() const { return x22; }
+  Register get_gpr_ret_reg() const { return X0; }
+#else
   Register get_process_reg() const { return R13; }
   Register get_st_reg() const { return R14; }
   Register get_offset_reg() const { return R15; }
   Register get_gpr_ret_reg() const { return RAX; }
+#endif
   Register get_xmm_ret_reg() const { return XMM0; }
   const std::vector<Register>& get_gpr_alloc_order() { return m_gpr_alloc_order; }
   const std::vector<Register>& get_xmm_alloc_order() { return m_xmm_alloc_order; }

@@ -236,6 +236,13 @@ uint32_t symlink_v3_arm64_movw(Ptr<uint8_t> link, Ptr<uint8_t> data) {
     movk = (movk & ~(0xffffu << 5)) | (((value >> 16) & 0xffffu) << 5);
     *movz_ptr = movz;
     *movk_ptr = movk;
+#if defined(__APPLE__) && defined(__aarch64__)
+    fprintf(stderr, "[SYMLINK-MOVW] '%s' off=%d(0x%x) mode=%d movz@0x%x=0x%08x movk@0x%x=0x%08x\n",
+            sym_name, (int32_t)value, (uint32_t)value, mode,
+            data.offset + movz_offset, movz,
+            data.offset + movk_offset, movk);
+    fflush(stderr);
+#endif
   }
 
   return seek;

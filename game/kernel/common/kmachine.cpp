@@ -1,6 +1,9 @@
 #include "kmachine.h"
 
 #include <random>
+#if defined(__APPLE__) && defined(__aarch64__)
+#include <libkern/OSCacheControl.h>
+#endif
 
 #include "common/global_profiler/GlobalProfiler.h"
 #include "common/log/log.h"
@@ -124,10 +127,14 @@ void InitVideo() {
  * Flush caches.  Does all the memory, regardless of what you specify
  */
 void CacheFlush(void* mem, int size) {
+#if defined(__APPLE__) && defined(__aarch64__)
+  sys_icache_invalidate(mem, size);
+#else
   (void)mem;
   (void)size;
   // FlushCache(0);
   // FlushCache(2);
+#endif
 }
 
 /*!

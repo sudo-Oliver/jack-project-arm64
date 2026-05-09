@@ -57,6 +57,8 @@ int get_stack_offset(const RegVal* rv, const AllocationResult& allocs) {
 
 Register get_no_color_reg(const RegVal* rv) {
   if (!rv->rlet_constraint().has_value()) {
+    fmt::print("[DEBUG] get_no_color_reg: variable id={} has no rlet constraint\n",
+               rv->ireg().id);
     throw std::runtime_error(
         "Accessed a non-rlet constrained variable without the coloring system.");
   }

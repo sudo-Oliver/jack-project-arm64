@@ -141,12 +141,11 @@ u64 call_goal(Ptr<Function> f, u64 a, u64 b, u64 c, u64 st, void* offset) {
 #ifdef __linux__
   return _call_goal_asm_systemv(a, b, c, fptr, st_ptr, offset);
 #elif defined __APPLE__ && defined __aarch64__
-  // Darwin 25: switch EE thread to exec mode before entering GOAL code.
-  // GOAL heap writes cause SIGBUS which are emulated by the sigbus_handler in runtime.cpp.
-  pthread_jit_write_protect_np(1);
+  // Darwin 25: run GOAL in write mode (MAP_JIT exec alias is always executable).
+  // No exec-mode switch needed — write mode allows execution AND writes.
+  // This avoids the icache coherence issue when switching modes around C calls.
   sys_icache_invalidate(g_ee_main_mem, EE_MAIN_MEM_SIZE);
   u64 result = _call_goal_asm_arm64(a, b, c, fptr, st_ptr, offset);
-  pthread_jit_write_protect_np(0);  // back to write mode for any subsequent C EE writes
   return result;
 #elif defined __APPLE__ && defined __x86_64__
   return _call_goal_asm_systemv(a, b, c, fptr, st_ptr, offset);
@@ -165,11 +164,9 @@ u64 call_goal_on_stack(Ptr<Function> f, u64 rsp, u64 st, void* offset) {
 #ifdef __linux__
   return _call_goal_on_stack_asm_systemv(rsp, 0, 0, fptr, st_ptr, offset);
 #elif defined __APPLE__ && defined __aarch64__
-  // Darwin 25: switch to exec mode before entering GOAL code.
-  pthread_jit_write_protect_np(1);
+  // Darwin 25: run GOAL in write mode — MAP_JIT exec alias is always executable.
   sys_icache_invalidate(g_ee_main_mem, EE_MAIN_MEM_SIZE);
   u64 result = _call_goal_on_stack_asm_arm64(rsp, 0, 0, fptr, st_ptr, offset);
-  pthread_jit_write_protect_np(0);  // back to write mode for C code
   return result;
 #elif defined __APPLE__ && defined __x86_64__
   return _call_goal_on_stack_asm_systemv(rsp, 0, 0, fptr, st_ptr, offset);

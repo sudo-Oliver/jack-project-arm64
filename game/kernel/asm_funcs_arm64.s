@@ -30,33 +30,14 @@ _arg_call_arm64:
   stp q11, q10, [sp, #-32]!
   stp q9, q8, [sp, #-32]!
 
-  ;; Switch MAP_JIT to write mode so the C function can write to EE memory.
-  ;; We're currently in exec mode (set by call_goal before entering GOAL code).
-  ;; Save all 8 GOAL arg registers first since pthread_jit_write_protect_np
-  ;; is a C function that may clobber x0-x7.
-  stp x6, x7, [sp, #-16]!
-  stp x4, x5, [sp, #-16]!
-  stp x2, x3, [sp, #-16]!
-  stp x0, x1, [sp, #-16]!
-  mov x0, #0
-  bl  _pthread_jit_write_protect_np
-  ldp x0, x1, [sp], #16
-  ldp x2, x3, [sp], #16
-  ldp x4, x5, [sp], #16
-  ldp x6, x7, [sp], #16
-
+  ;; No mode switch needed: call_goal now stays in write mode.
+  ;; MAP_JIT exec alias is always executable regardless of protection mode.
   ;; Load the C function pointer from the saved frame slot.
   ;; [x29] == original x29 == C function pointer.
   ldr x8, [x29]
 
   ;; Call the C function.  x0-x7 still hold the GOAL arguments.
   blr x8
-
-  ;; Save return value (x0), switch back to exec mode, restore return value.
-  stp x0, x1, [sp, #-16]!
-  mov x0, #1
-  bl  _pthread_jit_write_protect_np
-  ldp x0, x1, [sp], #16
 
   ;; Restore callee-saved SIMD registers.
   ldp q9, q8, [sp], #32
@@ -97,23 +78,13 @@ _stack_call_arm64:
   stp x3, x2, [sp, #-16]!
   stp x1, x0, [sp, #-16]!
 
-  ;; Switch MAP_JIT to write mode before calling the C function.
-  ;; SP still points to arg array after the call (callee preserves SP).
-  mov x0, #0
-  bl  _pthread_jit_write_protect_np
-
+  ;; No mode switch needed: running in write mode throughout.
   ;; x0 = pointer to the argument array (first C argument).
   mov x0, sp
 
   ;; Load C function pointer from the saved frame and call.
   ldr x8, [x29]
   blr x8
-
-  ;; Save return value, switch back to exec mode, restore return value.
-  stp x0, x1, [sp, #-16]!
-  mov x0, #1
-  bl  _pthread_jit_write_protect_np
-  ldp x0, x1, [sp], #16
 
   ;; Discard the argument array from the stack (8 regs * 8 bytes = 64 bytes).
   ;; Use add rather than ldp so we don't clobber x0 (the return value).
