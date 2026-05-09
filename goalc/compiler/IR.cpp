@@ -610,8 +610,12 @@ void IR_FunctionCall::do_codegen_arm64(emitter::ObjectGenerator* gen,
                                        const AllocationResult& allocs,
                                        emitter::IR_Record irec) {
   auto freg = get_reg(m_func, allocs, irec);
-  gen->add_instr(IGen::add_gpr64_gpr64(*gen, freg, gen->get_offset_reg()), irec);
-  gen->add_instr(IGen::call_r64(*gen, freg), irec);
+  // X8 is ARM64 scratch (not an arg reg), so using it here never clobbers X0-X7 args.
+  // In-place add into freg would corrupt arg0 if freg==X0.
+  auto scratch = emitter::Register(emitter::X8);
+  gen->add_instr(IGen::mov_gpr64_gpr64(*gen, scratch, freg), irec);
+  gen->add_instr(IGen::add_gpr64_gpr64(*gen, scratch, gen->get_offset_reg()), irec);
+  gen->add_instr(IGen::call_r64(*gen, scratch), irec);
 }
 
 /////////////////////

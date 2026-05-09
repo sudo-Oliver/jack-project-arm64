@@ -30,9 +30,8 @@ _arg_call_arm64:
   stp q11, q10, [sp, #-32]!
   stp q9, q8, [sp, #-32]!
 
-  ;; No mode switch needed: call_goal now stays in write mode.
-  ;; MAP_JIT exec alias is always executable regardless of protection mode.
-  ;; Load the C function pointer from the saved frame slot.
+  ;; call_goal switches to exec mode before invoking this stub; C function target
+  ;; is in normal .text (always executable). Load C function pointer from frame slot.
   ;; [x29] == original x29 == C function pointer.
   ldr x8, [x29]
 
@@ -78,7 +77,7 @@ _stack_call_arm64:
   stp x3, x2, [sp, #-16]!
   stp x1, x0, [sp, #-16]!
 
-  ;; No mode switch needed: running in write mode throughout.
+  ;; Exec mode active (set by call_goal). C function in .text, always executable.
   ;; x0 = pointer to the argument array (first C argument).
   mov x0, sp
 

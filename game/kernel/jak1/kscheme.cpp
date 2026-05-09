@@ -822,6 +822,10 @@ Ptr<Symbol> intern_from_c(const char* name) {
     fprintf(stderr, "[INTERN-FROM-C] WRITE FAILED for '%s': str=%u->%u hash=%u->%u\n",
             name, str, info(symbol)->str.offset, hash, info(symbol)->hash);
     fflush(stderr);
+  } else {
+    fprintf(stderr, "[INTERN-FROM-C] NEW '%s' at sym=0x%x info=0x%x str=0x%x\n",
+            name, symbol.offset, info(symbol).offset, str);
+    fflush(stderr);
   }
 #endif
 
