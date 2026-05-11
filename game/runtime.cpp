@@ -434,11 +434,11 @@ static void sigbus_handler(int sig, siginfo_t* info, void* ctx) {
   (void)sig;
 
 #if defined(__aarch64__) && defined(__APPLE__)
-  // SIGBUS counter: print stats every 100k faults so we can gauge performance.
+  // SIGBUS counter: print stats every 10k faults so we can gauge performance.
   {
     static _Atomic uint64_t s_sigbus_count = 0;
     uint64_t n = ++s_sigbus_count;
-    if ((n % 1000) == 0) {
+    if ((n % 10000) == 0) {
       char buf[64];
       int len = __builtin_snprintf(buf, sizeof(buf), "[SIGBUS] count=%llu\n", (unsigned long long)n);
       write(2, buf, len);
@@ -576,7 +576,28 @@ static void sigbus_handler(int sig, siginfo_t* info, void* ctx) {
         }
       }
 
-      // ── 5. Pre-indexed GPR stores (bits[11:10]=11) ────────────────────────
+      // ── 5. Post-indexed GPR stores (bits[11:10]=01) ──────────────────────
+      // STR Xt, [Xn], #imm9   mask 0xFFE00C00, value bits[11:10]=01
+      {
+        uint32_t m = instr & 0xFFE00C00u;
+        if (m == 0xF8000400u || m == 0xB8000400u ||
+            m == 0x78000400u || m == 0x38000400u) {
+          int scale  = (instr >> 30) & 0x3;
+          int32_t imm9 = (int32_t)((instr >> 12) & 0x1FF);
+          if (imm9 & 0x100) imm9 |= ~(int32_t)0x1FF;
+          int Rn = (instr >> 5) & 0x1F;
+          int Rt = instr & 0x1F;
+          uint64_t base = gpr_base(Rn);
+          do_gpr_store(base, Rt, 1 << scale);  // store to [Rn] before writeback
+          uint64_t wb = base + (int64_t)imm9;
+          if (Rn < 29)       ss.__x[Rn] = wb;
+          else if (Rn == 29) ss.__fp = wb;
+          else if (Rn == 31) ss.__sp = wb;
+          return;
+        }
+      }
+
+      // ── 5b. Pre-indexed GPR stores (bits[11:10]=11) ───────────────────────
       // STR Xt, [Xn, #imm9]!   mask 0xFFE00C00, value bits[11:10]=11
       {
         uint32_t m = instr & 0xFFE00C00u;
@@ -589,29 +610,71 @@ static void sigbus_handler(int sig, siginfo_t* info, void* ctx) {
           int Rt = instr & 0x1F;
           uint64_t addr = gpr_base(Rn) + (int64_t)imm9;
           do_gpr_store(addr, Rt, 1 << scale);
-          // write-back Rn (Rn ≠ 31 since sp pre-index has different form)
-          if (Rn < 29) ss.__x[Rn] = addr;
+          if (Rn < 29)       ss.__x[Rn] = addr;
           else if (Rn == 29) ss.__fp = addr;
+          else if (Rn == 31) ss.__sp = addr;
           return;
         }
       }
 
       // ── 6. STNP / STP GPR pair stores (64-bit: opc=10 V=0) ───────────────
-      // STNP: 0xA8000000  STP signed-offset: 0xA9000000  (mask 0xFFC00000)
-      // Stores Rt at [addr], Rt2 at [addr+8]
+      // STNP: 0xA8000000  STP signed-offset: 0xA9000000
+      // STP post-indexed: 0xA8800000  STP pre-indexed: 0xA9800000
+      // Stores Rt at [addr], Rt2 at [addr+8]; post/pre-indexed write back Rn
       {
         uint32_t top10 = instr & 0xFFC00000u;
-        if (top10 == 0xA8000000u || top10 == 0xA9000000u) {
+        if (top10 == 0xA8000000u || top10 == 0xA9000000u ||
+            top10 == 0xA8800000u || top10 == 0xA9800000u) {
           int32_t imm7 = (int32_t)((instr >> 15) & 0x7F);
           if (imm7 & 0x40) imm7 |= ~(int32_t)0x7F;
           int Rt2 = (instr >> 10) & 0x1F;
           int Rn  = (instr >>  5) & 0x1F;
           int Rt  = instr & 0x1F;
-          uint64_t addr = gpr_base(Rn) + (int64_t)imm7 * 8;
+          uint64_t base = gpr_base(Rn);
+          // post-indexed: store to [Rn] then Rn += imm7*8
+          // pre-indexed:  store to [Rn + imm7*8] and write-back
+          uint64_t addr = (top10 == 0xA8800000u) ? base : base + (int64_t)imm7 * 8;
           pthread_jit_write_protect_np(0);
           *(uint64_t*)addr       = gpr(Rt);
           *(uint64_t*)(addr + 8) = gpr(Rt2);
           pthread_jit_write_protect_np(1);
+          // write-back for pre/post-indexed
+          if (top10 == 0xA8800000u || top10 == 0xA9800000u) {
+            uint64_t wb = base + (int64_t)imm7 * 8;
+            if (Rn < 29)       ss.__x[Rn] = wb;
+            else if (Rn == 29) ss.__fp = wb;
+            else if (Rn == 31) ss.__sp = wb;
+          }
+          uctx->uc_mcontext->__ss.__pc = pc + 4;
+          return;
+        }
+      }
+
+      // ── 6b. STNP / STP W-pair stores (32-bit GPR: opc=00 V=0) ───────────────
+      // STNP W: 0x28000000  STP post-indexed: 0x28800000
+      // STP signed-offset: 0x29000000  STP pre-indexed: 0x29800000
+      // Stores Rt at [addr], Rt2 at [addr+4]
+      {
+        uint32_t top10 = instr & 0xFFC00000u;
+        if (top10 == 0x28000000u || top10 == 0x29000000u ||
+            top10 == 0x28800000u || top10 == 0x29800000u) {
+          int32_t imm7 = (int32_t)((instr >> 15) & 0x7F);
+          if (imm7 & 0x40) imm7 |= ~(int32_t)0x7F;
+          int Rt2 = (instr >> 10) & 0x1F;
+          int Rn  = (instr >>  5) & 0x1F;
+          int Rt  = instr & 0x1F;
+          uint64_t base = gpr_base(Rn);
+          uint64_t addr = (top10 == 0x28800000u) ? base : base + (int64_t)imm7 * 4;
+          pthread_jit_write_protect_np(0);
+          *(uint32_t*)addr       = (uint32_t)gpr(Rt);
+          *(uint32_t*)(addr + 4) = (uint32_t)gpr(Rt2);
+          pthread_jit_write_protect_np(1);
+          if (top10 == 0x28800000u || top10 == 0x29800000u) {
+            uint64_t wb = base + (int64_t)imm7 * 4;
+            if (Rn < 29)       ss.__x[Rn] = wb;
+            else if (Rn == 29) ss.__fp = wb;
+            else if (Rn == 31) ss.__sp = wb;
+          }
           uctx->uc_mcontext->__ss.__pc = pc + 4;
           return;
         }
