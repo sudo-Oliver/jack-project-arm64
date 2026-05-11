@@ -1,13 +1,16 @@
 #include "klink.h"
 
 #if defined(__APPLE__) && defined(__aarch64__)
+#include <libkern/OSCacheControl.h>
 #include <pthread.h>
 #endif
 
+#include "common/goal_constants.h"
 #include "common/log/log.h"
 #include "common/symbols.h"
 
 #include "game/kernel/common/fileio.h"
+#include "game/runtime.h"
 #include "game/kernel/common/klink.h"
 #include "game/kernel/common/kmachine.h"
 #include "game/kernel/common/kprint.h"
@@ -708,6 +711,7 @@ u64 link_and_exec_wrapper(u64* args) {
                               Ptr<kheapinfo>(args[3]), args[4], false)
                     .offset;
 #if defined(__APPLE__) && defined(__aarch64__)
+  sys_icache_invalidate(g_ee_main_mem, EE_MAIN_MEM_SIZE);
   pthread_jit_write_protect_np(1);
 #endif
   return result;
@@ -732,6 +736,7 @@ uint64_t link_begin(u64* args) {
     saved_link_control.jak1_finish(false);
   }
 #if defined(__APPLE__) && defined(__aarch64__)
+  sys_icache_invalidate(g_ee_main_mem, EE_MAIN_MEM_SIZE);
   pthread_jit_write_protect_np(1);
 #endif
   return work_result != 0;
@@ -750,6 +755,7 @@ uint64_t link_resume() {
     saved_link_control.jak1_finish(false);
   }
 #if defined(__APPLE__) && defined(__aarch64__)
+  sys_icache_invalidate(g_ee_main_mem, EE_MAIN_MEM_SIZE);
   pthread_jit_write_protect_np(1);
 #endif
   return work_result != 0;
