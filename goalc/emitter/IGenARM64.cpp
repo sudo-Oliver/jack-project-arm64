@@ -1351,6 +1351,24 @@ InstructionARM64 ins_vf_element(Register dst, u8 dstIdx, Register src, u8 srcIdx
   return InstructionARM64(0x6E000400u, Field{imm5 << 16}, Field{imm4 << 11}, Rn(src.id()), Rd(dst.id()));
 }
 
+InstructionARM64 umov_gpr32_vf_element(Register gpr_dst, Register vf_src, u8 idx) {
+  // UMOV Wd, Vn.S[idx] — extract 32-bit SIMD element to GPR (unsigned)
+  // Advanced SIMD copy: 0_0_0_01110_000_imm5_0_0111_1_Rn_Rd
+  // imm5 = (idx<<2)|4  (S-lane encoding: bit2=1, upper bits = lane index)
+  ASSERT(idx < 4);
+  u32 imm5 = ((u32)idx << 2u) | 4u;
+  return InstructionARM64(0x0E003C00u, Field{imm5 << 16}, Rn(vf_src.id()), Rd(gpr_dst.id()));
+}
+
+InstructionARM64 ins_vf_element_from_gpr32(Register vf_dst, u8 idx, Register gpr_src) {
+  // INS Vd.S[idx], Wn — insert GPR 32-bit word into SIMD element
+  // Advanced SIMD copy: 0_1_0_01110_000_imm5_0_00111_Rn_Rd
+  // imm5 = (idx<<2)|4  (S-lane encoding, same as ins_vf_element dst field)
+  ASSERT(idx < 4);
+  u32 imm5 = ((u32)idx << 2u) | 4u;
+  return InstructionARM64(0x4E001C00u, Field{imm5 << 16}, Rn(gpr_src.id()), Rd(vf_dst.id()));
+}
+
 InstructionARM64 rev64_4s(Register dst, Register src) {
   // REV64 Vd.4S, Vn.4S — reverse 32-bit elements within each 64-bit lane
   // Advanced SIMD two-reg misc: 0_1_0_01110_10_1_00000_000010_Rn_Rd

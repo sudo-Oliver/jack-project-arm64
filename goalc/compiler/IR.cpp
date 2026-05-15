@@ -2966,7 +2966,65 @@ void IR_SwizzleVF::do_codegen_arm64(emitter::ObjectGenerator* gen,
     gen->add_instr(IGen::ARM64::ins_vf_element(dst, 1, dst, 3), irec);
     return;
   }
-  ASSERT_MSG(false, fmt::format("swizzle_vf: unhandled ARM64 pattern 0x{:02X} — implement in IR.cpp", c).c_str());
+
+  // General fallback: handles all remaining 248 patterns.
+  //
+  // p[i] = source lane for destination lane i  (2 bits each from c)
+  u8 p[4] = {(u8)(c & 3), (u8)((c >> 2) & 3), (u8)((c >> 4) & 3), (u8)((c >> 6) & 3)};
+
+  if (dst.id() != src.id()) {
+    // Different physical registers: any order is safe (src is never modified).
+    for (int i = 0; i < 4; i++) {
+      gen->add_instr(IGen::ARM64::ins_vf_element(dst, i, src, p[i]), irec);
+    }
+    return;
+  }
+
+  // In-place (dst == src): use topological ordering to avoid read-after-write hazards.
+  // Constraint: write lane i only BEFORE lane p[i] has been written
+  // (once p[i] is written its original value is gone and lane i can no longer read it).
+  //
+  // For cycles we save the cycle root element into X16 (ARM64 IP0 — never GOAL-allocated,
+  // safe as intra-procedure scratch per AAPCS64) and restore it at the tail via INS-from-GPR.
+  bool done[4] = {};
+  const emitter::Register x16(emitter::X16);
+
+  // Greedy topological pass: process any lane whose source hasn't been overwritten yet.
+  bool progress = true;
+  while (progress) {
+    progress = false;
+    for (int i = 0; i < 4; i++) {
+      if (done[i])
+        continue;
+      // Safe when: (a) fixed point (reads and writes same lane atomically), or
+      //            (b) source lane p[i] has not yet been written.
+      if (p[i] == i || !done[p[i]]) {
+        if (p[i] != i) {
+          gen->add_instr(IGen::ARM64::ins_vf_element(dst, i, src, p[i]), irec);
+        }
+        done[i] = true;
+        progress = true;
+      }
+    }
+  }
+
+  // Any lanes still undone are members of dependency cycles.
+  // Walk each cycle: save root to X16, resolve the chain, restore via GPR.
+  for (int start = 0; start < 4; start++) {
+    if (done[start])
+      continue;
+    gen->add_instr(IGen::ARM64::umov_gpr32_vf_element(x16, src, start), irec);
+    int prev = start;
+    int curr = p[start];
+    while (curr != start) {
+      gen->add_instr(IGen::ARM64::ins_vf_element(dst, prev, src, curr), irec);
+      done[prev] = true;
+      prev = curr;
+      curr = p[curr];
+    }
+    gen->add_instr(IGen::ARM64::ins_vf_element_from_gpr32(dst, prev, x16), irec);
+    done[prev] = true;
+  }
 }
 
 // ---- Square Root VF
