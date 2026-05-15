@@ -1353,11 +1353,11 @@ InstructionARM64 ins_vf_element(Register dst, u8 dstIdx, Register src, u8 srcIdx
 
 InstructionARM64 umov_gpr32_vf_element(Register gpr_dst, Register vf_src, u8 idx) {
   // UMOV Wd, Vn.S[idx] — extract 32-bit SIMD element to GPR (unsigned)
-  // Advanced SIMD copy: 0_0_0_01110_000_imm5_0_0111_1_Rn_Rd
+  // Advanced SIMD copy: 0_0_1_01110_000_imm5_0_0111_1_Rn_Rd  (op=1 = bit 29)
   // imm5 = (idx<<2)|4  (S-lane encoding: bit2=1, upper bits = lane index)
   ASSERT(idx < 4);
   u32 imm5 = ((u32)idx << 2u) | 4u;
-  return InstructionARM64(0x0E003C00u, Field{imm5 << 16}, Rn(vf_src.id()), Rd(gpr_dst.id()));
+  return InstructionARM64(0x2E003C00u, Field{imm5 << 16}, Rn(vf_src.id()), Rd(gpr_dst.id()));
 }
 
 InstructionARM64 ins_vf_element_from_gpr32(Register vf_dst, u8 idx, Register gpr_src) {

@@ -2981,23 +2981,45 @@ void IR_SwizzleVF::do_codegen_arm64(emitter::ObjectGenerator* gen,
   }
 
   // In-place (dst == src): use topological ordering to avoid read-after-write hazards.
-  // Constraint: write lane i only BEFORE lane p[i] has been written
-  // (once p[i] is written its original value is gone and lane i can no longer read it).
+  // Writing lane i corrupts src[i]; we must read src[p[i]] before anything writes to p[i].
   //
-  // For cycles we save the cycle root element into X16 (ARM64 IP0 — never GOAL-allocated,
-  // safe as intra-procedure scratch per AAPCS64) and restore it at the tail via INS-from-GPR.
+  // Lanes that form true cycles (following p from i returns to i without hitting a fixed
+  // point) cannot be resolved by topological ordering alone. They are handled separately
+  // using X16 (ARM64 IP0 — never GOAL-allocated, safe scratch per AAPCS64) to break the
+  // cycle: save the root element to X16, walk the chain, restore the tail via INS-from-GPR.
   bool done[4] = {};
   const emitter::Register x16(emitter::X16);
 
-  // Greedy topological pass: process any lane whose source hasn't been overwritten yet.
+  // Pre-detect cycle membership: a lane is in a cycle if following p from it returns to
+  // itself before reaching a fixed point. Fixed points (p[i]==i) are excluded.
+  bool in_cycle[4] = {};
+  for (int i = 0; i < 4; i++) {
+    if (p[i] == i)
+      continue;
+    int curr = p[i];
+    for (int step = 0; step < 4; step++) {
+      if (curr == i) {
+        in_cycle[i] = true;
+        break;
+      }
+      if (p[curr] == curr)
+        break;
+      curr = p[curr];
+    }
+  }
+
+  // Greedy topological pass: process non-cycle lanes in dependency order.
+  // A non-cycle lane i is safe to write when its source p[i] hasn't been overwritten yet
+  // (!done[p[i]]) — this holds trivially at start for chain heads (nothing is done yet)
+  // and continues to hold as the greedy pass processes chains in dependency order.
+  // Cycle members are excluded here; they are handled in the cycle-walk section below.
   bool progress = true;
   while (progress) {
     progress = false;
     for (int i = 0; i < 4; i++) {
-      if (done[i])
+      if (done[i] || in_cycle[i])
         continue;
-      // Safe when: (a) fixed point (reads and writes same lane atomically), or
-      //            (b) source lane p[i] has not yet been written.
+      // Fixed point or source not yet overwritten.
       if (p[i] == i || !done[p[i]]) {
         if (p[i] != i) {
           gen->add_instr(IGen::ARM64::ins_vf_element(dst, i, src, p[i]), irec);
@@ -3008,8 +3030,9 @@ void IR_SwizzleVF::do_codegen_arm64(emitter::ObjectGenerator* gen,
     }
   }
 
-  // Any lanes still undone are members of dependency cycles.
-  // Walk each cycle: save root to X16, resolve the chain, restore via GPR.
+  // Cycle-walk: save cycle root to X16, rotate the chain, restore tail from X16.
+  // Non-cycle lanes all point into cycles as sources; the greedy pass above has already
+  // emitted those reads before we overwrite any cycle member here.
   for (int start = 0; start < 4; start++) {
     if (done[start])
       continue;
