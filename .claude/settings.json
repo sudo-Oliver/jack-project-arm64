@@ -1,0 +1,44 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cmake --build build*)",
+      "Bash(cmake -B build*)",
+      "Bash(./build/goalc-test*)",
+      "Bash(./build/offline-test*)",
+      "Bash(./build/goalc/goalc*)",
+      "Bash(./build/decompiler/decompiler*)",
+      "Bash(./build/decompiler/extractor*)",
+      "Bash(task build*)",
+      "Bash(task gen-cmake*)",
+      "Bash(task extract*)",
+      "Bash(task repl*)",
+      "Bash(task run-game*)",
+      "Bash(gh run *)",
+      "Bash(gh pr *)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if echo \"$CLAUDE_FILE_PATHS\" | grep -qE '\\.(cpp|c|h|hpp)$'; then clang-format -i $CLAUDE_FILE_PATHS 2>/dev/null || true; fi"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if echo \"$CLAUDE_TOOL_INPUT\" | grep -q 'git commit'; then NEW_TODOS=$(git diff --cached -U0 | grep -E '^\\+.*TODO ARM64' | wc -l | tr -d ' '); if [ \"$NEW_TODOS\" -gt 0 ]; then echo \"warning: $NEW_TODOS new 'TODO ARM64' marker(s) staged — consider resolving before committing.\" >&2; fi; fi; exit 0"
+          }
+        ]
+      }
+    ]
+  }
+}
