@@ -59,39 +59,35 @@ InstructionARM64 mov_gpr64_s32(Register dst, int64_t val) {
 }
 
 InstructionARM64 movd_gpr32_xmm32(Register dst, Register src) {
-  // FMOV Wd, Sn — move 32-bit float register to 32-bit GPR
-  // https://www.scs.stanford.edu/~zyedidia/arm64/fmov_float.html
-  // Encoding: 0_00_11110_00_1_00110_000000_Rn_Rd
+  // FMOV Wd, Sn — move 32-bit float register to 32-bit GPR (FP → GP)
+  // Encoding: 0_00_11110_00_1_00_111_000000_Rn_Rd  (sf=0, ftype=00, rmode=00, opcode=111)
   ASSERT(dst.is_gpr(instr_set));
   ASSERT(src.is_128bit_simd(instr_set));
-  return InstructionARM64(0x1E260000u, Rn(src.id()), Rd(dst.id()));
-}
-
-InstructionARM64 movd_xmm32_gpr32(Register dst, Register src) {
-  // FMOV Sd, Wn — move 32-bit GPR to float register
-  // https://www.scs.stanford.edu/~zyedidia/arm64/fmov_float.html
-  // Encoding: 0_00_11110_00_1_00111_000000_Rn_Rd
-  ASSERT(dst.is_128bit_simd(instr_set));
-  ASSERT(src.is_gpr(instr_set));
   return InstructionARM64(0x1E270000u, Rn(src.id()), Rd(dst.id()));
 }
 
+InstructionARM64 movd_xmm32_gpr32(Register dst, Register src) {
+  // FMOV Sd, Wn — move 32-bit GPR to float register (GP → FP)
+  // Encoding: 0_00_11110_00_1_00_110_000000_Rn_Rd  (sf=0, ftype=00, rmode=00, opcode=110)
+  ASSERT(dst.is_128bit_simd(instr_set));
+  ASSERT(src.is_gpr(instr_set));
+  return InstructionARM64(0x1E260000u, Rn(src.id()), Rd(dst.id()));
+}
+
 InstructionARM64 movq_gpr64_xmm64(Register dst, Register src) {
-  // FMOV Xd, Dn — move 64-bit float (D) register to 64-bit GPR
-  // type=01 (double), opcode2=00110
-  // Encoding: 1_00_11110_01_1_00110_000000_Rn_Rd  (sf=1 for 64-bit GPR)
+  // FMOV Xd, Dn — move 64-bit float (D) register to 64-bit GPR (FP → GP)
+  // Encoding: 1_00_11110_01_1_00_111_000000_Rn_Rd  (sf=1, ftype=01, rmode=00, opcode=111)
   ASSERT(dst.is_gpr(instr_set));
   ASSERT(src.is_128bit_simd(instr_set));
-  return InstructionARM64(0x9E660000u, Rn(src.id()), Rd(dst.id()));
+  return InstructionARM64(0x9E670000u, Rn(src.id()), Rd(dst.id()));
 }
 
 InstructionARM64 movq_xmm64_gpr64(Register dst, Register src) {
-  // FMOV Dn, Xn — move 64-bit GPR to 64-bit float (D) register
-  // type=01 (double), opcode2=00111
-  // Encoding: 1_00_11110_01_1_00111_000000_Rn_Rd  (sf=1 for 64-bit GPR)
+  // FMOV Dd, Xn — move 64-bit GPR to 64-bit float (D) register (GP → FP)
+  // Encoding: 1_00_11110_01_1_00_110_000000_Rn_Rd  (sf=1, ftype=01, rmode=00, opcode=110)
   ASSERT(dst.is_128bit_simd(instr_set));
   ASSERT(src.is_gpr(instr_set));
-  return InstructionARM64(0x9E670000u, Rn(src.id()), Rd(dst.id()));
+  return InstructionARM64(0x9E660000u, Rn(src.id()), Rd(dst.id()));
 }
 
 InstructionARM64 mov_xmm32_xmm32(Register dst, Register src) {
