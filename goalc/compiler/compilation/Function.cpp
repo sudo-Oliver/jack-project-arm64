@@ -644,7 +644,8 @@ Val* Compiler::compile_real_function_call(const goos::Object& form,
     const auto& arg = args.at(i);
     auto reg = cc.arg_regs.at(i);
     arg_outs.push_back(env->make_ireg(
-        arg->type(), reg.is_128bit_simd(m_instr_set) ? RegClass::INT_128 : RegClass::GPR_64));
+        arg->type(),
+        emitter::gRegInfo.is_xmm_arg_reg(reg) ? RegClass::INT_128 : RegClass::GPR_64));
     arg_outs.back()->mark_as_settable();
     env->emit_ir<IR_RegSet>(form, arg_outs.back(), arg);
   }
