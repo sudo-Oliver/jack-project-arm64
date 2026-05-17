@@ -294,8 +294,14 @@ void _stack_call_arm64();
  * But calling this function is fast. It used to be really fast but wrong.
  */
 Ptr<Function> make_function_from_c_systemv(void* func, bool arg3_is_pp) {
+#if defined(__aarch64__) && defined(__APPLE__)
+  auto raw = kmalloc(kcodeheap, 0x40, KMALLOC_MEMSET, "trampoline");
+  *Ptr<u32>(raw.offset) = u32_in_fixed_sym(FIX_SYM_FUNCTION_TYPE);
+  auto mem = Ptr<u8>(raw.offset + BASIC_OFFSET);
+#else
   auto mem = Ptr<u8>(alloc_heap_object(s7.offset + FIX_SYM_GLOBAL_HEAP,
                                        u32_in_fixed_sym(FIX_SYM_FUNCTION_TYPE), 0x40, UNKNOWN_PP));
+#endif
 #ifndef __aarch64__
   auto f = (uint64_t)func;
   auto target_function = (u8*)&f;
@@ -396,8 +402,14 @@ Ptr<Function> make_function_from_c_win32(void* func, bool arg3_is_pp) {
 
 Ptr<Function> make_stack_arg_function_from_c_systemv(void* func) {
   // allocate a function object on the global heap
+#if defined(__aarch64__) && defined(__APPLE__)
+  auto raw = kmalloc(kcodeheap, 0x40, KMALLOC_MEMSET, "trampoline");
+  *Ptr<u32>(raw.offset) = u32_in_fixed_sym(FIX_SYM_FUNCTION_TYPE);
+  auto mem = Ptr<u8>(raw.offset + BASIC_OFFSET);
+#else
   auto mem = Ptr<u8>(alloc_heap_object(s7.offset + FIX_SYM_GLOBAL_HEAP,
                                        u32_in_fixed_sym(FIX_SYM_FUNCTION_TYPE), 0x40, UNKNOWN_PP));
+#endif
 #ifndef __aarch64__
   auto f = (uint64_t)func;
   auto target_function = (u8*)&f;
@@ -505,12 +517,18 @@ Ptr<Function> make_stack_arg_function_from_c(void* func) {
  * Create a GOAL function which does nothing and immediately returns.
  */
 Ptr<Function> make_nothing_func() {
+#if defined(__aarch64__) && defined(__APPLE__)
+  auto raw_n = kmalloc(kcodeheap, 0x14, KMALLOC_MEMSET, "nothing-func");
+  *Ptr<u32>(raw_n.offset) = u32_in_fixed_sym(FIX_SYM_FUNCTION_TYPE);
+  auto mem = Ptr<u8>(raw_n.offset + BASIC_OFFSET);
+  *Ptr<u32>(mem.offset) = 0xD65F03C0u;  // ARM64 ret
+#else
   auto mem = Ptr<u8>(alloc_heap_object(s7.offset + FIX_SYM_GLOBAL_HEAP,
                                        u32_in_fixed_sym(FIX_SYM_FUNCTION_TYPE), 0x14, UNKNOWN_PP));
-
   // a single x86-64 ret.
   mem.c()[0] = 0xc3;
   // CacheFlush(mem, 8);
+#endif
   return mem.cast<Function>();
 }
 
@@ -518,6 +536,13 @@ Ptr<Function> make_nothing_func() {
  * Create a GOAL function which returns 0.
  */
 Ptr<Function> make_zero_func() {
+#if defined(__aarch64__) && defined(__APPLE__)
+  auto raw_z = kmalloc(kcodeheap, 0x14, KMALLOC_MEMSET, "zero-func");
+  *Ptr<u32>(raw_z.offset) = u32_in_fixed_sym(FIX_SYM_FUNCTION_TYPE);
+  auto mem = Ptr<u8>(raw_z.offset + BASIC_OFFSET);
+  *Ptr<u32>(mem.offset)     = 0xD2800000u;  // ARM64 movz x0, #0
+  *Ptr<u32>(mem.offset + 4) = 0xD65F03C0u;  // ARM64 ret
+#else
   auto mem = Ptr<u8>(alloc_heap_object(s7.offset + FIX_SYM_GLOBAL_HEAP,
                                        u32_in_fixed_sym(FIX_SYM_FUNCTION_TYPE), 0x14, UNKNOWN_PP));
   // xor eax, eax
@@ -526,6 +551,7 @@ Ptr<Function> make_zero_func() {
   // ret
   mem.c()[2] = 0xc3;
   // CacheFlush(mem, 8);
+#endif
   return mem.cast<Function>();
 }
 
@@ -824,10 +850,12 @@ Ptr<Type> set_type_values(Ptr<Type> type, Ptr<Type> parent, u64 flags) {
 }
 
 static bool in_valid_memory_for_new_type(u32 addr) {
+  if (EE_CODE_HEAP_START <= addr && addr < EE_CODE_HEAP_END) {
+    return false;
+  }
   if (SymbolTable2.offset <= addr && addr < 0x8000000) {
     return true;
   }
-
   if (addr < 0x100000 && addr >= 0x84000) {
     return true;
   }
@@ -1065,12 +1093,15 @@ u64 type_typep(Ptr<Type> t1, Ptr<Type> t2) {
     return (s7 + FIX_SYM_TRUE).offset;
   }
 
-  do {
+  for (int depth = 0; depth < 128; depth++) {
     t1 = t1->parent;
     if (t1 == t2) {
       return (s7 + FIX_SYM_TRUE).offset;
     }
-  } while (t1.offset && t1.offset != u32_in_fixed_sym(FIX_SYM_OBJECT_TYPE));
+    if (!t1.offset || t1.offset == u32_in_fixed_sym(FIX_SYM_OBJECT_TYPE)) {
+      break;
+    }
+  }
   return s7.offset;
 }
 

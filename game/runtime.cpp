@@ -169,10 +169,18 @@ void ee_runner(SystemThreadInterface& iface) {
   fprintf(stderr, "[EE-DEBUG] after prof().root_event()\n");
   fflush(stderr);
   // Allocate Main RAM (EE memory).
-  // On Darwin 25 (macOS 26+): W^X is enforced system-wide. MAP_JIT is the only way to get
-  // executable memory. GOAL code executes from MAP_JIT; heap WRITES from GOAL code are
-  // emulated by the SIGBUS handler which toggles pthread_jit_write_protect_np per store.
-  // C-side writes (init, linker) run with write-protect disabled (pthread_jit_write_protect_np(0)).
+  //
+  // On Darwin ARM64 (macOS 26+ / Darwin 25): W^X is enforced via APRR hardware.
+  // MAP_JIT is required for any page that will be executed after being written.
+  // Strategy (validated by tools/arm64_jit_layout_test.cpp Phase 0):
+  //   1. Allocate the full EE as MAP_JIT (kernel honours the address hint).
+  //   2. Overwrite the two data regions with regular mmap pages (MAP_FIXED).
+  //      The 16 MB code region [EE_CODE_HEAP_START, EE_CODE_HEAP_END) stays MAP_JIT.
+  //   3. GOAL heap writes land in the data regions → no W^X SIGBUS.
+  //      The linker toggles write-protect around code-region writes explicitly.
+  // NOTE: MAP_FIXED over a MAP_JIT range replaces those VAs with regular pages
+  // (non-MAP_JIT physical pages). This is an observed-to-work Darwin behaviour;
+  // vm_remap aliasing of MAP_JIT pages fails with KERN_PROTECTION_FAILURE (kr=2).
   if (EE_MEM_LOW_MAP) {
     g_ee_main_mem =
         (u8*)mmap((void*)0x10000000, EE_MAIN_MEM_SIZE, PROT_EXEC | PROT_READ | PROT_WRITE,
@@ -205,8 +213,30 @@ void ee_runner(SystemThreadInterface& iface) {
   fflush(stderr);
 
 #if defined(__aarch64__) && defined(__APPLE__)
-  // Darwin 25: EE memory is MAP_JIT. Start in write mode for C-side init (memset, linker, etc.).
-  // We switch to exec mode just before invoking GOAL code (see call_goal / call_goal_on_stack).
+  // Replace data regions with regular (non-MAP_JIT) pages so GOAL heap writes
+  // in exec mode produce no SIGBUS.  The code region [EE_CODE_HEAP_START,
+  // EE_CODE_HEAP_END) is left as MAP_JIT.
+  {
+    void* r1 = mmap(g_ee_main_mem, EE_CODE_HEAP_START,
+                    PROT_READ | PROT_WRITE,
+                    MAP_ANONYMOUS | MAP_PRIVATE | MAP_FIXED, -1, 0);
+    void* r2 = mmap(g_ee_main_mem + EE_CODE_HEAP_END,
+                    EE_MAIN_MEM_SIZE - EE_CODE_HEAP_END,
+                    PROT_READ | PROT_WRITE,
+                    MAP_ANONYMOUS | MAP_PRIVATE | MAP_FIXED, -1, 0);
+    if (r1 == MAP_FAILED || r2 == MAP_FAILED) {
+      fprintf(stderr, "[EE-DEBUG] EE data-region split mmap FAILED: %s\n", strerror(errno));
+      fflush(stderr);
+      iface.initialization_complete();
+      return;
+    }
+    fprintf(stderr, "[EE-DEBUG] EE split: data[0..%uMB), code[%uMB..%uMB), data[%uMB..%uMB)\n",
+            EE_CODE_HEAP_START >> 20,
+            EE_CODE_HEAP_START >> 20, EE_CODE_HEAP_END >> 20,
+            EE_CODE_HEAP_END >> 20, (unsigned)EE_MAIN_MEM_SIZE >> 20);
+    fflush(stderr);
+  }
+  // Start in write mode for C-side init (memset, linker, kinitheap, etc.).
   pthread_jit_write_protect_np(0);
   fprintf(stderr, "[EE-DEBUG] MAP_JIT write mode enabled for C init\n");
   fflush(stderr);
@@ -554,10 +584,36 @@ static void sigbus_handler(int sig, siginfo_t* info, void* ctx) {
     ucontext_t* uctx = (ucontext_t*)ctx;
     uint64_t pc = uctx->uc_mcontext->__ss.__pc;
 
-    // Fault must be in EE memory (MAP_JIT region) to be a GOAL heap write
+    // Fault must be in the MAP_JIT code region to be a legitimate linker/JIT write.
+    // After the EE memory split, data regions are regular mmap — they cannot SIGBUS.
     uintptr_t fault_addr = (uintptr_t)info->si_addr;
     uintptr_t ee_base = (uintptr_t)g_ee_main_mem;
-    if (fault_addr >= ee_base && fault_addr < ee_base + EE_MAIN_MEM_SIZE) {
+    uintptr_t ee_code_start = ee_base + EE_CODE_HEAP_START;
+    uintptr_t ee_code_end   = ee_base + EE_CODE_HEAP_END;
+
+    // Crash loudly if fault is in EE but outside the MAP_JIT code region.
+    if (fault_addr >= ee_base && fault_addr < ee_base + EE_MAIN_MEM_SIZE &&
+        (fault_addr < ee_code_start || fault_addr >= ee_code_end)) {
+      char buf2[256];
+      int n2 = __builtin_snprintf(buf2, sizeof(buf2),
+        "[EE-CRASH] SIGBUS in DATA region at EE+0x%zx — "
+        "data regions are not MAP_JIT; this is a runtime bug.\n",
+        fault_addr - ee_base);
+      write(2, buf2, n2);
+      dump_arm64_crash_context(uctx->uc_mcontext->__ss.__pc,
+                               uctx->uc_mcontext->__ss.__lr,
+                               uctx->uc_mcontext->__ss.__sp,
+                               uctx->uc_mcontext->__ss.__x,
+                               uctx->uc_mcontext->__ss.__fp,
+                               fault_addr);
+      struct sigaction sa_def{};
+      sa_def.sa_handler = SIG_DFL;
+      sigaction(SIGBUS, &sa_def, nullptr);
+      raise(SIGBUS);
+      return;
+    }
+
+    if (fault_addr >= ee_code_start && fault_addr < ee_code_end) {
 
       // Read the faulting instruction (MAP_JIT is readable in exec mode)
       uint32_t instr = *(const uint32_t*)pc;

@@ -194,13 +194,6 @@ uint32_t symlink_v3_arm64_movw(Ptr<uint8_t> link, Ptr<uint8_t> data) {
   auto sym = jak1::intern_from_c(sym_name);
   int32_t sym_offset = sym.cast<u32>() - s7;
   uint32_t sym_addr = sym.cast<u32>().offset;
-#if defined(__APPLE__) && defined(__aarch64__)
-  if (sym_offset < -(1 << 20) || sym_offset > (1 << 20)) {
-    fprintf(stderr, "[SYMLINK-MOVW] SUSPICIOUS: name='%s' sym=0x%x s7=0x%x off=%d\n",
-            sym_name, sym_addr, s7.offset, sym_offset);
-    fflush(stderr);
-  }
-#endif
 
   uint32_t entry_count = *(link + seek).cast<uint32_t>();
   seek += 4;
@@ -239,13 +232,6 @@ uint32_t symlink_v3_arm64_movw(Ptr<uint8_t> link, Ptr<uint8_t> data) {
     movk = (movk & ~(0xffffu << 5)) | (((value >> 16) & 0xffffu) << 5);
     *movz_ptr = movz;
     *movk_ptr = movk;
-#if defined(__APPLE__) && defined(__aarch64__)
-    fprintf(stderr, "[SYMLINK-MOVW] '%s' off=%d(0x%x) mode=%d movz@0x%x=0x%08x movk@0x%x=0x%08x\n",
-            sym_name, (int32_t)value, (uint32_t)value, mode,
-            data.offset + movz_offset, movz,
-            data.offset + movk_offset, movk);
-    fflush(stderr);
-#endif
   }
 
   return seek;
@@ -297,7 +283,11 @@ uint32_t link_control::jak1_work_v3() {
           } else {
             Ptr<u8> src(ofh->code_infos[seg_id].offset);
             ofh->code_infos[seg_id].offset =
+#if defined(__aarch64__) && defined(__APPLE__)
+                kmalloc(kcodeheap, ofh->code_infos[seg_id].size, 0, "debug-segment").offset;
+#else
                 kmalloc(kdebugheap, ofh->code_infos[seg_id].size, 0, "debug-segment").offset;
+#endif
             if (ofh->code_infos[seg_id].offset == 0) {
               MsgErr("dkernel: unable to malloc %d bytes for debug-segment\n",
                      ofh->code_infos[seg_id].size);
@@ -313,7 +303,11 @@ uint32_t link_control::jak1_work_v3() {
         } else {
           Ptr<u8> src(ofh->code_infos[seg_id].offset);
           ofh->code_infos[seg_id].offset =
+#if defined(__aarch64__) && defined(__APPLE__)
+              kmalloc(kcodeheap, ofh->code_infos[seg_id].size, 0, "main-segment").offset;
+#else
               kmalloc(m_heap, ofh->code_infos[seg_id].size, 0, "main-segment").offset;
+#endif
           if (ofh->code_infos[seg_id].offset == 0) {
             MsgErr("dkernel: unable to malloc %d bytes for main-segment\n",
                    ofh->code_infos[seg_id].size);
@@ -328,8 +322,13 @@ uint32_t link_control::jak1_work_v3() {
         } else {
           Ptr<u8> src(ofh->code_infos[seg_id].offset);
           ofh->code_infos[seg_id].offset =
+#if defined(__aarch64__) && defined(__APPLE__)
+              kmalloc(kcodeheap, ofh->code_infos[seg_id].size, KMALLOC_TOP, "top-level-segment")
+                  .offset;
+#else
               kmalloc(m_heap, ofh->code_infos[seg_id].size, KMALLOC_TOP, "top-level-segment")
                   .offset;
+#endif
           if (ofh->code_infos[seg_id].offset == 0) {
             MsgErr("dkernel: unable to malloc %d bytes for top-level-segment\n",
                    ofh->code_infos[seg_id].size);
@@ -711,7 +710,7 @@ u64 link_and_exec_wrapper(u64* args) {
                               Ptr<kheapinfo>(args[3]), args[4], false)
                     .offset;
 #if defined(__APPLE__) && defined(__aarch64__)
-  sys_icache_invalidate(g_ee_main_mem, EE_MAIN_MEM_SIZE);
+  sys_icache_invalidate(g_ee_main_mem + EE_CODE_HEAP_START, EE_CODE_HEAP_SIZE);
   pthread_jit_write_protect_np(1);
 #endif
   return result;
@@ -736,7 +735,7 @@ uint64_t link_begin(u64* args) {
     saved_link_control.jak1_finish(false);
   }
 #if defined(__APPLE__) && defined(__aarch64__)
-  sys_icache_invalidate(g_ee_main_mem, EE_MAIN_MEM_SIZE);
+  sys_icache_invalidate(g_ee_main_mem + EE_CODE_HEAP_START, EE_CODE_HEAP_SIZE);
   pthread_jit_write_protect_np(1);
 #endif
   return work_result != 0;
@@ -755,7 +754,7 @@ uint64_t link_resume() {
     saved_link_control.jak1_finish(false);
   }
 #if defined(__APPLE__) && defined(__aarch64__)
-  sys_icache_invalidate(g_ee_main_mem, EE_MAIN_MEM_SIZE);
+  sys_icache_invalidate(g_ee_main_mem + EE_CODE_HEAP_START, EE_CODE_HEAP_SIZE);
   pthread_jit_write_protect_np(1);
 #endif
   return work_result != 0;
