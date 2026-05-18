@@ -138,7 +138,12 @@ ExtractorErrorCode compile(const fs::path& iso_data_path, const std::string& dat
   // Determine which config to use from the database
   const auto version_info = get_version_info_or_default(iso_data_path);
 
-  Compiler compiler(game_name_to_version(version_info.game_name), emitter::InstructionSet::X86);
+#if defined(__aarch64__)
+  constexpr emitter::InstructionSet kHostInstructionSet = emitter::InstructionSet::ARM64;
+#else
+  constexpr emitter::InstructionSet kHostInstructionSet = emitter::InstructionSet::X86;
+#endif
+  Compiler compiler(game_name_to_version(version_info.game_name), kHostInstructionSet);
   compiler.make_system().set_constant("*iso-data*", absolute(iso_data_path).string());
   compiler.make_system().set_constant("*use-iso-data-path*", true);
   file_util::set_iso_data_dir(absolute(iso_data_path));

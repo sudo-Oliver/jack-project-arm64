@@ -10,6 +10,7 @@
 
 #include <string>
 
+#include "common/goal_constants.h"
 #include "common/log/log.h"
 #include "common/symbols.h"
 #include "common/util/FileUtil.h"
@@ -321,6 +322,11 @@ int InitMachine() {
   fprintf(stderr, "[EE-DEBUG] calling kinitheap global\n"); fflush(stderr);
   kinitheap(kglobalheap, Ptr<u8>(HEAP_START), global_heap_size);
   fprintf(stderr, "[EE-DEBUG] kinitheap global done\n"); fflush(stderr);
+#if defined(__aarch64__) && defined(__APPLE__)
+  kinitheap(kcodeheap, Ptr<u8>(EE_CODE_HEAP_START), (s32)EE_CODE_HEAP_SIZE);
+  fprintf(stderr, "[EE-DEBUG] kinitheap code heap done (0x%x..0x%x)\n",
+          EE_CODE_HEAP_START, EE_CODE_HEAP_END); fflush(stderr);
+#endif
 
   // initialize the debug heap, if appropriate
   if (MasterDebug) {

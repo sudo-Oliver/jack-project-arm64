@@ -12,6 +12,9 @@
 // global and debug kernel heaps
 Ptr<kheapinfo> kglobalheap;
 Ptr<kheapinfo> kdebugheap;
+#if defined(__aarch64__) && defined(__APPLE__)
+Ptr<kheapinfo> kcodeheap;  // MAP_JIT code region (EE_CODE_HEAP_START..EE_CODE_HEAP_END)
+#endif
 // if we should count the number of strings and types allocated on the global heap.
 bool kheaplogging = false;
 enum MemItemsCategory {
@@ -26,6 +29,9 @@ void kmalloc_init_globals_common() {
   // _globalheap and _debugheap
   kglobalheap.offset = GLOBAL_HEAP_INFO_ADDR;
   kdebugheap.offset = DEBUG_HEAP_INFO_ADDR;
+#if defined(__aarch64__) && defined(__APPLE__)
+  kcodeheap.offset = CODE_HEAP_INFO_ADDR;
+#endif
   kheaplogging = false;
   for (auto& x : MemItemsCount)
     x = 0;

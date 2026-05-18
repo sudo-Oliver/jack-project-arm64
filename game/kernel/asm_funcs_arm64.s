@@ -13,16 +13,15 @@
 ;; Following the macOS documentation which mostly aligns with standard arm64
 ;;
 ;; Entry state (set by EE-memory stub via movz/movk + br):
-;;   x29 = C function pointer
+;;   x16 = C function pointer (IP0 scratch — does not clobber GOAL frame pointer x29)
 ;;   x30 = GOAL return address (br x8 in stub does not update x30)
 ;;   x0-x7 = GOAL arguments passed through unchanged
 .global _arg_call_arm64
 .align 4
 _arg_call_arm64:
-  ;; Standard prologue: save frame-pointer (= C func ptr!) and link reg (= GOAL lr).
-  ;; DO NOT pop this frame early — we need x30 alive until the final ldp/ret.
+  ;; Standard prologue: save GOAL frame-pointer and link reg (= GOAL lr).
   stp  x29, x30, [sp, #-16]!
-  mov  x29, sp                  ; frame pointer into the saved pair
+  mov  x29, sp
 
   ;; Save callee-saved SIMD registers below the frame.
   stp q15, q14, [sp, #-32]!
@@ -30,13 +29,9 @@ _arg_call_arm64:
   stp q11, q10, [sp, #-32]!
   stp q9, q8, [sp, #-32]!
 
-  ;; call_goal switches to exec mode before invoking this stub; C function target
-  ;; is in normal .text (always executable). Load C function pointer from frame slot.
-  ;; [x29] == original x29 == C function pointer.
-  ldr x8, [x29]
-
-  ;; Call the C function.  x0-x7 still hold the GOAL arguments.
-  blr x8
+  ;; C function pointer is in x16 (IP0); call it directly.
+  ;; x0-x7 still hold the GOAL arguments.
+  blr x16
 
   ;; Restore callee-saved SIMD registers.
   ldp q9, q8, [sp], #32
@@ -55,13 +50,13 @@ _arg_call_arm64:
 ;; x0 = pointer to that array.
 ;;
 ;; Entry state (set by EE-memory stub):
-;;   x29 = C function pointer
+;;   x16 = C function pointer (IP0 scratch — does not clobber GOAL frame pointer x29)
 ;;   x30 = GOAL return address
 ;;   x0-x7 = GOAL arguments
 .global _stack_call_arm64
 .align 4
 _stack_call_arm64:
-  ;; Standard prologue: save C func ptr (x29) and GOAL lr (x30).
+  ;; Standard prologue: save GOAL frame-pointer and GOAL lr.
   stp  x29, x30, [sp, #-16]!
   mov  x29, sp
 
@@ -81,9 +76,8 @@ _stack_call_arm64:
   ;; x0 = pointer to the argument array (first C argument).
   mov x0, sp
 
-  ;; Load C function pointer from the saved frame and call.
-  ldr x8, [x29]
-  blr x8
+  ;; C function pointer is in x16 (IP0); call it directly.
+  blr x16
 
   ;; Discard the argument array from the stack (8 regs * 8 bytes = 64 bytes).
   ;; Use add rather than ldp so we don't clobber x0 (the return value).

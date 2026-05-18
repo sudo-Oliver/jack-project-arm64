@@ -175,6 +175,13 @@ RegisterInfo RegisterInfo::make_register_info() {
 
 RegisterInfo gRegInfo = RegisterInfo::make_register_info();
 
+bool RegisterInfo::is_xmm_arg_reg(Register r) const {
+  for (const auto& xa : m_xmm_arg_regs) {
+    if (xa.id() == r.id()) return true;
+  }
+  return false;
+}
+
 std::string to_string(HWRegKind kind) {
   switch (kind) {
     case HWRegKind::GPR:

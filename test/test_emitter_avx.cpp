@@ -1,5 +1,6 @@
 #include "goalc/emitter/CodeTester.h"
 #include "goalc/emitter/IGen.h"
+#include "goalc/emitter/Register.h"
 #include "gtest/gtest.h"
 
 using namespace emitter;
@@ -759,4 +760,30 @@ TEST(EmitterAVX, VPSLLW) {
   tester.emit(IGen::ph_sll(tester.generator(), XMM0 + 13, XMM0 + 4, 5));
   tester.emit(IGen::ph_sll(tester.generator(), XMM0 + 13, XMM0 + 14, 6));
   EXPECT_EQ(tester.dump_to_hex_string(true), "C5E171F403C4C16171F604C59171F405C4C11171F606");
+}
+
+// RegisterClassification tests: verify is_xmm_arg_reg correctly distinguishes
+// XMM arg registers (XMM1-XMM8, ids 17-24) from GPR registers (X0-X15, ids 0-15).
+// This is the fix for the Q0=X0=0 id collision in ARM64_REG that caused is_128bit_simd
+// to return true for GPR X0-X15.
+
+TEST(RegisterClassification, X0_not_xmm_arg_reg) {
+  // X0 (id=0) must NOT be classified as an XMM arg reg even though
+  // is_128bit_simd(ARM64) wrongly returns true for it (Q0=X0=0 collision).
+  EXPECT_FALSE(gRegInfo.is_xmm_arg_reg(Register(X0)));
+}
+
+TEST(RegisterClassification, XMM1_is_xmm_arg_reg) {
+  // XMM1 (id=17) is the first XMM argument register on both x86 and ARM64.
+  EXPECT_TRUE(gRegInfo.is_xmm_arg_reg(Register(XMM1)));
+}
+
+TEST(RegisterClassification, XMM8_is_xmm_arg_reg) {
+  // XMM8 (id=24) is the last XMM argument register.
+  EXPECT_TRUE(gRegInfo.is_xmm_arg_reg(Register(XMM8)));
+}
+
+TEST(RegisterClassification, XMM0_not_xmm_arg_reg) {
+  // XMM0 is the return register, not an argument register.
+  EXPECT_FALSE(gRegInfo.is_xmm_arg_reg(Register(XMM0)));
 }

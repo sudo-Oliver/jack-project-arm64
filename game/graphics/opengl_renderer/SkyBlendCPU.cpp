@@ -22,7 +22,15 @@ SkyBlendCPU::~SkyBlendCPU() {
 }
 
 void blend_sky_initial_fast(u8 intensity, u8* out, const u8* in, u32 size) {
-#ifndef __arm64__
+#ifdef __aarch64__
+  // NEON: out[i] = (in[i] * intensity) >> 7  (process 8 bytes per iteration)
+  uint8x8_t iv = vdup_n_u8(intensity);
+  for (u32 i = 0; i < size / 8; i++) {
+    uint8x8_t tex = vld1_u8(in + i * 8);
+    uint8x8_t result = vshrn_n_u16(vmull_u8(tex, iv), 7);
+    vst1_u8(out + i * 8, result);
+  }
+#else
   if (get_cpu_info().has_avx2) {
 #ifdef __AVX2__
     __m256i intensity_vec = _mm256_set1_epi16(intensity);
@@ -53,7 +61,17 @@ void blend_sky_initial_fast(u8 intensity, u8* out, const u8* in, u32 size) {
 }
 
 void blend_sky_fast(u8 intensity, u8* out, const u8* in, u32 size) {
-#ifndef __arm64__
+#ifdef __aarch64__
+  // NEON: out[i] = saturate(out[i] + (in[i] * intensity) >> 7)
+  // min(result, 255) is a no-op for uint8; vqadd_u8 provides the saturating add.
+  uint8x8_t iv = vdup_n_u8(intensity);
+  for (u32 i = 0; i < size / 8; i++) {
+    uint8x8_t tex = vld1_u8(in + i * 8);
+    uint8x8_t cur = vld1_u8(out + i * 8);
+    uint8x8_t scaled = vshrn_n_u16(vmull_u8(tex, iv), 7);
+    vst1_u8(out + i * 8, vqadd_u8(cur, scaled));
+  }
+#else
   if (get_cpu_info().has_avx2) {
 #ifdef __AVX2__
     __m256i intensity_vec = _mm256_set1_epi16(intensity);

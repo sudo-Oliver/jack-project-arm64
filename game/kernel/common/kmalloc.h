@@ -17,6 +17,9 @@ struct kheapinfo {
 // Kernel heaps
 extern Ptr<kheapinfo> kglobalheap;
 extern Ptr<kheapinfo> kdebugheap;
+#if defined(__aarch64__) && defined(__APPLE__)
+extern Ptr<kheapinfo> kcodeheap;  // MAP_JIT code region; data heaps are regular mmap
+#endif
 extern bool kheaplogging;
 
 // flags for kmalloc/ksmalloc

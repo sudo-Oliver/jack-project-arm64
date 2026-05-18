@@ -397,10 +397,20 @@ void IR_SetSymbolValue::do_codegen_arm64(emitter::ObjectGenerator* gen,
                                          emitter::IR_Record irec) {
   auto src_reg = get_reg(m_src, allocs, irec);
   auto addr_reg = get_reg(m_addr_temp, allocs, irec);
+  // The register allocator can assign src_reg and addr_reg to the same physical
+  // register when m_src's last use is here and m_addr_temp's first def is here.
+  // emit_arm64_symbol_offset_load below writes addr_reg via MOVZ, which would
+  // clobber src_reg before the store — silently corrupting the symbol value.
+  // When aliased, stash src_reg to x16 (IP0 scratch) and store from there.
+  emitter::Register store_reg = src_reg;
+  if (src_reg == addr_reg) {
+    store_reg = emitter::Register(emitter::X16);
+    gen->add_instr(IGen::mov_gpr64_gpr64(*gen, store_reg, src_reg), irec);
+  }
   emit_arm64_symbol_offset_load(gen, irec, addr_reg, m_dest->name());
   gen->add_instr(IGen::add_gpr64_gpr64(*gen, addr_reg, gen->get_st_reg()), irec);
   gen->add_instr(IGen::store32_gpr64_gpr64_plus_gpr64(*gen, addr_reg, gen->get_offset_reg(),
-                                                      src_reg),
+                                                      store_reg),
                  irec);
 }
 
@@ -1504,6 +1514,14 @@ void IR_StoreConstOffset::do_codegen_arm64(emitter::ObjectGenerator* gen,
   auto base_reg = m_use_coloring ? get_reg(m_base, allocs, irec) : get_no_color_reg(m_base);
   auto value_reg = m_use_coloring ? get_reg(m_value, allocs, irec) : get_no_color_reg(m_value);
   auto off_reg = gen->get_offset_reg();
+
+  // If base_reg aliases value_reg the in-place offset adjustment below would clobber
+  // the value before the store.  Use x16 (IP0 scratch) as a private base copy.
+  if (m_offset != 0 && base_reg == value_reg) {
+    auto scratch = emitter::Register(emitter::X16);
+    gen->add_instr(IGen::mov_gpr64_gpr64(*gen, scratch, base_reg), irec);
+    base_reg = scratch;
+  }
 
   // ARM64 store_goal_* only support offset==0; temporarily adjust base_reg and restore after.
   if (m_offset != 0) {
@@ -2966,7 +2984,88 @@ void IR_SwizzleVF::do_codegen_arm64(emitter::ObjectGenerator* gen,
     gen->add_instr(IGen::ARM64::ins_vf_element(dst, 1, dst, 3), irec);
     return;
   }
-  ASSERT_MSG(false, fmt::format("swizzle_vf: unhandled ARM64 pattern 0x{:02X} — implement in IR.cpp", c).c_str());
+
+  // General fallback: handles all remaining 248 patterns.
+  //
+  // p[i] = source lane for destination lane i  (2 bits each from c)
+  u8 p[4] = {(u8)(c & 3), (u8)((c >> 2) & 3), (u8)((c >> 4) & 3), (u8)((c >> 6) & 3)};
+
+  if (dst.id() != src.id()) {
+    // Different physical registers: any order is safe (src is never modified).
+    for (int i = 0; i < 4; i++) {
+      gen->add_instr(IGen::ARM64::ins_vf_element(dst, i, src, p[i]), irec);
+    }
+    return;
+  }
+
+  // In-place (dst == src): use topological ordering to avoid read-after-write hazards.
+  // Writing lane i corrupts src[i]; we must read src[p[i]] before anything writes to p[i].
+  //
+  // Lanes that form true cycles (following p from i returns to i without hitting a fixed
+  // point) cannot be resolved by topological ordering alone. They are handled separately
+  // using X16 (ARM64 IP0 — never GOAL-allocated, safe scratch per AAPCS64) to break the
+  // cycle: save the root element to X16, walk the chain, restore the tail via INS-from-GPR.
+  bool done[4] = {};
+  const emitter::Register x16(emitter::X16);
+
+  // Pre-detect cycle membership: a lane is in a cycle if following p from it returns to
+  // itself before reaching a fixed point. Fixed points (p[i]==i) are excluded.
+  bool in_cycle[4] = {};
+  for (int i = 0; i < 4; i++) {
+    if (p[i] == i)
+      continue;
+    int curr = p[i];
+    for (int step = 0; step < 4; step++) {
+      if (curr == i) {
+        in_cycle[i] = true;
+        break;
+      }
+      if (p[curr] == curr)
+        break;
+      curr = p[curr];
+    }
+  }
+
+  // Greedy topological pass: process non-cycle lanes in dependency order.
+  // A non-cycle lane i is safe to write when its source p[i] hasn't been overwritten yet
+  // (!done[p[i]]) — this holds trivially at start for chain heads (nothing is done yet)
+  // and continues to hold as the greedy pass processes chains in dependency order.
+  // Cycle members are excluded here; they are handled in the cycle-walk section below.
+  bool progress = true;
+  while (progress) {
+    progress = false;
+    for (int i = 0; i < 4; i++) {
+      if (done[i] || in_cycle[i])
+        continue;
+      // Fixed point or source not yet overwritten.
+      if (p[i] == i || !done[p[i]]) {
+        if (p[i] != i) {
+          gen->add_instr(IGen::ARM64::ins_vf_element(dst, i, src, p[i]), irec);
+        }
+        done[i] = true;
+        progress = true;
+      }
+    }
+  }
+
+  // Cycle-walk: save cycle root to X16, rotate the chain, restore tail from X16.
+  // Non-cycle lanes all point into cycles as sources; the greedy pass above has already
+  // emitted those reads before we overwrite any cycle member here.
+  for (int start = 0; start < 4; start++) {
+    if (done[start])
+      continue;
+    gen->add_instr(IGen::ARM64::umov_gpr32_vf_element(x16, src, start), irec);
+    int prev = start;
+    int curr = p[start];
+    while (curr != start) {
+      gen->add_instr(IGen::ARM64::ins_vf_element(dst, prev, src, curr), irec);
+      done[prev] = true;
+      prev = curr;
+      curr = p[curr];
+    }
+    gen->add_instr(IGen::ARM64::ins_vf_element_from_gpr32(dst, prev, x16), irec);
+    done[prev] = true;
+  }
 }
 
 // ---- Square Root VF

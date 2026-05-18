@@ -114,6 +114,15 @@ constexpr u64 EE_MAIN_MEM_MAP = 0x2123000000;      // intentionally > 32-bit to 
 // so this should be used only for debugging.
 constexpr bool EE_MEM_LOW_MAP = false;
 
+#if defined(__aarch64__) && defined(__APPLE__)
+// ARM64/Darwin: EE memory is split — data regions get regular mmap pages (no W^X SIGBUS),
+// code region stays MAP_JIT so the linker can write and the CPU can execute.
+// The code region sits in the gap between kglobalheap (~63 MB) and kdebugheap (80 MB).
+constexpr u32 EE_CODE_HEAP_START = 0x4000000;  // 64 MB into EE
+constexpr u32 EE_CODE_HEAP_SIZE  = 0x1000000;  // 16 MB (generous for all game DGOs)
+constexpr u32 EE_CODE_HEAP_END   = EE_CODE_HEAP_START + EE_CODE_HEAP_SIZE;  // 80 MB = DEBUG_HEAP_START
+#endif
+
 constexpr double METER_LENGTH = 4096.0;
 constexpr double DEGREES_PER_ROT = 65536.0;
 constexpr double DEGREES_LENGTH = DEGREES_PER_ROT / 360.0;
