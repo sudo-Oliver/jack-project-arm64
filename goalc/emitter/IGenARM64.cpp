@@ -547,9 +547,9 @@ InstructionARM64 store128_gpr64_simd128(Register gpr_addr, Register simd_reg) {
   // https://www.scs.stanford.edu/~zyedidia/arm64/str_imm_fpsimd.html
   // - STR Qn, [Xn] (unsigned offset)
   ASSERT(gpr_addr.is_gpr(instr_set));
-  ASSERT(
-      simd_reg.is_128bit_simd(instr_set));  // TODO ARM64 - this assertion isn't as useful for ARM
-                                            // since Q registers are not unique in terms of their id
+  // ARM64 SIMD register IDs span 0-31 (Q0-Q31). Regalloc uses XMM IDs (16-31); direct use
+  // uses native Q IDs (0-15). Both ranges are valid in the Rt encoding field.
+  ASSERT(simd_reg.id() >= 0 && simd_reg.id() <= 31);
   return InstructionARM64(Base(0b0011110110, 10), Rn(gpr_addr.id()), Rt(simd_reg.id()), Imm12(0));
 }
 
@@ -570,9 +570,7 @@ InstructionARM64 load128_simd128_gpr64(Register simd_dest, Register gpr_addr) {
   // https://www.scs.stanford.edu/~zyedidia/arm64/ldr_imm_fpsimd.html
   // - LDR <Qt>, [<Xn|SP>{, #<pimm>}]
   ASSERT(gpr_addr.is_gpr(instr_set));
-  ASSERT(simd_dest.is_128bit_simd(
-      instr_set));  // TODO ARM64 - this assertion isn't as useful for ARM
-                    // since Q registers are not unique in terms of their id
+  ASSERT(simd_dest.id() >= 0 && simd_dest.id() <= 31);
   return InstructionARM64(Base(0b0011110111, 10), Rn(gpr_addr.id()), Rt(simd_dest.id()), Imm12(0));
 }
 

@@ -132,8 +132,9 @@ class Register {
     if (instr_set == emitter::InstructionSet::X86) {
       return m_id >= XMM0 && m_id <= XMM15;
     } else if (instr_set == emitter::InstructionSet::ARM64) {
-      // Accept both native ARM64 Q-register ids and legacy x86 XMM ids used by regalloc paths.
-      return (m_id >= Q0 && m_id <= Q15) || (m_id >= XMM0 && m_id <= XMM15);
+      // ARM64 regalloc uses X86 XMM ids (16-31) for SIMD registers.
+      // Q0-Q15 (ids 0-15) overlap with X0-X15 GPR ids and must NOT be treated as SIMD.
+      return m_id >= XMM0 && m_id <= XMM15;
     } else {
       ASSERT_MSG(false, "is_128bit_simd: instruction set not supported");
     }

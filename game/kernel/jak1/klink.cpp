@@ -696,6 +696,9 @@ Ptr<uint8_t> link_and_exec(Ptr<uint8_t> data,
     done = lc.jak1_work();
   } while (!done);
   lc.jak1_finish(jump_from_c_to_goal);
+#if defined(__APPLE__) && defined(__aarch64__)
+  g_ee_jit_code_dirty = true;
+#endif
   return lc.m_entry;
 }
 
@@ -712,6 +715,7 @@ u64 link_and_exec_wrapper(u64* args) {
                     .offset;
 #if defined(__APPLE__) && defined(__aarch64__)
   sys_icache_invalidate(g_ee_main_mem, EE_MAIN_MEM_SIZE);
+  g_ee_jit_code_dirty = false;
   pthread_jit_write_protect_np(1);
 #endif
   return result;
@@ -737,6 +741,7 @@ uint64_t link_begin(u64* args) {
   }
 #if defined(__APPLE__) && defined(__aarch64__)
   sys_icache_invalidate(g_ee_main_mem, EE_MAIN_MEM_SIZE);
+  g_ee_jit_code_dirty = false;
   pthread_jit_write_protect_np(1);
 #endif
   return work_result != 0;
@@ -756,6 +761,7 @@ uint64_t link_resume() {
   }
 #if defined(__APPLE__) && defined(__aarch64__)
   sys_icache_invalidate(g_ee_main_mem, EE_MAIN_MEM_SIZE);
+  g_ee_jit_code_dirty = false;
   pthread_jit_write_protect_np(1);
 #endif
   return work_result != 0;

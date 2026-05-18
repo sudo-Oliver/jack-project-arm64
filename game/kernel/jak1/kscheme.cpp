@@ -998,41 +998,6 @@ Ptr<Type> set_fixed_type(u32 offset,
  */
 u64 new_type(u32 symbol, u32 parent, u64 flags) {
   //  printf("flags 0x%lx\n", flags);
-#if defined(__APPLE__) && defined(__aarch64__)
-  {
-    auto sym_info = info(Ptr<Symbol>(symbol));
-    int32_t sym_off = (int32_t)(symbol - s7.offset);
-    const char* sym_name = sym_info->str.offset ? Ptr<String>(sym_info->str.offset)->data() : "<bad-str>";
-    // Read the saved GOAL LR from arg_call_arm64's stack frame.
-    // arg_call_arm64 saves {x29(=C func ptr), x30(=GOAL LR)} at [sp, #-16]! then mov x29, sp.
-    // From our C perspective, FP chain: our FP → arg_call_arm64's FP → GOAL FP.
-    // arg_call_arm64's saved {x29, x30} is 8 bytes above where arg_call_arm64's FP points.
-    uint64_t goal_lr = 0;
-    {
-      void* fp = __builtin_frame_address(0);
-      // Walk up 1 frame: fp → arg_call_arm64's frame
-      if (fp) {
-        void* caller_fp = *(void**)fp;
-        if (caller_fp) {
-          // The saved x30 (GOAL LR) is 8 bytes above the saved FP in arg_call_arm64's frame
-          goal_lr = *((uint64_t*)caller_fp + 1);
-        }
-      }
-    }
-    fprintf(stderr, "[NEW-TYPE] sym=0x%x s7=0x%x off=%d name='%s' str.offset=0x%x hash=0x%x goal_lr=0x%lx\n",
-            symbol, s7.offset, sym_off, sym_name, sym_info->str.offset, sym_info->hash, goal_lr);
-    // Dump instructions around the call site (goal_lr - 4 = BLR, preceding 10 instrs)
-    if (goal_lr > 0x10 && sym_info->str.offset == 0) {
-      uint64_t call_pc = goal_lr - 4;  // BLR instruction
-      const uint32_t* code = (const uint32_t*)call_pc;
-      fprintf(stderr, "[NEW-TYPE] Code dump around call:\n");
-      for (int i = -10; i <= 2; i++) {
-        fprintf(stderr, "  [%+3d] 0x%016lx: 0x%08x\n", i, (uint64_t)(code + i), code[i]);
-      }
-    }
-    fflush(stderr);
-  }
-#endif
   u32 n_methods = (flags >> 32) & 0xffff;
   if (n_methods == 0) {
     // 12 methods used as default, if the user has not provided us with a number

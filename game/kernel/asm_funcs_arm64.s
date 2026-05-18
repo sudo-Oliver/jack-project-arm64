@@ -30,13 +30,41 @@ _arg_call_arm64:
   stp q11, q10, [sp, #-32]!
   stp q9, q8, [sp, #-32]!
 
-  ;; call_goal switches to exec mode before invoking this stub; C function target
-  ;; is in normal .text (always executable). Load C function pointer from frame slot.
+  ;; Load C function pointer from frame slot before clobbering x8.
   ;; [x29] == original x29 == C function pointer.
   ldr x8, [x29]
 
-  ;; Call the C function.  x0-x7 still hold the GOAL arguments.
+  ;; Save GOAL args (x0-x7) and C func ptr (x8) across the pthread_jit_write_protect_np call.
+  ;; Use x9 as pair-padding; it is caller-saved so the C func can clobber it.
+  stp x6, x7, [sp, #-16]!
+  stp x4, x5, [sp, #-16]!
+  stp x2, x3, [sp, #-16]!
+  stp x0, x1, [sp, #-16]!
+  stp x8, x9, [sp, #-16]!
+
+  ;; Switch to write mode so the C function can write EE memory without SIGBUS.
+  ;; .text is always executable; only EE MAP_JIT memory protection changes.
+  mov x0, #0
+  bl  _pthread_jit_write_protect_np
+
+  ;; Restore C func ptr and GOAL args.
+  ldp x8, x9, [sp], #16
+  ldp x0, x1, [sp], #16
+  ldp x2, x3, [sp], #16
+  ldp x4, x5, [sp], #16
+  ldp x6, x7, [sp], #16
+
+  ;; Call the C function.  x0-x7 hold the GOAL arguments.
   blr x8
+
+  ;; Save return value across the restore-exec-mode call.
+  stp x0, x1, [sp, #-16]!
+
+  ;; Restore exec mode so GOAL code can run after we return.
+  mov x0, #1
+  bl  _pthread_jit_write_protect_np
+
+  ldp x0, x1, [sp], #16
 
   ;; Restore callee-saved SIMD registers.
   ldp q9, q8, [sp], #32
@@ -77,16 +105,27 @@ _stack_call_arm64:
   stp x3, x2, [sp, #-16]!
   stp x1, x0, [sp, #-16]!
 
-  ;; Exec mode active (set by call_goal). C function in .text, always executable.
   ;; x0 = pointer to the argument array (first C argument).
   mov x0, sp
+
+  ;; Switch to write mode so the C function can write EE memory without SIGBUS.
+  ;; Save x0 (arg array ptr) across the call.
+  stp x0, x1, [sp, #-16]!
+  mov x0, #0
+  bl  _pthread_jit_write_protect_np
+  ldp x0, x1, [sp], #16
 
   ;; Load C function pointer from the saved frame and call.
   ldr x8, [x29]
   blr x8
 
+  ;; Save return value, restore exec mode, then restore return value.
+  stp x0, x1, [sp, #-16]!
+  mov x0, #1
+  bl  _pthread_jit_write_protect_np
+  ldp x0, x1, [sp], #16
+
   ;; Discard the argument array from the stack (8 regs * 8 bytes = 64 bytes).
-  ;; Use add rather than ldp so we don't clobber x0 (the return value).
   add sp, sp, #64
 
   ;; Restore callee-saved SIMD registers.
