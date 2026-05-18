@@ -307,6 +307,16 @@ void CodeGenerator::do_goal_function_arm64(FunctionEnv* env, int f_idx) {
 
   int stack_offset = 0;
 
+  // ARM64 ABI: any function that makes a call (BL/BLR) MUST save the link
+  // register (x30) because BLR overwrites it.  On x86 the `call` instruction
+  // pushes the return address to the stack automatically, so this isn't needed
+  // there — but on ARM64 forgetting to save x30 causes the function to `ret`
+  // back to the address after its own BLR (an infinite loop).  We unconditionally
+  // save+restore x30 here; the cost is one extra STR/LDR per call.
+  m_gen.add_instr_no_ir(f_rec, IGen::push_gpr64(m_gen, emitter::Register(emitter::X30)),
+                        InstructionInfo::Kind::PROLOGUE);
+  stack_offset += 16;
+
   // ARM64: is_xmm() always false; Q-register (128-bit SIMD) saving is a future concern.
   // Only GPR callee-saved regs matter here.
   // push_gpr64 on ARM64 does STR [SP, #-16]! — always 16-byte aligned.
@@ -399,6 +409,10 @@ void CodeGenerator::do_goal_function_arm64(FunctionEnv* env, int f_idx) {
                             InstructionInfo::Kind::EPILOGUE);
     }
   }
+
+  // Restore x30 (LR) saved in the prologue.  Must be the LAST pop before ret.
+  m_gen.add_instr_no_ir(f_rec, IGen::pop_gpr64(m_gen, emitter::Register(emitter::X30)),
+                        InstructionInfo::Kind::EPILOGUE);
 
   m_gen.add_instr_no_ir(f_rec, IGen::ret(m_gen), InstructionInfo::Kind::EPILOGUE);
 }
