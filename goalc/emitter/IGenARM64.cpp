@@ -60,34 +60,40 @@ InstructionARM64 mov_gpr64_s32(Register dst, int64_t val) {
 
 InstructionARM64 movd_gpr32_xmm32(Register dst, Register src) {
   // FMOV Wd, Sn — move 32-bit float register to 32-bit GPR (FP → GP)
-  // Encoding: 0_00_11110_00_1_00_111_000000_Rn_Rd  (sf=0, ftype=00, rmode=00, opcode=111)
+  // ARM ARM C6.2.86: sf=0 ftype=00 rmode=00 opcode=110 → write GPR. Verified via
+  // `clang -c` on `fmov w22, s9` → 0x1E260136.
   ASSERT(dst.is_gpr(instr_set));
   ASSERT(src.is_128bit_simd(instr_set));
-  return InstructionARM64(0x1E270000u, Rn(src.id()), Rd(dst.id()));
+  return InstructionARM64(0x1E260000u, Rn(src.id()), Rd(dst.id()));
 }
 
 InstructionARM64 movd_xmm32_gpr32(Register dst, Register src) {
   // FMOV Sd, Wn — move 32-bit GPR to float register (GP → FP)
-  // Encoding: 0_00_11110_00_1_00_110_000000_Rn_Rd  (sf=0, ftype=00, rmode=00, opcode=110)
+  // ARM ARM C6.2.86: sf=0 ftype=00 rmode=00 opcode=111 → write FPR. Verified via
+  // `clang -c` on `fmov s22, w9` → 0x1E270136.
   ASSERT(dst.is_128bit_simd(instr_set));
   ASSERT(src.is_gpr(instr_set));
-  return InstructionARM64(0x1E260000u, Rn(src.id()), Rd(dst.id()));
+  return InstructionARM64(0x1E270000u, Rn(src.id()), Rd(dst.id()));
 }
 
 InstructionARM64 movq_gpr64_xmm64(Register dst, Register src) {
   // FMOV Xd, Dn — move 64-bit float (D) register to 64-bit GPR (FP → GP)
-  // Encoding: 1_00_11110_01_1_00_111_000000_Rn_Rd  (sf=1, ftype=01, rmode=00, opcode=111)
+  // ARM ARM C6.2.86: sf=1 ftype=01 rmode=00 opcode=110 → write GPR. Verified via
+  // `clang -c` on `fmov x22, d9` → 0x9E660136.
   ASSERT(dst.is_gpr(instr_set));
   ASSERT(src.is_128bit_simd(instr_set));
-  return InstructionARM64(0x9E670000u, Rn(src.id()), Rd(dst.id()));
+  return InstructionARM64(0x9E660000u, Rn(src.id()), Rd(dst.id()));
 }
 
 InstructionARM64 movq_xmm64_gpr64(Register dst, Register src) {
   // FMOV Dd, Xn — move 64-bit GPR to 64-bit float (D) register (GP → FP)
-  // Encoding: 1_00_11110_01_1_00_110_000000_Rn_Rd  (sf=1, ftype=01, rmode=00, opcode=110)
+  // ARM ARM C6.2.86: sf=1 ftype=01 rmode=00 opcode=111 → write FPR. Verified via
+  // `clang -c` on `fmov d22, x9` → 0x9E670136.
+  // NOTE: previously swapped with movq_gpr64_xmm64, causing GP→FP moves to write
+  // the GPR with the same id as the SIMD destination, clobbering x22 (GOAL offset).
   ASSERT(dst.is_128bit_simd(instr_set));
   ASSERT(src.is_gpr(instr_set));
-  return InstructionARM64(0x9E660000u, Rn(src.id()), Rd(dst.id()));
+  return InstructionARM64(0x9E670000u, Rn(src.id()), Rd(dst.id()));
 }
 
 InstructionARM64 mov_xmm32_xmm32(Register dst, Register src) {
