@@ -1515,6 +1515,14 @@ void IR_StoreConstOffset::do_codegen_arm64(emitter::ObjectGenerator* gen,
   auto value_reg = m_use_coloring ? get_reg(m_value, allocs, irec) : get_no_color_reg(m_value);
   auto off_reg = gen->get_offset_reg();
 
+  // If base_reg aliases value_reg the in-place offset adjustment below would clobber
+  // the value before the store.  Use x16 (IP0 scratch) as a private base copy.
+  if (m_offset != 0 && base_reg == value_reg) {
+    auto scratch = emitter::Register(emitter::X16);
+    gen->add_instr(IGen::mov_gpr64_gpr64(*gen, scratch, base_reg), irec);
+    base_reg = scratch;
+  }
+
   // ARM64 store_goal_* only support offset==0; temporarily adjust base_reg and restore after.
   if (m_offset != 0) {
     const int64_t off = m_offset;
