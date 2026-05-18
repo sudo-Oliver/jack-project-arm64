@@ -340,9 +340,10 @@ Ptr<Function> make_function_from_c_systemv(void* func, bool arg3_is_pp) {
   mem.c()[offset++] = 0xe0;
   // the asm function's ret will return to the caller of this (GOAL code) directly.
 #else
-  // ARM64: _arg_call_arm64 expects x29 = C function pointer on entry.
-  // The stp x29,x30 in _arg_call_arm64 saves x29 (= func ptr), and ldr x8,[sp],#16 retrieves it.
-  // We emit: movz/movk x29 = func, movz/movk x8 = trampoline, br x8.
+  // ARM64: _arg_call_arm64 expects x16 (IP0) = C function pointer on entry.
+  // Using x16 (intra-procedure-call scratch) instead of x29 (frame pointer) so the GOAL
+  // caller's frame pointer is not clobbered when control returns from the C call.
+  // We emit: movz/movk x16 = func, movz/movk x8 = trampoline, br x8.
   // arg3_is_pp not needed: ARM64 GOAL passes pp in x20 and never remaps arg3.
   uint64_t func_addr = (uint64_t)func;
   uint64_t trampoline_addr = (uint64_t)_arg_call_arm64;
@@ -355,14 +356,14 @@ Ptr<Function> make_function_from_c_systemv(void* func, bool arg3_is_pp) {
     mem.c()[offset++] = (val >> 24) & 0xFF;
   };
 
-  // movz x29, func_addr[15:0]
-  write_u32(0xD2800000u | ((func_addr & 0xFFFFu) << 5) | 29u);
-  // movk x29, func_addr[31:16], lsl 16
-  write_u32(0xF2A00000u | (((func_addr >> 16) & 0xFFFFu) << 5) | 29u);
-  // movk x29, func_addr[47:32], lsl 32
-  write_u32(0xF2C00000u | (((func_addr >> 32) & 0xFFFFu) << 5) | 29u);
-  // movk x29, func_addr[63:48], lsl 48
-  write_u32(0xF2E00000u | (((func_addr >> 48) & 0xFFFFu) << 5) | 29u);
+  // movz x16, func_addr[15:0]
+  write_u32(0xD2800000u | ((func_addr & 0xFFFFu) << 5) | 16u);
+  // movk x16, func_addr[31:16], lsl 16
+  write_u32(0xF2A00000u | (((func_addr >> 16) & 0xFFFFu) << 5) | 16u);
+  // movk x16, func_addr[47:32], lsl 32
+  write_u32(0xF2C00000u | (((func_addr >> 32) & 0xFFFFu) << 5) | 16u);
+  // movk x16, func_addr[63:48], lsl 48
+  write_u32(0xF2E00000u | (((func_addr >> 48) & 0xFFFFu) << 5) | 16u);
 
   // movz x8, trampoline_addr[15:0]
   write_u32(0xD2800000u | ((trampoline_addr & 0xFFFFu) << 5) | 8u);
@@ -505,8 +506,8 @@ Ptr<Function> make_stack_arg_function_from_c_systemv(void* func) {
   mem.c()[offset++] = 0xff;
   mem.c()[offset++] = 0xe0;
 #else
-  // ARM64: _stack_call_arm64 expects x29 = C function pointer on entry (same convention as
-  // _arg_call_arm64). emit movz/movk x29 = func, movz/movk x8 = trampoline, br x8.
+  // ARM64: _stack_call_arm64 expects x16 (IP0) = C function pointer on entry (same convention as
+  // _arg_call_arm64 after the x29→x16 fix). emit movz/movk x16 = func, movz/movk x8 = trampoline, br x8.
   uint64_t func_addr = (uint64_t)func;
   uint64_t trampoline_addr = (uint64_t)_stack_call_arm64;
   int offset = 0;
@@ -518,10 +519,10 @@ Ptr<Function> make_stack_arg_function_from_c_systemv(void* func) {
     mem.c()[offset++] = (val >> 24) & 0xFF;
   };
 
-  write_u32(0xD2800000u | ((func_addr & 0xFFFFu) << 5) | 29u);
-  write_u32(0xF2A00000u | (((func_addr >> 16) & 0xFFFFu) << 5) | 29u);
-  write_u32(0xF2C00000u | (((func_addr >> 32) & 0xFFFFu) << 5) | 29u);
-  write_u32(0xF2E00000u | (((func_addr >> 48) & 0xFFFFu) << 5) | 29u);
+  write_u32(0xD2800000u | ((func_addr & 0xFFFFu) << 5) | 16u);
+  write_u32(0xF2A00000u | (((func_addr >> 16) & 0xFFFFu) << 5) | 16u);
+  write_u32(0xF2C00000u | (((func_addr >> 32) & 0xFFFFu) << 5) | 16u);
+  write_u32(0xF2E00000u | (((func_addr >> 48) & 0xFFFFu) << 5) | 16u);
 
   write_u32(0xD2800000u | ((trampoline_addr & 0xFFFFu) << 5) | 8u);
   write_u32(0xF2A00000u | (((trampoline_addr >> 16) & 0xFFFFu) << 5) | 8u);
@@ -1085,7 +1086,16 @@ u64 method_set(u32 type_, u32 method_id, u32 method) {
   type->get_method(method_id).offset = method;
 
   // this is kind of a strange combination...
+#if defined(__APPLE__) && defined(__aarch64__)
+  // ARM64: the symbol-table walk is prohibitively slow on Apple Silicon during
+  // kernel loading (every method-set! walks every symbol). With the trampoline
+  // (x29→x16) and SetSymbolValue (alias) fixes in place the propagation pass
+  // is not required for boot correctness — types are defined in order, so
+  // no child of a freshly-defined type exists yet to need propagation.
+  if (false) {
+#else
   if (*EnableMethodSet || (!FastLink && MasterDebug && !DiskBoot)) {
+#endif
     // upper table
     auto sym = s7.offset;
     for (; sym < LastSymbol.offset; sym += 8) {

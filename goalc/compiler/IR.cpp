@@ -397,10 +397,20 @@ void IR_SetSymbolValue::do_codegen_arm64(emitter::ObjectGenerator* gen,
                                          emitter::IR_Record irec) {
   auto src_reg = get_reg(m_src, allocs, irec);
   auto addr_reg = get_reg(m_addr_temp, allocs, irec);
+  // The register allocator can assign src_reg and addr_reg to the same physical
+  // register when m_src's last use is here and m_addr_temp's first def is here.
+  // emit_arm64_symbol_offset_load below writes addr_reg via MOVZ, which would
+  // clobber src_reg before the store — silently corrupting the symbol value.
+  // When aliased, stash src_reg to x16 (IP0 scratch) and store from there.
+  emitter::Register store_reg = src_reg;
+  if (src_reg == addr_reg) {
+    store_reg = emitter::Register(emitter::X16);
+    gen->add_instr(IGen::mov_gpr64_gpr64(*gen, store_reg, src_reg), irec);
+  }
   emit_arm64_symbol_offset_load(gen, irec, addr_reg, m_dest->name());
   gen->add_instr(IGen::add_gpr64_gpr64(*gen, addr_reg, gen->get_st_reg()), irec);
   gen->add_instr(IGen::store32_gpr64_gpr64_plus_gpr64(*gen, addr_reg, gen->get_offset_reg(),
-                                                      src_reg),
+                                                      store_reg),
                  irec);
 }
 
