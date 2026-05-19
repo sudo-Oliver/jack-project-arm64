@@ -79,23 +79,65 @@ After `kernel: machine started`, the kernel dispatcher calls:
 - `LOW_PROTECT` skip on Apple ARM64 — unblocks earlier crash but doesn't fix this
 - Custom SIGILL signal handler — never fires; OS kills via Mach exception before signal delivery
 
-### Next attack vector
+### Quick diagnostic: disable the profiler
+
+Before investing in lldb disassembly, try this 1-line change in `goal_src/jak1/kernel/gcommon.gc:29`:
+
+```lisp
+;; Change this:
+(define PC_PROFILER_ENABLE #t)
+;; To:
+(define PC_PROFILER_ENABLE #f)
+```
+
+Then recompile GOAL and reboot:
+```sh
+# in goalc REPL:
+(mi)
+# then run gk again
+```
+
+**Interpretation:**
+- If boot continues past dispatch #1 → the profiler is the *only* blocker. Fix it in isolation.
+- If boot still SIGILLs on something else → the method-dispatch recursion is a general ARM64 JIT bug and there are more blockers ahead.
+
+This tells you the scope before spending hours in lldb.
+
+### Recoverable diagnostic stash
+
+There is a git stash with `[CGOS #N]` per-call logging and `[SIG-TRACE #N]` signal decoding already wired into `kscheme.cpp` / `runtime.cpp`. To retrieve it:
+
+```sh
+git stash list
+# Look for: "wip: depth-counter + sig diagnostics + 64MB stack — superseded by revert"
+git stash show -p stash@{N}   # inspect
+git stash apply stash@{N}     # apply if useful
+```
+
+The diagnostics print `fptr`, `depth`, and `rsp` on every `call_goal_on_stack` entry, which shows the recursion building up in real-time.
+
+### Next attack vector (lldb)
 
 1. Load `gk` under lldb after `kernel: machine started` output:
-   ```
+   ```sh
    process attach --pid $(pgrep gk)
    ```
-2. Disassemble the function at EE-base + `0x06b4` (where EE base = `g_ee_main_mem`):
+2. Get the EE base address (varies per run — it's a runtime `mmap`):
    ```
    (lldb) p (void*)g_ee_main_mem
-   # get the address, e.g. 0x7000000000
-   (lldb) disassemble --start-address 0x7000000000+0x06b4 --count 60
+   # example result: 0x7000000000
    ```
-3. Key questions:
+   kcodeheap sits at EE `0x4000000` → host `g_ee_main_mem + 0x4000000` (e.g. `0x7004000000`).
+3. Disassemble the recursive function:
+   ```
+   (lldb) disassemble --start-address 0x7004000000+0x06b4 --count 60
+   # (substitute your actual g_ee_main_mem + 0x4000000)
+   ```
+4. Key questions:
    - What symbol does `pc-prof` resolve to in the GOAL symbol table at runtime?
    - Does its method-table entry at offset `0x40` point to the same function?
    - On x86-64, does the same lookup recurse? If not, what's different in the ARM64 JIT's method-dispatch codegen?
-4. Compare the ARM64 JIT output for the method-dispatch IR against the x86-64 output — look for `IR_CallIndirect` or `IR_VirtualMethodCall` in `goalc/compiler/IR.cpp`.
+5. Compare the ARM64 JIT output for the method-dispatch IR against the x86-64 output — look for `IR_CallIndirect` or `IR_VirtualMethodCall` in `goalc/compiler/IR.cpp`.
 
 ### Likely root cause (untested hypothesis)
 
@@ -197,6 +239,29 @@ lldb_examine(address="0x7000000000 + <symbol_ee_addr>", count=16, format="x")
 | `game/kernel/asm_funcs_arm64.s` | Low-level GOAL call stubs |
 | `goal_src/jak1/kernel/gcommon.gc` | `PC_PROFILER_ENABLE` flag (line 29), `profiler-instant-event` |
 | `test/goalc/test_emitter.cpp` | Emitter unit tests (620 ARM64 cases) |
+
+---
+
+## EE Memory Layout
+
+The EE (Emotion Engine emulator) address space is mapped via `mmap` in `game/runtime.cpp`. The base address (`g_ee_main_mem`) varies per run but is typically around `0x7000000000` on macOS ARM64.
+
+| EE address | Host address | Contents |
+|---|---|---|
+| `0x00000000` | `g_ee_main_mem + 0x0` | EE RAM (symbols, heap, data) |
+| `0x04000000` | `g_ee_main_mem + 0x4000000` | `kcodeheap` start (MAP_JIT, 16MB) |
+| `0x05000000` | `g_ee_main_mem + 0x5000000` | `kcodeheap` end |
+
+`kcodeheap` is the MAP_JIT region where all JIT-compiled GOAL code lives. Any write to this region from C++ triggers SIGBUS/SIGSEGV (handled by `sigbus_handler` in `runtime.cpp`) because Darwin enforces W^X on MAP_JIT pages.
+
+To get the actual base in a running process:
+```sh
+# From lldb:
+(lldb) p (void*)g_ee_main_mem
+
+# Or from the gk log — look for:
+# [EE] main memory at 0x7000000000
+```
 
 ---
 
