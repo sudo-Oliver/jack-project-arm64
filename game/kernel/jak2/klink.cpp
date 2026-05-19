@@ -287,7 +287,11 @@ uint32_t link_control::jak2_work_v3() {
           } else {
             Ptr<u8> src(ofh->code_infos[seg_id].offset);
             ofh->code_infos[seg_id].offset =
+#if defined(__aarch64__) && defined(__APPLE__)
+                kmalloc(kcodeheap, ofh->code_infos[seg_id].size, 0, "debug-segment").offset;
+#else
                 kmalloc(kdebugheap, ofh->code_infos[seg_id].size, 0, "debug-segment").offset;
+#endif
             if (ofh->code_infos[seg_id].offset == 0) {
               MsgErr("dkernel: unable to malloc %d bytes for debug-segment\n",
                      ofh->code_infos[seg_id].size);
@@ -303,7 +307,11 @@ uint32_t link_control::jak2_work_v3() {
         } else {
           Ptr<u8> src(ofh->code_infos[seg_id].offset);
           ofh->code_infos[seg_id].offset =
+#if defined(__aarch64__) && defined(__APPLE__)
+              kmalloc(kcodeheap, ofh->code_infos[seg_id].size, 0, "main-segment").offset;
+#else
               kmalloc(m_heap, ofh->code_infos[seg_id].size, 0, "main-segment").offset;
+#endif
           if (ofh->code_infos[seg_id].offset == 0) {
             MsgErr("dkernel: unable to malloc %d bytes for main-segment\n",
                    ofh->code_infos[seg_id].size);
@@ -318,8 +326,13 @@ uint32_t link_control::jak2_work_v3() {
         } else {
           Ptr<u8> src(ofh->code_infos[seg_id].offset);
           ofh->code_infos[seg_id].offset =
+#if defined(__aarch64__) && defined(__APPLE__)
+              kmalloc(kcodeheap, ofh->code_infos[seg_id].size, KMALLOC_TOP, "top-level-segment")
+                  .offset;
+#else
               kmalloc(m_heap, ofh->code_infos[seg_id].size, KMALLOC_TOP, "top-level-segment")
                   .offset;
+#endif
           if (ofh->code_infos[seg_id].offset == 0) {
             MsgErr("dkernel: unable to malloc %d bytes for top-level-segment\n",
                    ofh->code_infos[seg_id].size);

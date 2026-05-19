@@ -169,13 +169,14 @@ std::string get_current_executable_path() {
 }
 
 std::optional<std::string> try_get_project_path_from_path(const std::string& path) {
-  std::string::size_type pos =
-      std::string(path).rfind("jak-project");  // Strip file path down to /jak-project/ directory
-  if (pos == std::string::npos) {
-    return {};
+  // Try the fork repo name first, then fall back to the upstream name
+  for (const auto& marker : {"jack-project-arm64", "jak-project"}) {
+    std::string::size_type pos = std::string(path).rfind(marker);
+    if (pos != std::string::npos) {
+      return std::string(path).substr(0, pos + strlen(marker));
+    }
   }
-  return std::string(path).substr(
-      0, pos + 11);  // + 12 to include "/jak-project" in the returned filepath
+  return {};
 }
 
 /*!

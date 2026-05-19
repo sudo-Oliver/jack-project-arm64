@@ -2,6 +2,7 @@
 
 #include <cstring>
 
+#include "common/goal_constants.h"
 #include "common/symbols.h"
 
 #include "game/graphics/gfx.h"
@@ -278,6 +279,9 @@ int InitMachine() {
   lg::info("gkernel: global heap 0x{:08x} to 0x{:08x} (size {:.3f} MB)", HEAP_START,
            GLOBAL_HEAP_END, size_mb);
   kinitheap(kglobalheap, Ptr<u8>(HEAP_START), global_heap_size);
+#if defined(__aarch64__) && defined(__APPLE__)
+  kinitheap(kcodeheap, Ptr<u8>(EE_CODE_HEAP_START), (s32)EE_CODE_HEAP_SIZE);
+#endif
 
   kmemopen_from_c(kglobalheap, "global");
   kmemopen_from_c(kglobalheap, "scheme-globals");

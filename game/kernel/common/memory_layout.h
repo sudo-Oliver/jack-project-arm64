@@ -21,6 +21,7 @@ constexpr u32 GLOBAL_HEAP_END = 0x1ffc000 + (BIG_MEMORY ? (0x1ffc000 - HEAP_STAR
 //! Location of kglobalheap, kdebugheap kheapinfo structures.
 constexpr u32 GLOBAL_HEAP_INFO_ADDR = 0x13AD00;
 constexpr u32 DEBUG_HEAP_INFO_ADDR = 0x13AD10;
+constexpr u32 CODE_HEAP_INFO_ADDR = 0x13AD20;   // ARM64/Apple: kheapinfo for kcodeheap (MAP_JIT code region)
 constexpr u32 LINK_CONTROL_NAME_ADDR = 0x13AD80;
 
 //! Where to place the debug heap

@@ -716,6 +716,10 @@ InstructionARM64 ext_16b(Register dst, Register src0, Register src1, u8 imm);
 
 InstructionARM64 ins_vf_element(Register dst, u8 dstIdx, Register src, u8 srcIdx);
 
+InstructionARM64 umov_gpr32_vf_element(Register gpr_dst, Register vf_src, u8 idx);
+
+InstructionARM64 ins_vf_element_from_gpr32(Register vf_dst, u8 idx, Register gpr_src);
+
 InstructionARM64 rev64_4s(Register dst, Register src);
 
 /*

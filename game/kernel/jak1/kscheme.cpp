@@ -296,8 +296,14 @@ void _arg_call_arm64();
  * But calling this function is fast. It used to be really fast but wrong.
  */
 Ptr<Function> make_function_from_c_systemv(void* func, bool arg3_is_pp) {
+#if defined(__aarch64__) && defined(__APPLE__)
+  auto raw = kmalloc(kcodeheap, 0x40, KMALLOC_MEMSET, "trampoline");
+  *Ptr<u32>(raw.offset) = *(s7 + FIX_SYM_FUNCTION_TYPE);
+  auto mem = Ptr<u8>(raw.offset + BASIC_OFFSET);
+#else
   auto mem = Ptr<u8>(alloc_heap_object(s7.offset + FIX_SYM_GLOBAL_HEAP,
                                        *(s7 + FIX_SYM_FUNCTION_TYPE), 0x40, UNKNOWN_PP));
+#endif
 #ifndef __aarch64__
   auto f = (uint64_t)func;
   auto target_function = (u8*)&f;
@@ -334,9 +340,10 @@ Ptr<Function> make_function_from_c_systemv(void* func, bool arg3_is_pp) {
   mem.c()[offset++] = 0xe0;
   // the asm function's ret will return to the caller of this (GOAL code) directly.
 #else
-  // ARM64: _arg_call_arm64 expects x29 = C function pointer on entry.
-  // The stp x29,x30 in _arg_call_arm64 saves x29 (= func ptr), and ldr x8,[sp],#16 retrieves it.
-  // We emit: movz/movk x29 = func, movz/movk x8 = trampoline, br x8.
+  // ARM64: _arg_call_arm64 expects x16 (IP0) = C function pointer on entry.
+  // Using x16 (intra-procedure-call scratch) instead of x29 (frame pointer) so the GOAL
+  // caller's frame pointer is not clobbered when control returns from the C call.
+  // We emit: movz/movk x16 = func, movz/movk x8 = trampoline, br x8.
   // arg3_is_pp not needed: ARM64 GOAL passes pp in x20 and never remaps arg3.
   uint64_t func_addr = (uint64_t)func;
   uint64_t trampoline_addr = (uint64_t)_arg_call_arm64;
@@ -349,14 +356,14 @@ Ptr<Function> make_function_from_c_systemv(void* func, bool arg3_is_pp) {
     mem.c()[offset++] = (val >> 24) & 0xFF;
   };
 
-  // movz x29, func_addr[15:0]
-  write_u32(0xD2800000u | ((func_addr & 0xFFFFu) << 5) | 29u);
-  // movk x29, func_addr[31:16], lsl 16
-  write_u32(0xF2A00000u | (((func_addr >> 16) & 0xFFFFu) << 5) | 29u);
-  // movk x29, func_addr[47:32], lsl 32
-  write_u32(0xF2C00000u | (((func_addr >> 32) & 0xFFFFu) << 5) | 29u);
-  // movk x29, func_addr[63:48], lsl 48
-  write_u32(0xF2E00000u | (((func_addr >> 48) & 0xFFFFu) << 5) | 29u);
+  // movz x16, func_addr[15:0]
+  write_u32(0xD2800000u | ((func_addr & 0xFFFFu) << 5) | 16u);
+  // movk x16, func_addr[31:16], lsl 16
+  write_u32(0xF2A00000u | (((func_addr >> 16) & 0xFFFFu) << 5) | 16u);
+  // movk x16, func_addr[47:32], lsl 32
+  write_u32(0xF2C00000u | (((func_addr >> 32) & 0xFFFFu) << 5) | 16u);
+  // movk x16, func_addr[63:48], lsl 48
+  write_u32(0xF2E00000u | (((func_addr >> 48) & 0xFFFFu) << 5) | 16u);
 
   // movz x8, trampoline_addr[15:0]
   write_u32(0xD2800000u | ((trampoline_addr & 0xFFFFu) << 5) | 8u);
@@ -463,8 +470,14 @@ void _stack_call_arm64();
 
 Ptr<Function> make_stack_arg_function_from_c_systemv(void* func) {
   // allocate a function object on the global heap
+#if defined(__aarch64__) && defined(__APPLE__)
+  auto raw = kmalloc(kcodeheap, 0x40, KMALLOC_MEMSET, "trampoline");
+  *Ptr<u32>(raw.offset) = *(s7 + FIX_SYM_FUNCTION_TYPE);
+  auto mem = Ptr<u8>(raw.offset + BASIC_OFFSET);
+#else
   auto mem = Ptr<u8>(alloc_heap_object(s7.offset + FIX_SYM_GLOBAL_HEAP,
                                        *(s7 + FIX_SYM_FUNCTION_TYPE), 0x40, UNKNOWN_PP));
+#endif
 #ifndef __aarch64__
   auto f = (uint64_t)func;
   auto target_function = (u8*)&f;
@@ -493,8 +506,8 @@ Ptr<Function> make_stack_arg_function_from_c_systemv(void* func) {
   mem.c()[offset++] = 0xff;
   mem.c()[offset++] = 0xe0;
 #else
-  // ARM64: _stack_call_arm64 expects x29 = C function pointer on entry (same convention as
-  // _arg_call_arm64). emit movz/movk x29 = func, movz/movk x8 = trampoline, br x8.
+  // ARM64: _stack_call_arm64 expects x16 (IP0) = C function pointer on entry (same convention as
+  // _arg_call_arm64 after the x29→x16 fix). emit movz/movk x16 = func, movz/movk x8 = trampoline, br x8.
   uint64_t func_addr = (uint64_t)func;
   uint64_t trampoline_addr = (uint64_t)_stack_call_arm64;
   int offset = 0;
@@ -506,10 +519,10 @@ Ptr<Function> make_stack_arg_function_from_c_systemv(void* func) {
     mem.c()[offset++] = (val >> 24) & 0xFF;
   };
 
-  write_u32(0xD2800000u | ((func_addr & 0xFFFFu) << 5) | 29u);
-  write_u32(0xF2A00000u | (((func_addr >> 16) & 0xFFFFu) << 5) | 29u);
-  write_u32(0xF2C00000u | (((func_addr >> 32) & 0xFFFFu) << 5) | 29u);
-  write_u32(0xF2E00000u | (((func_addr >> 48) & 0xFFFFu) << 5) | 29u);
+  write_u32(0xD2800000u | ((func_addr & 0xFFFFu) << 5) | 16u);
+  write_u32(0xF2A00000u | (((func_addr >> 16) & 0xFFFFu) << 5) | 16u);
+  write_u32(0xF2C00000u | (((func_addr >> 32) & 0xFFFFu) << 5) | 16u);
+  write_u32(0xF2E00000u | (((func_addr >> 48) & 0xFFFFu) << 5) | 16u);
 
   write_u32(0xD2800000u | ((trampoline_addr & 0xFFFFu) << 5) | 8u);
   write_u32(0xF2A00000u | (((trampoline_addr >> 16) & 0xFFFFu) << 5) | 8u);
@@ -597,12 +610,18 @@ Ptr<Function> make_stack_arg_function_from_c(void* func) {
  * Create a GOAL function which does nothing and immediately returns.
  */
 Ptr<Function> make_nothing_func() {
+#if defined(__aarch64__) && defined(__APPLE__)
+  auto raw_n = kmalloc(kcodeheap, 0x14, KMALLOC_MEMSET, "nothing-func");
+  *Ptr<u32>(raw_n.offset) = *(s7 + FIX_SYM_FUNCTION_TYPE);
+  auto mem = Ptr<u8>(raw_n.offset + BASIC_OFFSET);
+  *Ptr<u32>(mem.offset) = 0xD65F03C0u;  // ARM64 ret
+#else
   auto mem = Ptr<u8>(alloc_heap_object(s7.offset + FIX_SYM_GLOBAL_HEAP,
                                        *(s7 + FIX_SYM_FUNCTION_TYPE), 0x14, UNKNOWN_PP));
-
   // a single x86-64 ret.
   mem.c()[0] = 0xc3;
   // CacheFlush(mem, 8);
+#endif
   return mem.cast<Function>();
 }
 
@@ -610,6 +629,13 @@ Ptr<Function> make_nothing_func() {
  * Create a GOAL function which returns 0.
  */
 Ptr<Function> make_zero_func() {
+#if defined(__aarch64__) && defined(__APPLE__)
+  auto raw_z = kmalloc(kcodeheap, 0x14, KMALLOC_MEMSET, "zero-func");
+  *Ptr<u32>(raw_z.offset) = *(s7 + FIX_SYM_FUNCTION_TYPE);
+  auto mem = Ptr<u8>(raw_z.offset + BASIC_OFFSET);
+  *Ptr<u32>(mem.offset)     = 0xD2800000u;  // ARM64 movz x0, #0
+  *Ptr<u32>(mem.offset + 4) = 0xD65F03C0u;  // ARM64 ret
+#else
   auto mem = Ptr<u8>(alloc_heap_object(s7.offset + FIX_SYM_GLOBAL_HEAP,
                                        *(s7 + FIX_SYM_FUNCTION_TYPE), 0x14, UNKNOWN_PP));
   // xor eax, eax
@@ -618,6 +644,7 @@ Ptr<Function> make_zero_func() {
   // ret
   mem.c()[2] = 0xc3;
   // CacheFlush(mem, 8);
+#endif
   return mem.cast<Function>();
 }
 
@@ -797,13 +824,6 @@ Ptr<Symbol> intern_from_c(const char* name) {
   auto symbol = find_symbol_from_c(name);
   if (symbol.offset) {
     // already exists, return it!
-#if defined(__APPLE__) && defined(__aarch64__)
-    if (!info(symbol)->str.offset) {
-      fprintf(stderr, "[INTERN-FROM-C] FOUND '%s' at 0x%x but str=0 hash=0x%x!\n",
-              name, symbol.offset, info(symbol)->hash);
-      fflush(stderr);
-    }
-#endif
     return symbol;
   }
 
@@ -816,18 +836,6 @@ Ptr<Symbol> intern_from_c(const char* name) {
   auto str = make_string_from_c(name);
   info(symbol)->str = Ptr<String>(str);
   info(symbol)->hash = hash;
-
-#if defined(__APPLE__) && defined(__aarch64__)
-  if (info(symbol)->str.offset != str || info(symbol)->hash != hash) {
-    fprintf(stderr, "[INTERN-FROM-C] WRITE FAILED for '%s': str=%u->%u hash=%u->%u\n",
-            name, str, info(symbol)->str.offset, hash, info(symbol)->hash);
-    fflush(stderr);
-  } else {
-    fprintf(stderr, "[INTERN-FROM-C] NEW '%s' at sym=0x%x info=0x%x str=0x%x\n",
-            name, symbol.offset, info(symbol).offset, str);
-    fflush(stderr);
-  }
-#endif
 
   NumSymbols++;
   return symbol;
@@ -997,7 +1005,6 @@ Ptr<Type> set_fixed_type(u32 offset,
  * Internally does an intern.
  */
 u64 new_type(u32 symbol, u32 parent, u64 flags) {
-  //  printf("flags 0x%lx\n", flags);
   u32 n_methods = (flags >> 32) & 0xffff;
   if (n_methods == 0) {
     // 12 methods used as default, if the user has not provided us with a number
@@ -1028,12 +1035,15 @@ u64 type_typep(Ptr<Type> t1, Ptr<Type> t2) {
     return (s7 + FIX_SYM_TRUE).offset;
   }
 
-  do {
+  for (int depth = 0; depth < 128; depth++) {
     t1 = t1->parent;
     if (t1 == t2) {
       return (s7 + FIX_SYM_TRUE).offset;
     }
-  } while (t1.offset && t1.offset != *(s7 + FIX_SYM_OBJECT_TYPE));
+    if (!t1.offset || t1.offset == *(s7 + FIX_SYM_OBJECT_TYPE)) {
+      break;
+    }
+  }
   return s7.offset;
 }
 
@@ -1076,11 +1086,25 @@ u64 method_set(u32 type_, u32 method_id, u32 method) {
   type->get_method(method_id).offset = method;
 
   // this is kind of a strange combination...
+#if defined(__APPLE__) && defined(__aarch64__)
+  // ARM64: the symbol-table walk is prohibitively slow on Apple Silicon during
+  // kernel loading (every method-set! walks every symbol). With the trampoline
+  // (x29→x16) and SetSymbolValue (alias) fixes in place the propagation pass
+  // is not required for boot correctness — types are defined in order, so
+  // no child of a freshly-defined type exists yet to need propagation.
+  if (false) {
+#else
   if (*EnableMethodSet || (!FastLink && MasterDebug && !DiskBoot)) {
+#endif
     // upper table
     auto sym = s7.offset;
     for (; sym < LastSymbol.offset; sym += 8) {
       auto symValue = *Ptr<u32>(sym);
+      // Skip kcodeheap addresses — on ARM64/Apple all code segments live there,
+      // and none of them are valid type objects for child-type propagation.
+      if (EE_CODE_HEAP_START <= symValue && symValue < EE_CODE_HEAP_END) {
+        continue;
+      }
       if ((symValue < SymbolTable2.offset || 0x7ffffff < symValue) &&  // not in normal memory
           (symValue < 0x84000 || 0x100000 <= symValue)) {              // not in kernel memory
         continue;
@@ -1122,6 +1146,9 @@ u64 method_set(u32 type_, u32 method_id, u32 method) {
     sym = SymbolTable2.offset;
     for (; sym < s7.offset; sym += 8) {
       auto symValue = *Ptr<u32>(sym);
+      if (EE_CODE_HEAP_START <= symValue && symValue < EE_CODE_HEAP_END) {
+        continue;
+      }
       if ((symValue < SymbolTable2.offset || 0x7ffffff < symValue) &&  // not in normal memory
           (symValue < 0x84000 || 0x100000 <= symValue)) {              // not in kernel memory
         continue;
@@ -1835,18 +1862,13 @@ s32 InitHeapAndSymbol() {
   if (MasterUseKernel) {
     Timer kernel_load_timer;
     method_set_symbol->value++;
-    fprintf(stderr, "[EE-DEBUG] load_and_link_dgo_from_c kernel: start\n"); fflush(stderr);
     load_and_link_dgo_from_c("kernel", kglobalheap,
                              LINK_FLAG_OUTPUT_LOAD | LINK_FLAG_EXECUTE | LINK_FLAG_PRINT_LOGIN,
                              0x400000, true);
-    fprintf(stderr, "[EE-DEBUG] load_and_link_dgo_from_c kernel: returned\n"); fflush(stderr);
     method_set_symbol->value--;
 
     // check the kernel version!
     auto kernel_version = intern_from_c("*kernel-version*")->value;
-    fprintf(stderr, "[EE-DEBUG] kernel_version=0x%x major=%u expected=%u\n",
-            kernel_version, (unsigned)(kernel_version >> 0x13), (unsigned)KERNEL_VERSION_MAJOR);
-    fflush(stderr);
     if (!kernel_version || ((kernel_version >> 0x13) != KERNEL_VERSION_MAJOR)) {
       lg::error(
           "Kernel version mismatch! Compiled C kernel version is {}.{} but"
@@ -1866,10 +1888,8 @@ s32 InitHeapAndSymbol() {
   // load stuff for the listener interface
   InitListener();
 
-  fprintf(stderr, "[EE-DEBUG] calling InitMachineScheme\n"); fflush(stderr);
   // Do final initialization, including loading and initializing the engine.
   jak1::InitMachineScheme();
-  fprintf(stderr, "[EE-DEBUG] InitMachineScheme returned\n"); fflush(stderr);
 
   // testing stuff:
   make_function_symbol_from_c("test-function", (void*)test_function);

@@ -103,6 +103,8 @@ enum ARM64_REG : s8 {
   // quadword registers, equivalent to XMMs
   // the convention in arm64 is the callee preserves all Q values
   // at the same time though, the caller should not depend on this convention!
+  // WARNING: Q0..Q15 intentionally share ids 0..15 with X0..X15. is_128bit_simd(ARM64)
+  // returns true for both. Use RegisterInfo::is_xmm_arg_reg() to distinguish them.
   Q0 = 0,
   Q1,
   Q2,
@@ -222,6 +224,11 @@ class RegisterInfo {
   const Info& get_info(Register r) const { return m_info.at(r.id()); }
   Register get_gpr_arg_reg(int id) const { return m_gpr_arg_regs.at(id); }
   Register get_xmm_arg_reg(int id) const { return m_xmm_arg_regs.at(id); }
+  // Returns true iff r is one of the XMM/Q argument registers (XMM1-XMM8, ids 17-24).
+  // Use this instead of Register::is_128bit_simd() at call sites that classify argument
+  // registers, because is_128bit_simd(ARM64) incorrectly returns true for X0-X15 GPRs
+  // due to the Q0=0/X0=0 id collision.
+  bool is_xmm_arg_reg(Register r) const;
   Register get_saved_gpr(int id) const { return m_saved_gprs.at(id); }
   Register get_saved_xmm(int id) const { return m_saved_xmms.at(id); }
 #if defined(__aarch64__)

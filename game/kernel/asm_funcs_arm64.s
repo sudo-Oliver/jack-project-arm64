@@ -13,16 +13,15 @@
 ;; Following the macOS documentation which mostly aligns with standard arm64
 ;;
 ;; Entry state (set by EE-memory stub via movz/movk + br):
-;;   x29 = C function pointer
+;;   x16 = C function pointer (IP0 scratch — does not clobber GOAL frame pointer x29)
 ;;   x30 = GOAL return address (br x8 in stub does not update x30)
 ;;   x0-x7 = GOAL arguments passed through unchanged
 .global _arg_call_arm64
 .align 4
 _arg_call_arm64:
-  ;; Standard prologue: save frame-pointer (= C func ptr!) and link reg (= GOAL lr).
-  ;; DO NOT pop this frame early — we need x30 alive until the final ldp/ret.
+  ;; Standard prologue: save GOAL frame-pointer and link reg (= GOAL lr).
   stp  x29, x30, [sp, #-16]!
-  mov  x29, sp                  ; frame pointer into the saved pair
+  mov  x29, sp
 
   ;; Save callee-saved SIMD registers below the frame.
   stp q15, q14, [sp, #-32]!
@@ -30,32 +29,24 @@ _arg_call_arm64:
   stp q11, q10, [sp, #-32]!
   stp q9, q8, [sp, #-32]!
 
-  ;; Load C function pointer from frame slot before clobbering x8.
-  ;; [x29] == original x29 == C function pointer.
-  ldr x8, [x29]
-
-  ;; Save GOAL args (x0-x7) and C func ptr (x8) across the pthread_jit_write_protect_np call.
-  ;; Use x9 as pair-padding; it is caller-saved so the C func can clobber it.
+  ;; Save GOAL args across the pthread_jit_write_protect_np call.
   stp x6, x7, [sp, #-16]!
   stp x4, x5, [sp, #-16]!
   stp x2, x3, [sp, #-16]!
   stp x0, x1, [sp, #-16]!
-  stp x8, x9, [sp, #-16]!
 
   ;; Switch to write mode so the C function can write EE memory without SIGBUS.
-  ;; .text is always executable; only EE MAP_JIT memory protection changes.
   mov x0, #0
   bl  _pthread_jit_write_protect_np
 
-  ;; Restore C func ptr and GOAL args.
-  ldp x8, x9, [sp], #16
+  ;; Restore GOAL args; x16 still holds the C function pointer.
   ldp x0, x1, [sp], #16
   ldp x2, x3, [sp], #16
   ldp x4, x5, [sp], #16
   ldp x6, x7, [sp], #16
 
-  ;; Call the C function.  x0-x7 hold the GOAL arguments.
-  blr x8
+  ;; Call the C function. x0-x7 hold the GOAL arguments.
+  blr x16
 
   ;; Save return value across the restore-exec-mode call.
   stp x0, x1, [sp, #-16]!
@@ -83,13 +74,13 @@ _arg_call_arm64:
 ;; x0 = pointer to that array.
 ;;
 ;; Entry state (set by EE-memory stub):
-;;   x29 = C function pointer
+;;   x16 = C function pointer (IP0 scratch — does not clobber GOAL frame pointer x29)
 ;;   x30 = GOAL return address
 ;;   x0-x7 = GOAL arguments
 .global _stack_call_arm64
 .align 4
 _stack_call_arm64:
-  ;; Standard prologue: save C func ptr (x29) and GOAL lr (x30).
+  ;; Standard prologue: save GOAL frame-pointer and GOAL lr.
   stp  x29, x30, [sp, #-16]!
   mov  x29, sp
 
@@ -115,9 +106,8 @@ _stack_call_arm64:
   bl  _pthread_jit_write_protect_np
   ldp x0, x1, [sp], #16
 
-  ;; Load C function pointer from the saved frame and call.
-  ldr x8, [x29]
-  blr x8
+  ;; C function pointer is in x16; call it directly.
+  blr x16
 
   ;; Save return value, restore exec mode, then restore return value.
   stp x0, x1, [sp, #-16]!

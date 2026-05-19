@@ -1,14 +1,14 @@
 {
   "mcpServers": {
-    "repowise": {
-      "command": "repowise",
-      "args": [
-        "mcp",
-        "/Users/o.quick/Code/jak-project",
-        "--transport",
-        "stdio"
-      ],
-      "description": "repowise: codebase intelligence \u2014 docs, graph, git signals, dead code, decisions"
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp"],
+      "description": "Up-to-date docs: ARM NEON intrinsics, CMake, GoogleTest, fmt"
+    },
+    "sequential-thinking": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+      "description": "Structured step-by-step reasoning for complex encoding and codegen problems"
     }
   }
 }
