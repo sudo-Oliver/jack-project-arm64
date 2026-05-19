@@ -558,7 +558,6 @@ static void dump_arm64_crash_context(uint64_t pc,
  * GOAL kernel arguments are currently ignored.
  */
 static void sigbus_handler(int sig, siginfo_t* info, void* ctx) {
-  (void)sig;
 
 #if defined(__aarch64__) && defined(__APPLE__)
   // SIGBUS counter: print stats every 10k faults so we can gauge performance.
@@ -951,6 +950,48 @@ static void sigbus_handler(int sig, siginfo_t* info, void* ctx) {
         uctx->uc_mcontext->__ss.__pc = cur_pc;
         return;
       }
+
+      // ── 10. STR/STRB/STRH (immediate, unsigned offset) GPR ───────────────
+      // Emitted by the C compiler for things like `*dest = 0` in kstrncat
+      // when the kernel writes into a GOAL string allocated in kcodeheap.
+      // Encoding: size(2) 111001 00 imm12(12) Rn(5) Rt(5)  (top10 mask 0xFFC00000)
+      {
+        uint32_t top10 = instr & 0xFFC00000u;
+        int bytes = 0;
+        if      (top10 == 0xF9000000u) bytes = 8;  // STR  Xt
+        else if (top10 == 0xB9000000u) bytes = 4;  // STR  Wt
+        else if (top10 == 0x79000000u) bytes = 2;  // STRH Wt
+        else if (top10 == 0x39000000u) bytes = 1;  // STRB Wt
+        if (bytes) {
+          uint32_t imm12 = (instr >> 10) & 0xFFFu;
+          int Rn = (instr >> 5) & 0x1F;
+          int Rt = instr & 0x1F;
+          uint64_t addr = gpr_base(Rn) + (uint64_t)imm12 * bytes;
+          do_gpr_store(addr, Rt, bytes);
+          return;
+        }
+      }
+
+      // ── 11. STUR/STURB/STURH (unscaled immediate) GPR ────────────────────
+      // The C compiler sometimes picks STUR for small negative offsets or
+      // when the immediate isn't naturally aligned.
+      // Encoding: size(2) 111000 00 0 imm9(9) 00 Rn(5) Rt(5)  (mask 0xFFE00C00)
+      {
+        uint32_t m = instr & 0xFFE00C00u;
+        int bytes = 0;
+        if      (m == 0xF8000000u) bytes = 8;  // STUR  Xt
+        else if (m == 0xB8000000u) bytes = 4;  // STUR  Wt
+        else if (m == 0x78000000u) bytes = 2;  // STURH Wt
+        else if (m == 0x38000000u) bytes = 1;  // STURB Wt
+        if (bytes) {
+          int32_t imm9 = (int32_t)((instr >> 12) & 0x1FF);
+          if (imm9 & 0x100) imm9 |= ~(int32_t)0x1FF;  // sign-extend
+          int Rn = (instr >> 5) & 0x1F;
+          int Rt = instr & 0x1F;
+          do_gpr_store(gpr_base(Rn) + (int64_t)imm9, Rt, bytes);
+          return;
+        }
+      }
     }
   }
 #endif
@@ -980,8 +1021,8 @@ static void sigbus_handler(int sig, siginfo_t* info, void* ctx) {
 #endif
   struct sigaction sa{};
   sa.sa_handler = SIG_DFL;
-  sigaction(SIGBUS, &sa, nullptr);
-  raise(SIGBUS);
+  sigaction(sig, &sa, nullptr);
+  raise(sig);
 }
 
 RuntimeExitStatus exec_runtime(GameLaunchOptions game_options, int argc, const char** argv) {
@@ -1017,7 +1058,14 @@ RuntimeExitStatus exec_runtime(GameLaunchOptions game_options, int argc, const c
     sa.sa_sigaction = sigbus_handler;
     sa.sa_flags = SA_SIGINFO;
     sigaction(SIGBUS, &sa, nullptr);
-    fprintf(stderr, "[EE-DEBUG] SIGBUS handler installed\n"); fflush(stderr);
+#if defined(__APPLE__) && defined(__aarch64__)
+    // Writes to MAP_JIT pages from non-JIT code (e.g. C kernel calling kstrncat into
+    // a string allocated in kcodeheap) are reported as SIGSEGV (EXC_BAD_ACCESS code=2),
+    // not SIGBUS. Use the same handler — it gates on fault_addr being inside the
+    // kcodeheap region and falls through to default if the instruction can't be decoded.
+    sigaction(SIGSEGV, &sa, nullptr);
+#endif
+    fprintf(stderr, "[EE-DEBUG] SIGBUS/SIGSEGV handler installed\n"); fflush(stderr);
   }
   prof().root_event();
   g_argc = argc;
