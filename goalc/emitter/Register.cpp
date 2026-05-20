@@ -8,17 +8,43 @@ RegisterInfo RegisterInfo::make_register_info() {
 
 #if defined(__aarch64__)
   // ARM64: register IDs 0-30 map directly to X0-X30.
-  // X0      (0)  = arg0/return, temp  [≡ RAX/RDI overlap in id space]
+  // X0      (0)  = arg0/return, temp
   // X1-X7   (1-7)= arg1-arg7, temp
   // X8      (8)  = indirect result / scratch, temp
   // X9-X15  (9-15) = temp
-  // X16-X18 (16-18) = temp (IP0/IP1/platform)
+  // X16-X17 (16-17) = IP0/IP1 scratch, reserved for JIT use
+  // X18     (18) = platform register (Darwin), do NOT touch
   // x19     (19) = callee-saved (GOAL uses as extra saved)
   // x20     (20) = pp   (special)
   // x21     (21) = st   (special)
-  // x22     (22) = off  (special)
+  // x22     (22) = off  (special, GOAL EE base address)
   // X23-X28 (23-28) = callee-saved, unused by GOAL
   // X29/X30 = FP/LR, do not allocate
+  //
+  // SIMD/GPR ID space overlap (IDs 16-30): XMM0-XMM14 share IDs with X16-X30.
+  // Write SIMD entries FIRST, then GPR entries — GPR wins for shared indices.
+  // Special GPRs (x18/x20/x21/x22/x29/x30) marked special=true block the
+  // corresponding SIMD register (q2/q4/q5/q6/q13/q14) from allocation.
+
+  // SIMD registers (written first; GPR entries below overwrite IDs 16-30)
+  info.m_info[XMM0]  = {false, false, "q0"};   // index 16 — overwritten by X16 (non-special)
+  info.m_info[XMM1]  = {false, false, "q1"};   // 17 — overwritten by X17 (non-special)
+  info.m_info[XMM2]  = {false, false, "q2"};   // 18 — overwritten by X18 (special, platform)
+  info.m_info[XMM3]  = {false, false, "q3"};   // 19 — overwritten by x19 (callee-saved)
+  info.m_info[XMM4]  = {false, false, "q4"};   // 20 — overwritten by x20/pp (special)
+  info.m_info[XMM5]  = {false, false, "q5"};   // 21 — overwritten by x21/st (special)
+  info.m_info[XMM6]  = {false, false, "q6"};   // 22 — overwritten by x22/off (special)
+  info.m_info[XMM7]  = {false, false, "q7"};   // 23 — overwritten by X23 (callee-saved)
+  info.m_info[XMM8]  = {true,  false, "q8"};   // 24
+  info.m_info[XMM9]  = {true,  false, "q9"};   // 25
+  info.m_info[XMM10] = {true,  false, "q10"};  // 26
+  info.m_info[XMM11] = {true,  false, "q11"};  // 27
+  info.m_info[XMM12] = {true,  false, "q12"};  // 28
+  info.m_info[XMM13] = {true,  false, "q13"};  // 29 — overwritten by X29/FP (special)
+  info.m_info[XMM14] = {true,  false, "q14"};  // 30 — overwritten by X30/LR (special)
+  info.m_info[XMM15] = {true,  false, "q15"};  // 31
+
+  // GPR entries (written after SIMD; overwrite shared indices 16-30)
   info.m_info[X0]  = {false, false, "x0"};   // arg0/ret, temp
   info.m_info[X1]  = {false, false, "x1"};   // arg1, temp
   info.m_info[X2]  = {false, false, "x2"};   // arg2, temp
@@ -35,51 +61,37 @@ RegisterInfo RegisterInfo::make_register_info() {
   info.m_info[X13] = {false, false, "x13"};
   info.m_info[X14] = {false, false, "x14"};
   info.m_info[X15] = {false, false, "x15"};
-  info.m_info[X16] = {false, false, "x16"};
-  info.m_info[X17] = {false, false, "x17"};
-  info.m_info[X18] = {false, false, "x18"};
+  info.m_info[X16] = {false, false, "x16"};  // IP0, JIT scratch — blocks q0 alloc
+  info.m_info[X17] = {false, false, "x17"};  // IP1, JIT scratch — blocks q1 alloc
+  info.m_info[X18] = {false, true,  "x18"};  // platform register (Darwin) — blocks q2 alloc
   info.m_info[x19] = {true,  false, "x19"};  // callee-saved
-  info.m_info[x20] = {false, true,  "x20"};  // pp (special)
-  info.m_info[x21] = {false, true,  "x21"};  // st (special)
-  info.m_info[x22] = {false, true,  "x22"};  // off (special)
+  info.m_info[x20] = {false, true,  "x20"};  // pp (special) — blocks q4 alloc
+  info.m_info[x21] = {false, true,  "x21"};  // st (special) — blocks q5 alloc
+  info.m_info[x22] = {false, true,  "x22"};  // off/EE-base (special) — blocks q6 alloc
   info.m_info[X23] = {true,  false, "x23"};  // callee-saved
   info.m_info[X24] = {true,  false, "x24"};  // callee-saved
   info.m_info[X25] = {true,  false, "x25"};  // callee-saved
   info.m_info[X26] = {true,  false, "x26"};  // callee-saved
   info.m_info[X27] = {true,  false, "x27"};  // callee-saved
   info.m_info[X28] = {true,  false, "x28"};  // callee-saved
-  info.m_info[X29] = {false, true,  "x29"};  // FP (special, do not alloc)
-  info.m_info[X30] = {false, true,  "x30"};  // LR (special, do not alloc)
+  info.m_info[X29] = {false, true,  "x29"};  // FP (special) — blocks q13 alloc
+  info.m_info[X30] = {false, true,  "x30"};  // LR (special) — blocks q14 alloc
 
-  // SIMD: the regalloc uses XMM0-XMM15 ids (16-31) for vector regs.
-  // On ARM64 these map to q0-q15.  Write SIMD entries FIRST so the GPR
-  // entries for X16-X30 (which share the same index range 16-30) win.
-  info.m_info[XMM0]  = {false, false, "q0"};   // index 16 — overwritten below by X16 GPR
-  info.m_info[XMM1]  = {false, false, "q1"};   // 17
-  info.m_info[XMM2]  = {false, false, "q2"};   // 18
-  info.m_info[XMM3]  = {false, false, "q3"};   // 19
-  info.m_info[XMM4]  = {false, false, "q4"};   // 20
-  info.m_info[XMM5]  = {false, false, "q5"};   // 21
-  info.m_info[XMM6]  = {false, false, "q6"};   // 22
-  info.m_info[XMM7]  = {false, false, "q7"};   // 23
-  info.m_info[XMM8]  = {true,  false, "q8"};   // 24
-  info.m_info[XMM9]  = {true,  false, "q9"};   // 25
-  info.m_info[XMM10] = {true,  false, "q10"};  // 26
-  info.m_info[XMM11] = {true,  false, "q11"};  // 27
-  info.m_info[XMM12] = {true,  false, "q12"};  // 28
-  info.m_info[XMM13] = {true,  false, "q13"};  // 29
-  info.m_info[XMM14] = {true,  false, "q14"};  // 30
-  info.m_info[XMM15] = {true,  false, "q15"};  // 31 = SP — safe, SP never allocated
-
-  // GPR entries (written after SIMD so they overwrite indices 16-30).
   // ARM64 ABI: args in x0-x7 (ids 0-7).
   info.m_gpr_arg_regs = std::array<Register, N_ARGS>(
       {X0, X1, X2, X3, X4, X5, X6, X7});
-  // SIMD args: q1-q7 (skip q0 so it can be used for return).
+  // SIMD args: skip q0 (return), q2(x18), q3(x19-is_saved-mismatch), q4(x20/pp),
+  //            q5(x21/st), q6(x22/off), q7(x23-is_saved-mismatch).
+  // XMM3 (q3, ID=19=x19) and XMM7 (q7, ID=23=X23) are excluded because their
+  // m_info entries inherit is_saved=true from the GPR x19/X23 overwrites, but ARM64
+  // q3/q7 are *caller*-saved — using them as callee-saved would cause silent clobber.
+  // Use q1, q8-q12, q15 for float arguments (8 slots).
   info.m_xmm_arg_regs =
-      std::array<Register, N_ARGS>({XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7, XMM8});
-  // Callee-saved GPRs available to GOAL (exclude specials x20/x21/x22 and FP/LR).
+      std::array<Register, N_ARGS>({XMM1, XMM8, XMM9, XMM10, XMM11, XMM12, XMM15, XMM0});
+  // Callee-saved GPRs available to GOAL (exclude specials x18/x20/x21/x22 and FP/LR).
   info.m_saved_gprs = std::array<Register, N_SAVED_GPRS>({x19, X23, X24, X25, X26});
+  // Callee-saved SIMD: q8-q12, q15. q13(x29) and q14(x30) are blocked but harmless
+  // in the saved list — they're never allocated so never trigger save/restore.
   info.m_saved_xmms =
       std::array<Register, N_SAVED_XMMS>({XMM8, XMM9, XMM10, XMM11, XMM12, XMM13, XMM14, XMM15});
 
@@ -90,21 +102,25 @@ RegisterInfo RegisterInfo::make_register_info() {
     info.m_saved_all[i + N_SAVED_GPRS] = info.m_saved_xmms[i];
   }
 
-  // Allocate temps first (x8-x18), then args (x0-x7), then saved (x19, x23-x28).
+  // GPR alloc: temps (x8-x15) first, then args (x0-x7), then callee-saved (x19).
+  // X16/X17 reserved as JIT scratch; X18 special (platform).
   info.m_gpr_alloc_order = {X8, X9, X10, X11, X12, X13, X14, X15,
                              X0, X1, X2,  X3,  X4,  X5,  X6,  X7, x19};
-  info.m_xmm_alloc_order = {XMM0, XMM1, XMM2, XMM3,  XMM4,  XMM5,  XMM6,
-                             XMM7, XMM8, XMM9, XMM10, XMM11, XMM12, XMM13};
+  // SIMD alloc: only use q0/q1 (caller-saved, non-conflicting) and q8-q12/q15 (callee-saved).
+  // Exclude q2=x18(special), q3=x19(is_saved mismatch), q4=x20(special),
+  //         q5=x21(special), q6=x22(special), q7=x23(is_saved mismatch),
+  //         q13=x29(special), q14=x30(special).
+  info.m_xmm_alloc_order = {XMM0, XMM1, XMM8, XMM9, XMM10, XMM11, XMM12, XMM15};
 
   info.m_gpr_temp_only_alloc_order = {X8, X9, X10, X11, X12, X13, X14, X15,
                                       X0, X1, X2,  X3,  X4,  X5,  X6,  X7};
-  info.m_xmm_temp_only_alloc_order = {XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7};
+  // Only q0 and q1 are true caller-saved SIMD temps (non-special, non-mismatch).
+  info.m_xmm_temp_only_alloc_order = {XMM0, XMM1};
 
   info.m_gpr_spill_temp_alloc_order = {X8,  X9,  X10, X11, X12, X13,
                                        X14, X15, X0,  X1,  X2,  X3,
                                        X4,  X5,  X6,  X7,  x19};
-  info.m_xmm_spill_temp_alloc_order = {XMM0, XMM1, XMM2,  XMM3,  XMM4,  XMM5,  XMM6,  XMM7,
-                                       XMM8, XMM9, XMM10, XMM11, XMM12, XMM13, XMM14, XMM15};
+  info.m_xmm_spill_temp_alloc_order = {XMM0, XMM1, XMM8, XMM9, XMM10, XMM11, XMM12, XMM15};
 #else
   info.m_info[RAX] = {false, false, "rax"};  // return, temp
   info.m_info[RCX] = {false, false, "rcx"};  // gpr arg 3, temp

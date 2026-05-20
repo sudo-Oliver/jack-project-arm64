@@ -413,6 +413,7 @@ u64 DecodeInactiveTimeout() {
 
 void DecodeTime(u32 ptr) {
   Ptr<ee::sceCdCLOCK> clock(ptr);
+  fprintf(stderr, "[EE-DEBUG] DecodeTime ptr=0x%x clock.c()=%p g_ee_main_mem=%p\n", ptr, (void*)clock.c(), (void*)g_ee_main_mem);
   // in jak2, if this fails, they do a sceScfGetLocalTimefromRTC
   sceCdReadClock(clock.c());
 }

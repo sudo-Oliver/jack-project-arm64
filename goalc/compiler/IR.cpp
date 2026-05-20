@@ -1413,34 +1413,38 @@ void IR_LoadConstOffset::do_codegen_arm64(emitter::ObjectGenerator* gen,
   auto base_reg = m_use_coloring ? get_reg(m_base, allocs, irec) : get_no_color_reg(m_base);
   auto off_reg = gen->get_offset_reg();
 
-  // ARM64 load_goal_* only support offset==0; for non-zero, adjust base first into dest_reg.
+  // For SIMD destinations (FLOAT/VECTOR), dest_reg is a SIMD register and cannot be used
+  // for GPR address arithmetic.  Use X16 (IP0 scratch) for address computation instead.
+  const bool dest_is_simd = (m_dest->ireg().reg_class != RegClass::GPR_64);
+  auto addr_scratch = dest_is_simd ? emitter::Register(emitter::X16) : dest_reg;
+
   auto effective_base = base_reg;
   if (m_offset != 0) {
     if (m_offset >= -4095 && m_offset <= 4095) {
-      gen->add_instr(IGen::lea_reg_plus_off32(*gen, dest_reg, base_reg, m_offset), irec);
+      gen->add_instr(IGen::lea_reg_plus_off32(*gen, addr_scratch, base_reg, m_offset), irec);
     } else {
-      // Large offset: two paths depending on whether dest and base alias
+      // Large offset: two paths depending on whether addr_scratch and base alias
       ASSERT_MSG((m_offset >= 0 ? m_offset : -(int64_t)m_offset) <= (int64_t)0xFFFFFF,
                  "IR_LoadConstOffset::do_codegen_arm64: offset exceeds 24-bit range");
       const u32 abs_off = (u32)(m_offset >= 0 ? m_offset : -(int64_t)m_offset);
       const u32 upper = abs_off >> 12;
       const u32 lower = abs_off & 0xFFF;
-      if (dest_reg.id() != base_reg.id()) {
-        // dest != base: load constant into dest then add base
-        load_constant((u64)(s64)m_offset, gen, irec, dest_reg);
-        gen->add_instr(IGen::add_gpr64_gpr64(*gen, dest_reg, base_reg), irec);
+      if (addr_scratch.id() != base_reg.id()) {
+        // addr_scratch != base: load constant into addr_scratch then add base
+        load_constant((u64)(s64)m_offset, gen, irec, addr_scratch);
+        gen->add_instr(IGen::add_gpr64_gpr64(*gen, addr_scratch, base_reg), irec);
       } else {
-        // dest == base: adjust in-place; load will overwrite the adjusted value, no restore needed
+        // addr_scratch == base: adjust in-place; load will overwrite the adjusted value
         if (m_offset > 0) {
-          if (upper) gen->add_instr(IGen::ARM64::add_gpr64_imm_lsl12(dest_reg, upper), irec);
-          if (lower) gen->add_instr(IGen::ARM64::add_gpr64_imm8s(dest_reg, (int64_t)lower), irec);
+          if (upper) gen->add_instr(IGen::ARM64::add_gpr64_imm_lsl12(addr_scratch, upper), irec);
+          if (lower) gen->add_instr(IGen::ARM64::add_gpr64_imm8s(addr_scratch, (int64_t)lower), irec);
         } else {
-          if (upper) gen->add_instr(IGen::ARM64::sub_gpr64_imm_lsl12(dest_reg, upper), irec);
-          if (lower) gen->add_instr(IGen::ARM64::sub_gpr64_imm8s(dest_reg, (int64_t)lower), irec);
+          if (upper) gen->add_instr(IGen::ARM64::sub_gpr64_imm_lsl12(addr_scratch, upper), irec);
+          if (lower) gen->add_instr(IGen::ARM64::sub_gpr64_imm8s(addr_scratch, (int64_t)lower), irec);
         }
       }
     }
-    effective_base = dest_reg;
+    effective_base = addr_scratch;
   }
 
   if (m_dest->ireg().reg_class == RegClass::GPR_64) {
@@ -1749,14 +1753,11 @@ void IR_GetStackAddr::do_codegen_arm64(emitter::ObjectGenerator* gen,
                                        emitter::IR_Record irec) {
   auto dest_reg = get_reg(m_dest, allocs, irec);
   int offset = GPR_SIZE * allocs.get_slot_for_var(m_slot);
-
-  if (offset == 0) {
-    gen->add_instr(IGen::mov_gpr64_gpr64(*gen, dest_reg, SP), irec);
-    gen->add_instr(IGen::sub_gpr64_gpr64(*gen, dest_reg, gen->get_offset_reg()), irec);
-  } else {
-    gen->add_instr(IGen::lea_reg_plus_off(*gen, dest_reg, SP, offset), irec);
-    gen->add_instr(IGen::sub_gpr64_gpr64(*gen, dest_reg, gen->get_offset_reg()), irec);
-  }
+  // Always use lea_reg_plus_off (ADD Xd, SP, #imm) — even for offset==0.
+  // mov_gpr64_gpr64(dst, SP) encodes as ORR dst, xzr, xzr (reg-31 = XZR in shifted-reg form),
+  // producing 0 instead of the stack pointer value.
+  gen->add_instr(IGen::lea_reg_plus_off(*gen, dest_reg, SP, offset), irec);
+  gen->add_instr(IGen::sub_gpr64_gpr64(*gen, dest_reg, gen->get_offset_reg()), irec);
 }
 
 ///////////////////////

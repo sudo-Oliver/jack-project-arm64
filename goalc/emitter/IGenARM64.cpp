@@ -1051,7 +1051,7 @@ InstructionARM64 sar_gpr64_u8(Register reg, uint8_t sa) {
   // https://www.scs.stanford.edu/~zyedidia/arm64/asr_sbfm.html
   ASSERT(reg.is_gpr(instr_set));
   ASSERT(sa < 64);
-  return InstructionARM64(Base(0b1001001111, 10), Field{((u32)sa << 16)}, Imm6(63), Rn(reg.id()), Rd(reg.id()));
+  return InstructionARM64(Base(0b1001001101, 10), Field{((u32)sa << 16)}, Imm6(63), Rn(reg.id()), Rd(reg.id()));
 }
 
 //;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
