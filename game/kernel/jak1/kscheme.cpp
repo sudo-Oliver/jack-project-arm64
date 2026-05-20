@@ -275,6 +275,7 @@ u64 make_string_from_c(const char* c_str) {
   return mem;
 }
 
+
 extern "C" {
 #ifndef __aarch64__
 #ifdef __APPLE__
@@ -1086,16 +1087,7 @@ u64 method_set(u32 type_, u32 method_id, u32 method) {
   type->get_method(method_id).offset = method;
 
   // this is kind of a strange combination...
-#if defined(__APPLE__) && defined(__aarch64__)
-  // ARM64: the symbol-table walk is prohibitively slow on Apple Silicon during
-  // kernel loading (every method-set! walks every symbol). With the trampoline
-  // (x29→x16) and SetSymbolValue (alias) fixes in place the propagation pass
-  // is not required for boot correctness — types are defined in order, so
-  // no child of a freshly-defined type exists yet to need propagation.
-  if (false) {
-#else
   if (*EnableMethodSet || (!FastLink && MasterDebug && !DiskBoot)) {
-#endif
     // upper table
     auto sym = s7.offset;
     for (; sym < LastSymbol.offset; sym += 8) {

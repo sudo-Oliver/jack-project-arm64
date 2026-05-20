@@ -16,6 +16,7 @@
 ;;   x16 = C function pointer (IP0 scratch — does not clobber GOAL frame pointer x29)
 ;;   x30 = GOAL return address (br x8 in stub does not update x30)
 ;;   x0-x7 = GOAL arguments passed through unchanged
+;; Debug helper: increment call counter and print every 50 calls
 .global _arg_call_arm64
 .align 4
 _arg_call_arm64:
@@ -29,33 +30,12 @@ _arg_call_arm64:
   stp q11, q10, [sp, #-32]!
   stp q9, q8, [sp, #-32]!
 
-  ;; Save GOAL args across the pthread_jit_write_protect_np call.
-  stp x6, x7, [sp, #-16]!
-  stp x4, x5, [sp, #-16]!
-  stp x2, x3, [sp, #-16]!
-  stp x0, x1, [sp, #-16]!
-
-  ;; Switch to write mode so the C function can write EE memory without SIGBUS.
-  mov x0, #0
-  bl  _pthread_jit_write_protect_np
-
-  ;; Restore GOAL args; x16 still holds the C function pointer.
-  ldp x0, x1, [sp], #16
-  ldp x2, x3, [sp], #16
-  ldp x4, x5, [sp], #16
-  ldp x6, x7, [sp], #16
-
-  ;; Call the C function. x0-x7 hold the GOAL arguments.
+  ;; Call the C function. x0-x7 hold GOAL arguments; x16 = C function pointer.
+  ;; No pthread_jit_write_protect_np toggle here: call_goal_on_stack enters exec
+  ;; mode before calling GOAL, and C functions invoked from GOAL (method_set,
+  ;; new_type, format, ...) only access EE data memory (regular mmap, not
+  ;; MAP_JIT). Code-writing paths in klink.cpp have their own explicit toggles.
   blr x16
-
-  ;; Save return value across the restore-exec-mode call.
-  stp x0, x1, [sp, #-16]!
-
-  ;; Restore exec mode so GOAL code can run after we return.
-  mov x0, #1
-  bl  _pthread_jit_write_protect_np
-
-  ldp x0, x1, [sp], #16
 
   ;; Restore callee-saved SIMD registers.
   ldp q9, q8, [sp], #32
@@ -99,21 +79,8 @@ _stack_call_arm64:
   ;; x0 = pointer to the argument array (first C argument).
   mov x0, sp
 
-  ;; Switch to write mode so the C function can write EE memory without SIGBUS.
-  ;; Save x0 (arg array ptr) across the call.
-  stp x0, x1, [sp, #-16]!
-  mov x0, #0
-  bl  _pthread_jit_write_protect_np
-  ldp x0, x1, [sp], #16
-
-  ;; C function pointer is in x16; call it directly.
+  ;; No pthread_jit_write_protect_np: same rationale as _arg_call_arm64.
   blr x16
-
-  ;; Save return value, restore exec mode, then restore return value.
-  stp x0, x1, [sp, #-16]!
-  mov x0, #1
-  bl  _pthread_jit_write_protect_np
-  ldp x0, x1, [sp], #16
 
   ;; Discard the argument array from the stack (8 regs * 8 bytes = 64 bytes).
   add sp, sp, #64

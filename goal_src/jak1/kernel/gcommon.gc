@@ -26,7 +26,7 @@
 
 ;; enables the with-profiler statements, which send profiling data from
 ;; GOAL code to the frame profiler in C++.
-(defglobalconstant PC_PROFILER_ENABLE #t)
+(defglobalconstant PC_PROFILER_ENABLE #f)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; GOAL language constants

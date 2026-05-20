@@ -5,6 +5,15 @@
 #include <vector>
 
 #include "goalc/compiler/Compiler.h"
+#include "goalc/emitter/InstructionSet.h"
+
+namespace GoalTest {
+#if defined(__aarch64__)
+constexpr emitter::InstructionSet kHostInstructionSet = emitter::InstructionSet::ARM64;
+#else
+constexpr emitter::InstructionSet kHostInstructionSet = emitter::InstructionSet::X86;
+#endif
+}  // namespace GoalTest
 
 namespace inja {
 class Environment;

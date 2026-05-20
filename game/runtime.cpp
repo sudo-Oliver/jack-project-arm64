@@ -164,11 +164,7 @@ void deci2_runner(SystemThreadInterface& iface) {
  * SystemThread Function for the EE (PS2 Main CPU)
  */
 void ee_runner(SystemThreadInterface& iface) {
-  fprintf(stderr, "[EE-DEBUG] ee_runner started\n");
-  fflush(stderr);
   prof().root_event();
-  fprintf(stderr, "[EE-DEBUG] after prof().root_event()\n");
-  fflush(stderr);
   // Allocate Main RAM (EE memory).
   //
   // On Darwin ARM64 (macOS 26+ / Darwin 25): W^X is enforced via APRR hardware.
@@ -203,15 +199,10 @@ void ee_runner(SystemThreadInterface& iface) {
   }
 
   if (g_ee_main_mem == (u8*)(-1)) {
-    fprintf(stderr, "[EE-DEBUG] mmap FAILED: %s\n", strerror(errno));
-    fflush(stderr);
     lg::debug("Failed to initialize main memory! {}", strerror(errno));
     iface.initialization_complete();
     return;
   }
-
-  fprintf(stderr, "[EE-DEBUG] mmap OK at %p\n", (void*)g_ee_main_mem);
-  fflush(stderr);
 
 #if defined(__aarch64__) && defined(__APPLE__)
   // Replace data regions with regular (non-MAP_JIT) pages so GOAL heap writes
@@ -226,21 +217,13 @@ void ee_runner(SystemThreadInterface& iface) {
                     PROT_READ | PROT_WRITE,
                     MAP_ANONYMOUS | MAP_PRIVATE | MAP_FIXED, -1, 0);
     if (r1 == MAP_FAILED || r2 == MAP_FAILED) {
-      fprintf(stderr, "[EE-DEBUG] EE data-region split mmap FAILED: %s\n", strerror(errno));
-      fflush(stderr);
+      lg::error("EE data-region split mmap failed: {}", strerror(errno));
       iface.initialization_complete();
       return;
     }
-    fprintf(stderr, "[EE-DEBUG] EE split: data[0..%uMB), code[%uMB..%uMB), data[%uMB..%uMB)\n",
-            EE_CODE_HEAP_START >> 20,
-            EE_CODE_HEAP_START >> 20, EE_CODE_HEAP_END >> 20,
-            EE_CODE_HEAP_END >> 20, (unsigned)EE_MAIN_MEM_SIZE >> 20);
-    fflush(stderr);
   }
   // Start in write mode for C-side init (memset, linker, kinitheap, etc.).
   pthread_jit_write_protect_np(0);
-  fprintf(stderr, "[EE-DEBUG] MAP_JIT write mode enabled for C init\n");
-  fflush(stderr);
 #endif
 
   lg::info("Main memory mapped at 0x{:016x}", (u64)(g_ee_main_mem));
@@ -251,19 +234,13 @@ void ee_runner(SystemThreadInterface& iface) {
   iface.initialization_complete();
 
   lg::info("[EE] Run!");
-  fprintf(stderr, "[EE-DEBUG] starting memset\n"); fflush(stderr);
   memset((void*)g_ee_main_mem, 0, EE_MAIN_MEM_SIZE);
-  fprintf(stderr, "[EE-DEBUG] memset done\n"); fflush(stderr);
 
   // prevent access to the first 512 kB of memory.
   // On the PS2 this is the kernel and can't be accessed either.
   // this may not work well on systems with a page size > 1 MB.
-  {
-    int mp_result = mprotect((void*)g_ee_main_mem, EE_MAIN_MEM_LOW_PROTECT, PROT_NONE);
-    fprintf(stderr, "[EE-DEBUG] mprotect LOW_PROTECT result=%d (0=ok, errno=%d)\n", mp_result, errno); fflush(stderr);
-  }
+  mprotect((void*)g_ee_main_mem, EE_MAIN_MEM_LOW_PROTECT, PROT_NONE);
   fileio_init_globals();
-  fprintf(stderr, "[EE-DEBUG] fileio_init done\n"); fflush(stderr);
   jak1::kboot_init_globals();
   jak2::kboot_init_globals();
   jak3::kboot_init_globals();
@@ -295,11 +272,8 @@ void ee_runner(SystemThreadInterface& iface) {
 
   kmemcard_init_globals();
   kprint_init_globals_common();
-  fprintf(stderr, "[EE-DEBUG] all init_globals done, calling allow_debugging\n"); fflush(stderr);
-
   // Added for OpenGOAL's debugger
   xdbg::allow_debugging();
-  fprintf(stderr, "[EE-DEBUG] calling goal_main\n"); fflush(stderr);
 
   switch (g_game_version) {
     case GameVersion::Jak1:
@@ -951,47 +925,6 @@ static void sigbus_handler(int sig, siginfo_t* info, void* ctx) {
         return;
       }
 
-      // ── 10. STR/STRB/STRH (immediate, unsigned offset) GPR ───────────────
-      // Emitted by the C compiler for things like `*dest = 0` in kstrncat
-      // when the kernel writes into a GOAL string allocated in kcodeheap.
-      // Encoding: size(2) 111001 00 imm12(12) Rn(5) Rt(5)  (top10 mask 0xFFC00000)
-      {
-        uint32_t top10 = instr & 0xFFC00000u;
-        int bytes = 0;
-        if      (top10 == 0xF9000000u) bytes = 8;  // STR  Xt
-        else if (top10 == 0xB9000000u) bytes = 4;  // STR  Wt
-        else if (top10 == 0x79000000u) bytes = 2;  // STRH Wt
-        else if (top10 == 0x39000000u) bytes = 1;  // STRB Wt
-        if (bytes) {
-          uint32_t imm12 = (instr >> 10) & 0xFFFu;
-          int Rn = (instr >> 5) & 0x1F;
-          int Rt = instr & 0x1F;
-          uint64_t addr = gpr_base(Rn) + (uint64_t)imm12 * bytes;
-          do_gpr_store(addr, Rt, bytes);
-          return;
-        }
-      }
-
-      // ── 11. STUR/STURB/STURH (unscaled immediate) GPR ────────────────────
-      // The C compiler sometimes picks STUR for small negative offsets or
-      // when the immediate isn't naturally aligned.
-      // Encoding: size(2) 111000 00 0 imm9(9) 00 Rn(5) Rt(5)  (mask 0xFFE00C00)
-      {
-        uint32_t m = instr & 0xFFE00C00u;
-        int bytes = 0;
-        if      (m == 0xF8000000u) bytes = 8;  // STUR  Xt
-        else if (m == 0xB8000000u) bytes = 4;  // STUR  Wt
-        else if (m == 0x78000000u) bytes = 2;  // STURH Wt
-        else if (m == 0x38000000u) bytes = 1;  // STURB Wt
-        if (bytes) {
-          int32_t imm9 = (int32_t)((instr >> 12) & 0x1FF);
-          if (imm9 & 0x100) imm9 |= ~(int32_t)0x1FF;  // sign-extend
-          int Rn = (instr >> 5) & 0x1F;
-          int Rt = instr & 0x1F;
-          do_gpr_store(gpr_base(Rn) + (int64_t)imm9, Rt, bytes);
-          return;
-        }
-      }
     }
   }
 #endif
@@ -1065,7 +998,6 @@ RuntimeExitStatus exec_runtime(GameLaunchOptions game_options, int argc, const c
     // kcodeheap region and falls through to default if the instruction can't be decoded.
     sigaction(SIGSEGV, &sa, nullptr);
 #endif
-    fprintf(stderr, "[EE-DEBUG] SIGBUS/SIGSEGV handler installed\n"); fflush(stderr);
   }
   prof().root_event();
   g_argc = argc;

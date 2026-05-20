@@ -307,6 +307,20 @@ void CodeGenerator::do_goal_function_arm64(FunctionEnv* env, int f_idx) {
 
   int stack_offset = 0;
 
+  // ARM64: BLR clobbers x30 (LR). Any non-leaf function must save LR before its first call
+  // and restore it before ret, otherwise ret returns to the last BLR site instead of the caller.
+  // x86 uses call/ret which push/pop the return address via the stack — no LR register exists.
+  bool needs_lr_save = std::any_of(env->code().begin(), env->code().end(),
+                                   [](const std::unique_ptr<IR>& ir) {
+                                     return dynamic_cast<const IR_FunctionCall*>(ir.get()) !=
+                                            nullptr;
+                                   });
+  auto lr_reg = emitter::Register(emitter::X30);
+  if (needs_lr_save) {
+    m_gen.add_instr_no_ir(f_rec, IGen::push_gpr64(m_gen, lr_reg), InstructionInfo::Kind::PROLOGUE);
+    stack_offset += 16;
+  }
+
   // ARM64: is_xmm() always false; Q-register (128-bit SIMD) saving is a future concern.
   // Only GPR callee-saved regs matter here.
   // push_gpr64 on ARM64 does STR [SP, #-16]! — always 16-byte aligned.
@@ -398,6 +412,10 @@ void CodeGenerator::do_goal_function_arm64(FunctionEnv* env, int f_idx) {
       m_gen.add_instr_no_ir(f_rec, IGen::pop_gpr64(m_gen, saved_reg),
                             InstructionInfo::Kind::EPILOGUE);
     }
+  }
+
+  if (needs_lr_save) {
+    m_gen.add_instr_no_ir(f_rec, IGen::pop_gpr64(m_gen, lr_reg), InstructionInfo::Kind::EPILOGUE);
   }
 
   m_gen.add_instr_no_ir(f_rec, IGen::ret(m_gen), InstructionInfo::Kind::EPILOGUE);
