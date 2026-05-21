@@ -26,6 +26,7 @@
 #include "game/kernel/jak1/kmachine.h"
 #include "game/kernel/jak1/kprint.h"
 #include "game/mips2c/mips2c_table.h"
+#include "game/runtime.h"
 
 using namespace jak1_symbols;
 
@@ -1066,6 +1067,11 @@ u64 type_typep(Ptr<Type> t1, Ptr<Type> t2) {
  * Return is method
  */
 u64 method_set(u32 type_, u32 method_id, u32 method) {
+  if (type_ == 0) {
+    fprintf(stderr, "[METHOD-SET ERROR] type_=0 for method_id=%u method=0x%x (module: %s)\n",
+            method_id, method, g_current_goal_module ? g_current_goal_module : "?");
+    return 0;
+  }
   Ptr<Type> type(type_);
   if (method_id > 127)
     printf("[METHOD SET ERROR] tried to set method %d\n", method_id);

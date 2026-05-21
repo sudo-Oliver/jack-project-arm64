@@ -21,6 +21,9 @@ extern bool g_ee_jit_code_dirty;
 // On ARM64 Apple (Darwin 25+): GOAL stack lives outside MAP_JIT EE memory.
 // This points to the top of a separate PROT_READ|PROT_WRITE stack region.
 extern u8* g_goal_jit_stack_top;
+// Name of the GOAL module currently executing its top-level (updated by jak1_finish).
+// Used by crash handlers. Safe to read async-signal-safely (written before GOAL runs).
+extern const char* g_current_goal_module;
 extern GameVersion g_game_version;
 extern BackgroundWorker g_background_worker;
 extern int g_server_port;

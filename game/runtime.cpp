@@ -103,6 +103,7 @@ u8* g_goal_jit_stack_top = nullptr;
 #endif
 std::thread::id g_main_thread_id = std::thread::id();
 GameVersion g_game_version = GameVersion::Jak1;
+const char* g_current_goal_module = "(none)";
 BackgroundWorker g_background_worker;
 int g_server_port = DECI2_PORT;
 
@@ -468,13 +469,23 @@ static void dump_arm64_crash_context(uint64_t pc,
     di_lr.dli_saddr ? (unsigned long long)(lr - (uintptr_t)di_lr.dli_saddr) : 0ULL);
   write(2, buf, n);
 
+  // Current GOAL module
+  n = __builtin_snprintf(buf, sizeof(buf),
+    "[EE-CRASH] module   %s\n",
+    g_current_goal_module ? g_current_goal_module : "(unknown)");
+  write(2, buf, n);
+
   // Fault address context
   if (g_ee_main_mem) {
     uintptr_t base = (uintptr_t)g_ee_main_mem;
+    uintptr_t code_heap_start = base + EE_CODE_HEAP_START;
     n = __builtin_snprintf(buf, sizeof(buf),
-      "[EE-CRASH] fault addr 0x%016llx  EE offset 0x%llx\n",
+      "[EE-CRASH] fault addr 0x%016llx  EE offset 0x%llx\n"
+      "[EE-CRASH] PC code-heap offset 0x%llx  LR code-heap offset 0x%llx\n",
       (unsigned long long)fault_addr,
-      (unsigned long long)(fault_addr - base));
+      (unsigned long long)(fault_addr - base),
+      (unsigned long long)(pc - code_heap_start),
+      (unsigned long long)(lr - code_heap_start));
     write(2, buf, n);
   }
 
@@ -508,10 +519,10 @@ static void dump_arm64_crash_context(uint64_t pc,
     (unsigned long long)sp);
   write(2, buf, n);
 
-  // Instructions around PC (8 before, 4 after)
+  // Instructions around PC (16 before, 8 after)
   write(2, "[EE-CRASH] Instructions around PC:\n", 35);
   const uint32_t* code = (const uint32_t*)pc;
-  for (int i = -8; i <= 4; i++) {
+  for (int i = -16; i <= 8; i++) {
     n = __builtin_snprintf(buf, sizeof(buf),
       "  [%+3d] 0x%016llx: 0x%08x%s\n",
       i, (unsigned long long)(code + i), code[i],
@@ -922,6 +933,25 @@ static void sigbus_handler(int sig, siginfo_t* info, void* ctx) {
 
       if (n > 0) {
         uctx->uc_mcontext->__ss.__pc = cur_pc;
+        return;
+      }
+
+      // n==0: exec_one couldn't decode the instruction at PC.
+      // If fault_addr == PC this is an instruction-fetch fault (write mode was active
+      // when the CPU tried to execute MAP_JIT code).  exec mode was already restored
+      // above; just return so the CPU retries at the same PC in exec mode.
+      if (fault_addr == (uintptr_t)ss.__pc) {
+        static std::atomic<uint64_t> fetch_fault_count{0};
+        uint64_t fc = ++fetch_fault_count;
+        if (fc <= 5 || (fc % 1000) == 0) {
+          char fbuf[128];
+          int fn = __builtin_snprintf(fbuf, sizeof(fbuf),
+            "[EE-JIT] fetch-fault recovery #%llu at EE+0x%llx instr=0x%08x\n",
+            (unsigned long long)fc,
+            (unsigned long long)(fault_addr - (uintptr_t)g_ee_main_mem),
+            *(const uint32_t*)fault_addr);
+          write(2, fbuf, fn);
+        }
         return;
       }
 

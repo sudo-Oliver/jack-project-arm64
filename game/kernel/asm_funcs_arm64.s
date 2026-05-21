@@ -71,10 +71,12 @@ _stack_call_arm64:
   stp q9, q8, [sp, #-32]!
 
   ;; Push all 8 GOAL argument registers onto the stack as a contiguous array.
-  stp x7, x6, [sp, #-16]!
-  stp x5, x4, [sp, #-16]!
-  stp x3, x2, [sp, #-16]!
-  stp x1, x0, [sp, #-16]!
+  ;; STP stores Xt1 at [base] and Xt2 at [base+8], so store even-indexed reg first
+  ;; to get args[0]=x0, args[1]=x1, args[2]=x2, ... in ascending address order.
+  stp x6, x7, [sp, #-16]!
+  stp x4, x5, [sp, #-16]!
+  stp x2, x3, [sp, #-16]!
+  stp x0, x1, [sp, #-16]!
 
   ;; x0 = pointer to the argument array (first C argument).
   mov x0, sp

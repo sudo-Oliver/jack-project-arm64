@@ -643,6 +643,11 @@ void link_control::jak1_finish(bool jump_from_c_to_goal) {
 
     // execute top level!
     if (m_entry.offset && (m_flags & LINK_FLAG_EXECUTE)) {
+#if defined(__APPLE__) && defined(__aarch64__)
+      g_current_goal_module = m_object_name;
+      sys_icache_invalidate(g_ee_main_mem + EE_CODE_HEAP_START, EE_CODE_HEAP_SIZE);
+      pthread_jit_write_protect_np(1);
+#endif
       if (jump_from_c_to_goal) {
 #if defined(__APPLE__) && defined(__aarch64__)
         extern u8* g_goal_jit_stack_top;
@@ -654,6 +659,9 @@ void link_control::jak1_finish(bool jump_from_c_to_goal) {
       } else {
         call_goal(m_entry.cast<Function>(), 0, 0, 0, s7.offset, g_ee_main_mem);
       }
+#if defined(__APPLE__) && defined(__aarch64__)
+      pthread_jit_write_protect_np(0);
+#endif
     }
 
     // inform compiler that we loaded.
@@ -696,9 +704,6 @@ Ptr<uint8_t> link_and_exec(Ptr<uint8_t> data,
     done = lc.jak1_work();
   } while (!done);
   lc.jak1_finish(jump_from_c_to_goal);
-#if defined(__APPLE__) && defined(__aarch64__)
-  g_ee_jit_code_dirty = true;
-#endif
   return lc.m_entry;
 }
 

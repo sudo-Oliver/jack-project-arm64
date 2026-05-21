@@ -82,9 +82,14 @@ s32 sceSifCallRpc(sceSifClientData* bd,
                   void* end_para) {
   ASSERT(!end_func);
   ASSERT(!end_para);
-  ASSERT(mode == 1);  // async
+  ASSERT(mode == 1 || mode == 0);  // async (1) or sync (0)
   iop->kernel.sif_rpc(bd->rpcd.id, fno, mode, send, ssize, recv, rsize);
   iop->signal_run_iop();
+  if (mode == 0) {
+    while (iop->kernel.sif_busy(bd->rpcd.id)) {
+      iop->signal_run_iop();
+    }
+  }
   return 0;
 }
 
@@ -94,7 +99,7 @@ s32 sceSifCheckStatRpc(sceSifRpcData* bd) {
 }
 
 s32 sceSifBindRpc(sceSifClientData* bd, u32 request, u32 mode) {
-  ASSERT(mode == 1);  // async
+  ASSERT(mode == 1 || mode == 0);  // async (1) or sync (0)
   bd->rpcd.id = request;
   bd->serve = (sceSifServeData*)1;
   return 0;
