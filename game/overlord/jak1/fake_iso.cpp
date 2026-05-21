@@ -234,6 +234,14 @@ static void parseSoundBank(BinaryReader data, SoundBank& bank) {
 }
 
 uint32_t FS_LoadSoundBank(char* name, SoundBank* bank) {
+  // name is gLoaderBuf+16; print the full command buf from gLoaderBuf+0
+  const unsigned char* base = (const unsigned char*)name - 16;
+  fprintf(stderr, "[SBK-DEBUG] cmd buf: %02x%02x %02x%02x | pad12: %02x%02x %02x%02x %02x%02x %02x%02x %02x%02x %02x%02x | name: %02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x\n",
+          base[0], base[1], base[2], base[3],
+          base[4],base[5],base[6],base[7],base[8],base[9],base[10],base[11],base[12],base[13],base[14],base[15],
+          base[16],base[17],base[18],base[19],base[20],base[21],base[22],base[23],
+          base[24],base[25],base[26],base[27],base[28],base[29],base[30],base[31]);
+  fflush(stderr);
   char namebuf[16];
 
   // sector size of sound name list

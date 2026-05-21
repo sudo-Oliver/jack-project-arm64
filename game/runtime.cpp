@@ -190,27 +190,51 @@ void ee_runner(SystemThreadInterface& iface) {
                   MAP_ANONYMOUS | MAP_32BIT | MAP_PRIVATE | MAP_POPULATE, 0, 0);
 #endif
   } else {
+#if defined(__aarch64__) && defined(__APPLE__)
+    // Apple Silicon has a 16 KB hardware page size, so the null-guard prefix
+    // and all MAP_FIXED replacements must be 16 KB aligned.
+    // Allocate EE_MAIN_MEM_SIZE + 16384: the first 16 KB is the null-guard.
+    // g_ee_main_mem = raw + 16384, so EE[-4] (= raw + 16380) reads zero
+    // (MAP_ANONYMOUS zero-fills), simulating PS2 null-pointer type-tag behaviour.
+    static constexpr size_t kNullGuard = 16384;
+    void* raw = mmap((void*)EE_MAIN_MEM_MAP, EE_MAIN_MEM_SIZE + kNullGuard,
+                     PROT_EXEC | PROT_READ | PROT_WRITE,
+                     MAP_ANONYMOUS | MAP_PRIVATE | MAP_JIT, -1, 0);
+    if (raw == MAP_FAILED) {
+      lg::debug("Failed to initialize main memory! {}", strerror(errno));
+      iface.initialization_complete();
+      return;
+    }
+    g_ee_main_mem = (u8*)raw + kNullGuard;
+    // The null-guard (raw[0..kNullGuard)) is zero-filled by MAP_ANONYMOUS.
+    // No mprotect needed: MAP_JIT exec mode makes it naturally read-only.
+    lg::info("Null-guard page at 0x{:016x} (EE base 0x{:016x})", (u64)raw, (u64)g_ee_main_mem);
+#else
     g_ee_main_mem =
         (u8*)mmap((void*)EE_MAIN_MEM_MAP, EE_MAIN_MEM_SIZE, PROT_EXEC | PROT_READ | PROT_WRITE,
-#if defined(__aarch64__) && defined(__APPLE__)
-                  MAP_ANONYMOUS | MAP_PRIVATE | MAP_JIT, -1, 0);
-#else
                   MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
 #endif
   }
 
+#if !defined(__aarch64__) || !defined(__APPLE__)
   if (g_ee_main_mem == (u8*)(-1)) {
     lg::debug("Failed to initialize main memory! {}", strerror(errno));
     iface.initialization_complete();
     return;
   }
+#endif
 
 #if defined(__aarch64__) && defined(__APPLE__)
   // Replace data regions with regular (non-MAP_JIT) pages so GOAL heap writes
   // in exec mode produce no SIGBUS.  The code region [EE_CODE_HEAP_START,
   // EE_CODE_HEAP_END) is left as MAP_JIT.
+  //
+  // macOS MAP_FIXED over a MAP_JIT region must start at the allocation base (raw).
+  // r1 covers [raw, raw + EE_CODE_HEAP_START + kNullGuard): the 16 KB null-guard
+  // plus data region 1.  All bounds are 16 KB page-aligned (Apple Silicon).
   {
-    void* r1 = mmap(g_ee_main_mem, EE_CODE_HEAP_START,
+    static constexpr size_t kNullGuard = 16384;
+    void* r1 = mmap((u8*)g_ee_main_mem - kNullGuard, EE_CODE_HEAP_START + kNullGuard,
                     PROT_READ | PROT_WRITE,
                     MAP_ANONYMOUS | MAP_PRIVATE | MAP_FIXED, -1, 0);
     void* r2 = mmap(g_ee_main_mem + EE_CODE_HEAP_END,
@@ -237,10 +261,14 @@ void ee_runner(SystemThreadInterface& iface) {
   lg::info("[EE] Run!");
   memset((void*)g_ee_main_mem, 0, EE_MAIN_MEM_SIZE);
 
-  // prevent access to the first 512 kB of memory.
-  // On the PS2 this is the kernel and can't be accessed either.
-  // this may not work well on systems with a page size > 1 MB.
+  // On x86-64, make the first 512 kB PROT_NONE to catch null GOAL pointer dereferences.
+  // On ARM64/macOS GOAL code may legitimately read EE[0] (null = #f, returns 0 like PS2),
+  // so we use PROT_READ to allow harmless reads while still catching writes.
+#if defined(__aarch64__) && defined(__APPLE__)
+  mprotect((void*)g_ee_main_mem, EE_MAIN_MEM_LOW_PROTECT, PROT_READ);
+#else
   mprotect((void*)g_ee_main_mem, EE_MAIN_MEM_LOW_PROTECT, PROT_NONE);
+#endif
   fileio_init_globals();
   jak1::kboot_init_globals();
   jak2::kboot_init_globals();
@@ -1125,7 +1153,11 @@ RuntimeExitStatus exec_runtime(GameLaunchOptions game_options, int argc, const c
     Gfx::Exit();
   }
   lg::info("GOAL Runtime Shutdown (code {})", fmt::underlying(MasterExit));
+#if defined(__aarch64__) && defined(__APPLE__)
+  munmap((u8*)g_ee_main_mem - 16384, EE_MAIN_MEM_SIZE + 16384);
+#else
   munmap(g_ee_main_mem, EE_MAIN_MEM_SIZE);
+#endif
   Discord_Shutdown();
   return MasterExit;
 }

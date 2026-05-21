@@ -92,11 +92,7 @@ u64 alloc_from_heap(u32 heapSymbol, u32 type, s32 size, u32 pp) {
     }
 
     Ptr<String> gstr = info(typ->symbol)->str;
-    if (!gstr.offset) {  // str was never written (W^X issue or uninitialised type)
-#if defined(__APPLE__) && defined(__aarch64__)
-      fprintf(stderr, "[ALLOC-FROM-HEAP] null str for type=0x%x sym=0x%x\n", type, typ->symbol.offset);
-      fflush(stderr);
-#endif
+    if (!gstr.offset) {  // str was never written
       return kmalloc(*Ptr<Ptr<kheapinfo>>(heapSymbol), size, KMALLOC_MEMSET, "global-object")
           .offset;
     }
@@ -345,8 +341,8 @@ Ptr<Function> make_function_from_c_systemv(void* func, bool arg3_is_pp) {
   // ARM64: _arg_call_arm64 expects x16 (IP0) = C function pointer on entry.
   // Using x16 (intra-procedure-call scratch) instead of x29 (frame pointer) so the GOAL
   // caller's frame pointer is not clobbered when control returns from the C call.
-  // We emit: movz/movk x16 = func, movz/movk x8 = trampoline, br x8.
-  // arg3_is_pp not needed: ARM64 GOAL passes pp in x20 and never remaps arg3.
+  // We emit: movz/movk x16 = func, movz/movk x8 = trampoline,
+  //          [mov x3, x20 if arg3_is_pp], br x8.
   uint64_t func_addr = (uint64_t)func;
   uint64_t trampoline_addr = (uint64_t)_arg_call_arm64;
   int offset = 0;
@@ -375,6 +371,12 @@ Ptr<Function> make_function_from_c_systemv(void* func, bool arg3_is_pp) {
   write_u32(0xF2C00000u | (((trampoline_addr >> 32) & 0xFFFFu) << 5) | 8u);
   // movk x8, trampoline_addr[63:48], lsl 48
   write_u32(0xF2E00000u | (((trampoline_addr >> 48) & 0xFFFFu) << 5) | 8u);
+
+  if (arg3_is_pp) {
+    // MOV X3, X20  (ORR X3, XZR, X20): inject GOAL pp register into 4th C arg slot.
+    // On x86-64 the trampoline does "mov rcx, r13" for the same purpose.
+    write_u32(0xAA1403E3u);
+  }
 
   // br x8
   write_u32(0xD61F0100u);
