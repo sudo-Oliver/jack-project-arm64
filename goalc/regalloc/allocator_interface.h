@@ -68,8 +68,9 @@ struct StackOp {
     int slot = -1;
     emitter::Register reg;
     RegClass reg_class = RegClass::INVALID;
-    bool load = false;   // load from reg before instruction?
-    bool store = false;  // store into reg after instruction?
+    bool load = false;         // load from reg before instruction?
+    bool store = false;        // store into reg after instruction?
+    bool store_before = false; // store into stack BEFORE instruction (for function arg spills)
   };
 
   std::vector<Op> ops;

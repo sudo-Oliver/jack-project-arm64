@@ -520,6 +520,14 @@ bool try_spill_coloring(int var, RegAllocCache* cache, const AllocationInput& in
       current_assignment.spilled = true;
       current_assignment.stack_slot = get_stack_slot_for_var(var, cache);
       bonus.reg = current_assignment.reg;
+      // If this is the first instruction of the live range and the variable is not
+      // written here, the register holds the initial value (e.g. a function argument)
+      // that must survive across later clobbering calls.  IR[0] itself may be a
+      // function call that clobbers the register, so the save must happen BEFORE
+      // IR[0] executes — use store_before rather than store.
+      if (!is_written && instr == lr.min && instr < lr.max) {
+        bonus.store_before = true;
+      }
     } else {
       // not assigned.
       if (debug_trace >= 1) {
@@ -589,7 +597,7 @@ bool try_spill_coloring(int var, RegAllocCache* cache, const AllocationInput& in
 
     bonus.slot = get_stack_slot_for_var(var, cache);
     bonus.load = is_read;
-    bonus.store = is_written;
+    bonus.store = bonus.store || is_written;  // preserve forced store set above
 
     if (bonus.load || bonus.store) {
       cache->stack_ops.at(instr).ops.push_back(bonus);

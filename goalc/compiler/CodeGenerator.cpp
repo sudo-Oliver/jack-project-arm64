@@ -216,6 +216,24 @@ void CodeGenerator::do_goal_function_x86(FunctionEnv* env, int f_idx) {
           ASSERT(false);
         }
       }
+      if (op.store_before) {
+        if (op.reg.is_gpr(m_gen.instr_set()) && op.reg_class == RegClass::GPR_64) {
+          m_gen.add_instr(IGen::store64_gpr64_plus_s32(
+                              m_gen, RSP, allocs.get_slot_for_spill(op.slot) * GPR_SIZE, op.reg),
+                          i_rec);
+        } else if (op.reg.is_xmm(m_gen.instr_set()) && op.reg_class == RegClass::FLOAT) {
+          m_gen.add_instr(IGen::store_reg_offset_xmm32(
+                              m_gen, RSP, op.reg, allocs.get_slot_for_spill(op.slot) * GPR_SIZE),
+                          i_rec);
+        } else if (op.reg.is_xmm(m_gen.instr_set()) &&
+                   (op.reg_class == RegClass::VECTOR_FLOAT || op.reg_class == RegClass::INT_128)) {
+          m_gen.add_instr(IGen::store128_xmm128_reg_offset(
+                              m_gen, RSP, op.reg, allocs.get_slot_for_spill(op.slot) * GPR_SIZE),
+                          i_rec);
+        } else {
+          ASSERT(false);
+        }
+      }
     }
 
     // do the actual op
@@ -223,7 +241,7 @@ void CodeGenerator::do_goal_function_x86(FunctionEnv* env, int f_idx) {
 
     // store things back on the stack if needed.
     for (auto& op : bonus.ops) {
-      if (op.store) {
+      if (op.store && !op.store_before) {
         if (op.reg.is_gpr(m_gen.instr_set()) && op.reg_class == RegClass::GPR_64) {
           // todo, s8 or 0 offset if possible?
           m_gen.add_instr(IGen::store64_gpr64_plus_s32(
@@ -395,12 +413,35 @@ void CodeGenerator::do_goal_function_arm64(FunctionEnv* env, int f_idx) {
           ASSERT(false);
         }
       }
+      // store_before: function-arg spills that must be saved before the first IR executes
+      // (the first IR may itself be a call that clobbers the arg register).
+      if (op.store_before) {
+        if (op.reg.is_gpr(m_gen.instr_set()) && op.reg_class == RegClass::GPR_64) {
+          m_gen.add_instr(IGen::store64_gpr64_plus_s32(
+                              m_gen, SP, allocs.get_slot_for_spill(op.slot) * GPR_SIZE, op.reg),
+                          i_rec);
+        } else if (op.reg.is_xmm(m_gen.instr_set()) && op.reg_class == RegClass::FLOAT) {
+          m_gen.add_instr(IGen::store_reg_offset_xmm32(
+                              m_gen, SP, op.reg, allocs.get_slot_for_spill(op.slot) * GPR_SIZE),
+                          i_rec);
+        } else if (op.reg.is_xmm(m_gen.instr_set()) &&
+                   (op.reg_class == RegClass::VECTOR_FLOAT || op.reg_class == RegClass::INT_128)) {
+          s64 spill_off = allocs.get_slot_for_spill(op.slot) * GPR_SIZE;
+          if (spill_off % 16 == 0) {
+            m_gen.add_instr(IGen::store128_xmm128_reg_offset(m_gen, SP, op.reg, spill_off), i_rec);
+          } else {
+            m_gen.add_instr(IGen::ARM64::stur_xmm128(SP, op.reg, spill_off), i_rec);
+          }
+        } else {
+          ASSERT(false);
+        }
+      }
     }
 
     ir->do_codegen_arm64(&m_gen, allocs, i_rec);
 
     for (auto& op : bonus.ops) {
-      if (op.store) {
+      if (op.store && !op.store_before) {
         if (op.reg.is_gpr(m_gen.instr_set()) && op.reg_class == RegClass::GPR_64) {
           m_gen.add_instr(IGen::store64_gpr64_plus_s32(
                               m_gen, SP, allocs.get_slot_for_spill(op.slot) * GPR_SIZE, op.reg),
