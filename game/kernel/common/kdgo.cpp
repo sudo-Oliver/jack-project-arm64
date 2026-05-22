@@ -64,6 +64,18 @@ u64 RpcCall_wrapper(void* _args) {
   auto send_size = args->get_as<s32>(4);
   auto recv_buff = args->get_as<u64>(5);
   auto recv_size = args->get_as<s32>(6);
+  // [RPC-DEBUG] trace sound loader calls (channel 1)
+  if (rpcChannel == 1) {
+    const unsigned char* b = (const unsigned char*)Ptr<u8>(send_buff).c();
+    fprintf(stderr,
+            "[RPC-DEBUG] ch1 send_buff=0x%08llx host=%p sz=%d "
+            "b[0..7]=%02x%02x%02x%02x%02x%02x%02x%02x "
+            "b[16..23]=%02x%02x%02x%02x%02x%02x%02x%02x\n",
+            (unsigned long long)send_buff, (void*)b, send_size,
+            b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7],
+            b[16],b[17],b[18],b[19],b[20],b[21],b[22],b[23]);
+    fflush(stderr);
+  }
   return sceSifCallRpc(&cd[rpcChannel], fno, async, Ptr<u8>(send_buff).c(), send_size,
                        Ptr<u8>(recv_buff).c(), recv_size, nullptr, nullptr);
 }

@@ -635,6 +635,7 @@ void InitMachineScheme() {
   }
 
   // todo remove MasterUseKernel
+  fprintf(stderr, "[EE-DEBUG] InitMachineScheme: DiskBoot=%d MasterUseKernel=%d\n", DiskBoot, (int)MasterUseKernel); fflush(stderr);
   if (DiskBoot && MasterUseKernel) {
     fprintf(stderr, "[EE-DEBUG] load_and_link_dgo_from_c game: start\n"); fflush(stderr);
     *EnableMethodSet = (*EnableMethodSet) + 1;

@@ -21,6 +21,13 @@ namespace ARM64 {
 const auto instr_set = emitter::InstructionSet::ARM64;
 using namespace emitter::ARM64;
 
+// Map a SIMD register to its physical ARM64 Q register number (0-15).
+// GOAL regalloc assigns XMM IDs 16-31 (sharing the GPR ID space); these must map to Q0-Q15.
+// Direct/test code may use native Q IDs 0-15 directly; those pass through unchanged.
+static inline u32 qreg(Register r) {
+  return r.id() >= 16 ? static_cast<u32>(r.id() - 16) : static_cast<u32>(r.id());
+}
+
 InstructionARM64 mov_gpr64_gpr64(Register dst, Register src) {
   // MOV Xd, Xn — alias for ORR Xd, XZR, Xn (shifted reg, no shift)
   // Encoding: 1_01_01010_00_0_Rm_000000_11111_Rd
@@ -64,7 +71,7 @@ InstructionARM64 movd_gpr32_xmm32(Register dst, Register src) {
   // `clang -c` on `fmov w22, s9` → 0x1E260136.
   ASSERT(dst.is_gpr(instr_set));
   ASSERT(src.is_128bit_simd(instr_set));
-  return InstructionARM64(0x1E260000u, Rn(src.id()), Rd(dst.id()));
+  return InstructionARM64(0x1E260000u, Rn(qreg(src)), Rd(dst.id()));
 }
 
 InstructionARM64 movd_xmm32_gpr32(Register dst, Register src) {
@@ -73,7 +80,7 @@ InstructionARM64 movd_xmm32_gpr32(Register dst, Register src) {
   // `clang -c` on `fmov s22, w9` → 0x1E270136.
   ASSERT(dst.is_128bit_simd(instr_set));
   ASSERT(src.is_gpr(instr_set));
-  return InstructionARM64(0x1E270000u, Rn(src.id()), Rd(dst.id()));
+  return InstructionARM64(0x1E270000u, Rn(src.id()), Rd(qreg(dst)));
 }
 
 InstructionARM64 movq_gpr64_xmm64(Register dst, Register src) {
@@ -82,7 +89,7 @@ InstructionARM64 movq_gpr64_xmm64(Register dst, Register src) {
   // `clang -c` on `fmov x22, d9` → 0x9E660136.
   ASSERT(dst.is_gpr(instr_set));
   ASSERT(src.is_128bit_simd(instr_set));
-  return InstructionARM64(0x9E660000u, Rn(src.id()), Rd(dst.id()));
+  return InstructionARM64(0x9E660000u, Rn(qreg(src)), Rd(dst.id()));
 }
 
 InstructionARM64 movq_xmm64_gpr64(Register dst, Register src) {
@@ -93,7 +100,7 @@ InstructionARM64 movq_xmm64_gpr64(Register dst, Register src) {
   // the GPR with the same id as the SIMD destination, clobbering x22 (GOAL offset).
   ASSERT(dst.is_128bit_simd(instr_set));
   ASSERT(src.is_gpr(instr_set));
-  return InstructionARM64(0x9E670000u, Rn(src.id()), Rd(dst.id()));
+  return InstructionARM64(0x9E670000u, Rn(src.id()), Rd(qreg(dst)));
 }
 
 InstructionARM64 mov_xmm32_xmm32(Register dst, Register src) {
@@ -102,7 +109,7 @@ InstructionARM64 mov_xmm32_xmm32(Register dst, Register src) {
   // Encoding: 0_00_11110_00_1_00000_010000_Rn_Rd
   ASSERT(dst.is_128bit_simd(instr_set));
   ASSERT(src.is_128bit_simd(instr_set));
-  return InstructionARM64(0x1E204000u, Rn(src.id()), Rd(dst.id()));
+  return InstructionARM64(0x1E204000u, Rn(qreg(src)), Rd(qreg(dst)));
 }
 
 // todo - GPR64 -> XMM64 (zext)
@@ -367,7 +374,7 @@ InstructionARM64 store_goal_vf(Register addr, Register value, Register off, s64 
   ASSERT_MSG(offset == 0, "store_goal_vf with offset requires multi-instruction sequence on ARM64");
   // STR Qt, [addr, off] — 128-bit SIMD store with register offset
   // size=00, V=1, opc=10 (STR 128-bit): base = 0x3CA06800
-  return InstructionARM64(0x3CA06800u, Rm(off.id()), Rn(addr.id()), Rt(value.id()));
+  return InstructionARM64(0x3CA06800u, Rm(off.id()), Rn(addr.id()), Rt(qreg(value)));
 }
 
 InstructionARM64 store_goal_gpr(Register addr, Register value, Register off, int offset, int size) {
@@ -388,7 +395,7 @@ InstructionARM64 load_goal_xmm128(Register dst, Register addr, Register off, int
   ASSERT_MSG(offset == 0, "load_goal_xmm128 with offset requires multi-instruction sequence on ARM64");
   // LDR Qt, [addr, off] — 128-bit SIMD load with register offset
   // size=00, V=1, opc=11 (LDR 128-bit): base = 0x3CE06800
-  return InstructionARM64(0x3CE06800u, Rm(off.id()), Rn(addr.id()), Rt(dst.id()));
+  return InstructionARM64(0x3CE06800u, Rm(off.id()), Rn(addr.id()), Rt(qreg(dst)));
 }
 
 InstructionARM64 load_goal_gpr(Register dst,
@@ -430,12 +437,12 @@ InstructionARM64 store32_xmm32_gpr64_plus_gpr64(Register addr1,
                                                 Register addr2,
                                                 Register xmm_value) {
   // STR St, [addr1, addr2]
-  return InstructionARM64(0xBC206800u, Rm(addr2.id()), Rn(addr1.id()), Rt(xmm_value.id()));
+  return InstructionARM64(0xBC206800u, Rm(addr2.id()), Rn(addr1.id()), Rt(qreg(xmm_value)));
 }
 
 InstructionARM64 load32_xmm32_gpr64_plus_gpr64(Register simd_dest, Register addr1, Register addr2) {
   // LDR St, [addr1, addr2]
-  return InstructionARM64(0xBC606800u, Rm(addr2.id()), Rn(addr1.id()), Rt(simd_dest.id()));
+  return InstructionARM64(0xBC606800u, Rm(addr2.id()), Rn(addr1.id()), Rt(qreg(simd_dest)));
 }
 
 InstructionARM64 store32_xmm32_gpr64_plus_gpr64_plus_s8(Register addr1,
@@ -495,7 +502,7 @@ InstructionARM64 store32_xmm32_gpr64_plus_s32(Register base, Register xmm_value,
   ASSERT_MSG(offset >= 0 && offset <= 16380 && (offset % 4 == 0),
              "store32_xmm32_gpr64_plus_s32: offset must be 0..16380 aligned to 4 bytes for scaled STR S");
   u32 imm12 = (u32)(offset / 4);
-  return InstructionARM64(0xBD000000u, Imm12(imm12), Rn(base.id()), Rt(xmm_value.id()));
+  return InstructionARM64(0xBD000000u, Imm12(imm12), Rn(base.id()), Rt(qreg(xmm_value)));
 }
 
 InstructionARM64 store32_xmm32_gpr64_plus_s8(Register base, Register xmm_value, s64 offset) {
@@ -516,7 +523,7 @@ InstructionARM64 load32_xmm32_gpr64_plus_s32(Register simd_dest, Register base, 
   ASSERT_MSG(offset >= 0 && offset <= 16380 && (offset % 4 == 0),
              "load32_xmm32_gpr64_plus_s32: offset must be 0..16380 aligned to 4 bytes for scaled LDR S");
   u32 imm12 = (u32)(offset / 4);
-  return InstructionARM64(0xBD400000u, Imm12(imm12), Rn(base.id()), Rt(simd_dest.id()));
+  return InstructionARM64(0xBD400000u, Imm12(imm12), Rn(base.id()), Rt(qreg(simd_dest)));
 }
 
 InstructionARM64 load32_xmm32_gpr64_plus_s8(Register simd_dest, Register base, s64 offset) {
@@ -549,10 +556,9 @@ InstructionARM64 store128_gpr64_simd128(Register gpr_addr, Register simd_reg) {
   // https://www.scs.stanford.edu/~zyedidia/arm64/str_imm_fpsimd.html
   // - STR Qn, [Xn] (unsigned offset)
   ASSERT(gpr_addr.is_gpr(instr_set));
-  // ARM64 SIMD register IDs span 0-31 (Q0-Q31). Regalloc uses XMM IDs (16-31); direct use
-  // uses native Q IDs (0-15). Both ranges are valid in the Rt encoding field.
+  // GOAL regalloc assigns XMM IDs 16-31; qreg() maps these to physical Q0-Q15.
   ASSERT(simd_reg.id() >= 0 && simd_reg.id() <= 31);
-  return InstructionARM64(Base(0b0011110110, 10), Rn(gpr_addr.id()), Rt(simd_reg.id()), Imm12(0));
+  return InstructionARM64(Base(0b0011110110, 10), Rn(gpr_addr.id()), Rt(qreg(simd_reg)), Imm12(0));
 }
 
 InstructionARM64 store128_gpr64_simd128_s32(Register gpr_addr, Register xmm_value, s64 offset) {
@@ -561,7 +567,7 @@ InstructionARM64 store128_gpr64_simd128_s32(Register gpr_addr, Register xmm_valu
   ASSERT_MSG(offset >= 0 && offset <= 65520 && (offset % 16 == 0),
              "store128_gpr64_simd128_s32: offset must be 0..65520 aligned to 16 bytes");
   u32 imm12 = (u32)(offset / 16);
-  return InstructionARM64(Base(0b0011110110, 10), Rn(gpr_addr.id()), Rt(xmm_value.id()), Imm12(imm12));
+  return InstructionARM64(Base(0b0011110110, 10), Rn(gpr_addr.id()), Rt(qreg(xmm_value)), Imm12(imm12));
 }
 
 InstructionARM64 store128_gpr64_simd128_s8(Register gpr_addr, Register xmm_value, s64 offset) {
@@ -573,7 +579,7 @@ InstructionARM64 load128_simd128_gpr64(Register simd_dest, Register gpr_addr) {
   // - LDR <Qt>, [<Xn|SP>{, #<pimm>}]
   ASSERT(gpr_addr.is_gpr(instr_set));
   ASSERT(simd_dest.id() >= 0 && simd_dest.id() <= 31);
-  return InstructionARM64(Base(0b0011110111, 10), Rn(gpr_addr.id()), Rt(simd_dest.id()), Imm12(0));
+  return InstructionARM64(Base(0b0011110111, 10), Rn(gpr_addr.id()), Rt(qreg(simd_dest)), Imm12(0));
 }
 
 InstructionARM64 load128_simd128_gpr64_s32(Register simd_dest, Register gpr_addr, s64 offset) {
@@ -581,7 +587,7 @@ InstructionARM64 load128_simd128_gpr64_s32(Register simd_dest, Register gpr_addr
   ASSERT_MSG(offset >= 0 && offset <= 65520 && (offset % 16 == 0),
              "load128_simd128_gpr64_s32: offset must be 0..65520 aligned to 16 bytes");
   u32 imm12 = (u32)(offset / 16);
-  return InstructionARM64(Base(0b0011110111, 10), Rn(gpr_addr.id()), Rt(simd_dest.id()), Imm12(imm12));
+  return InstructionARM64(Base(0b0011110111, 10), Rn(gpr_addr.id()), Rt(qreg(simd_dest)), Imm12(imm12));
 }
 
 InstructionARM64 load128_simd128_gpr64_s8(Register simd_dest, Register gpr_addr, s64 offset) {
@@ -594,6 +600,26 @@ InstructionARM64 load128_xmm128_reg_offset(Register simd_dest, Register base, s6
 
 InstructionARM64 store128_xmm128_reg_offset(Register base, Register xmm_val, s64 offset) {
   return store128_gpr64_simd128_s32(base, xmm_val, offset);
+}
+
+InstructionARM64 stur_xmm128(Register gpr_addr, Register xmm_value, s64 offset) {
+  // STUR Qt, [Xn, #simm9] — unscaled 9-bit signed byte offset (-256..255)
+  // Encoding: [31:22]=0011110010 (bit24=0=unscaled, bit22=0=store), Imm9 at [20:12]
+  // Verified: stur q0, [sp, #8] = 0x3c8083e0 -> base = 0b0011110010
+  ASSERT_MSG(offset >= -256 && offset <= 255,
+             "stur_xmm128: offset must be in -256..255 range for unscaled encoding");
+  return InstructionARM64(Base(0b0011110010, 10), Imm9(static_cast<s32>(offset)),
+                          Rn(gpr_addr.id()), Rt(qreg(xmm_value)));
+}
+
+InstructionARM64 ldur_xmm128(Register simd_dest, Register gpr_addr, s64 offset) {
+  // LDUR Qt, [Xn, #simm9] — unscaled 9-bit signed byte offset (-256..255)
+  // Encoding: [31:22]=0011110011 (bit24=0=unscaled, bit22=1=load), Imm9 at [20:12]
+  // Verified: ldur q0, [sp, #8] = 0x3cc083e0 -> base = 0b0011110011
+  ASSERT_MSG(offset >= -256 && offset <= 255,
+             "ldur_xmm128: offset must be in -256..255 range for unscaled encoding");
+  return InstructionARM64(Base(0b0011110011, 10), Imm9(static_cast<s32>(offset)),
+                          Rn(gpr_addr.id()), Rt(qreg(simd_dest)));
 }
 
 //;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -705,7 +731,7 @@ InstructionARM64 static_load_xmm32(Register simd_dest, s64 offset) {
   // LDR St, label — PC-relative 32-bit SIMD load
   // Encoding: 00_011100_imm19_Rt (size=00,V=1)
   (void)offset;
-  return InstructionARM64(Base(0b00011100, 8), Rt(simd_dest.id()));
+  return InstructionARM64(Base(0b00011100, 8), Rt(qreg(simd_dest)));
 }
 
 InstructionARM64 static_store_xmm32(Register xmm_value, s64 offset) {
@@ -765,6 +791,42 @@ InstructionARM64 pop_gpr64(Register reg) {
   ASSERT(reg.is_gpr(instr_set));
   return InstructionARM64(Base(0b1111100001000000000001, 22), Imm9(16), Rn(ARM64_REG::SP),
                           Rt(reg.id()));
+}
+
+InstructionARM64 push_xmm128(Register reg) {
+  // STR Qt, [SP, #-16]! — pre-indexed 128-bit SIMD push
+  // Encoding: size=00 V=1 opc=10 (store 128-bit), index=11 (pre)
+  // Base covers bits [31:10]: 0011110010_0000000000_11
+  ASSERT(reg.is_xmm(instr_set));
+  return InstructionARM64(Base(0b0011110010000000000011, 22), Imm9(-16),
+                          Rn(ARM64_REG::SP), Rt(qreg(reg)));
+}
+
+InstructionARM64 pop_xmm128(Register reg) {
+  // LDR Qt, [SP], #16 — post-indexed 128-bit SIMD pop
+  // Encoding: size=00 V=1 opc=11 (load 128-bit), index=01 (post)
+  // Base covers bits [31:10]: 0011110011_0000000000_01
+  ASSERT(reg.is_xmm(instr_set));
+  return InstructionARM64(Base(0b0011110011000000000001, 22), Imm9(16),
+                          Rn(ARM64_REG::SP), Rt(qreg(reg)));
+}
+
+InstructionARM64 stp_xmm128_pair(Register reg1, Register reg2) {
+  // STP Qt1, Qt2, [SP, #-32]! — pre-indexed pair push (saves 32 bytes, SP -= 32)
+  // Encoding: opc=10 V=1 pre-indexed L=0 (store), imm7 scaled by 16 → -32/16=-2
+  // Base: 0xAD800000
+  ASSERT(reg1.is_xmm(instr_set));
+  ASSERT(reg2.is_xmm(instr_set));
+  return InstructionARM64(0xAD800000u, Imm7(-2), Rt2(qreg(reg2)), Rn(ARM64_REG::SP), Rt(qreg(reg1)));
+}
+
+InstructionARM64 ldp_xmm128_pair(Register reg1, Register reg2) {
+  // LDP Qt1, Qt2, [SP], #32 — post-indexed pair pop (restores 32 bytes, SP += 32)
+  // Encoding: opc=10 V=1 post-indexed L=1 (load), imm7 scaled by 16 → 32/16=2
+  // Base: 0xACC00000
+  ASSERT(reg1.is_xmm(instr_set));
+  ASSERT(reg2.is_xmm(instr_set));
+  return InstructionARM64(0xACC00000u, Imm7(2), Rt2(qreg(reg2)), Rn(ARM64_REG::SP), Rt(qreg(reg1)));
 }
 
 InstructionARM64 call_r64(Register reg_) {
@@ -1126,7 +1188,7 @@ InstructionARM64 cmp_flt_flt(Register a, Register b) {
   // https://www.scs.stanford.edu/~zyedidia/arm64/fcmp_float.html
   ASSERT(a.is_128bit_simd(instr_set));
   ASSERT(b.is_128bit_simd(instr_set));
-  return InstructionARM64(0x1E202000u, Rm(b.id()), Rn(a.id()));
+  return InstructionARM64(0x1E202000u, Rm(qreg(b)), Rn(qreg(a)));
 }
 
 InstructionARM64 sqrts_xmm(Register dst, Register src) {
@@ -1135,49 +1197,49 @@ InstructionARM64 sqrts_xmm(Register dst, Register src) {
   // https://www.scs.stanford.edu/~zyedidia/arm64/fsqrt_float.html
   ASSERT(dst.is_128bit_simd(instr_set));
   ASSERT(src.is_128bit_simd(instr_set));
-  return InstructionARM64(0x1E21C000u, Rn(src.id()), Rd(dst.id()));
+  return InstructionARM64(0x1E21C000u, Rn(qreg(src)), Rd(qreg(dst)));
 }
 
 InstructionARM64 mulss_xmm_xmm(Register dst, Register src) {
   // FMUL Sd, Sd, Sm
   ASSERT(dst.is_128bit_simd(instr_set));
   ASSERT(src.is_128bit_simd(instr_set));
-  return InstructionARM64(0x1E200800u, Rm(src.id()), Rn(dst.id()), Rd(dst.id()));
+  return InstructionARM64(0x1E200800u, Rm(qreg(src)), Rn(qreg(dst)), Rd(qreg(dst)));
 }
 
 InstructionARM64 divss_xmm_xmm(Register dst, Register src) {
   // FDIV Sd, Sd, Sm
   ASSERT(dst.is_128bit_simd(instr_set));
   ASSERT(src.is_128bit_simd(instr_set));
-  return InstructionARM64(0x1E201800u, Rm(src.id()), Rn(dst.id()), Rd(dst.id()));
+  return InstructionARM64(0x1E201800u, Rm(qreg(src)), Rn(qreg(dst)), Rd(qreg(dst)));
 }
 
 InstructionARM64 subss_xmm_xmm(Register dst, Register src) {
   // FSUB Sd, Sd, Sm
   ASSERT(dst.is_128bit_simd(instr_set));
   ASSERT(src.is_128bit_simd(instr_set));
-  return InstructionARM64(0x1E203800u, Rm(src.id()), Rn(dst.id()), Rd(dst.id()));
+  return InstructionARM64(0x1E203800u, Rm(qreg(src)), Rn(qreg(dst)), Rd(qreg(dst)));
 }
 
 InstructionARM64 addss_xmm_xmm(Register dst, Register src) {
   // FADD Sd, Sd, Sm
   ASSERT(dst.is_128bit_simd(instr_set));
   ASSERT(src.is_128bit_simd(instr_set));
-  return InstructionARM64(0x1E202800u, Rm(src.id()), Rn(dst.id()), Rd(dst.id()));
+  return InstructionARM64(0x1E202800u, Rm(qreg(src)), Rn(qreg(dst)), Rd(qreg(dst)));
 }
 
 InstructionARM64 minss_xmm_xmm(Register dst, Register src) {
   // FMIN Sd, Sd, Sm
   ASSERT(dst.is_128bit_simd(instr_set));
   ASSERT(src.is_128bit_simd(instr_set));
-  return InstructionARM64(0x1E205800u, Rm(src.id()), Rn(dst.id()), Rd(dst.id()));
+  return InstructionARM64(0x1E205800u, Rm(qreg(src)), Rn(qreg(dst)), Rd(qreg(dst)));
 }
 
 InstructionARM64 maxss_xmm_xmm(Register dst, Register src) {
   // FMAX Sd, Sd, Sm
   ASSERT(dst.is_128bit_simd(instr_set));
   ASSERT(src.is_128bit_simd(instr_set));
-  return InstructionARM64(0x1E204800u, Rm(src.id()), Rn(dst.id()), Rd(dst.id()));
+  return InstructionARM64(0x1E204800u, Rm(qreg(src)), Rn(qreg(dst)), Rd(qreg(dst)));
 }
 
 InstructionARM64 int32_to_float(Register dst, Register src) {
@@ -1186,7 +1248,7 @@ InstructionARM64 int32_to_float(Register dst, Register src) {
   // https://www.scs.stanford.edu/~zyedidia/arm64/scvtf_float_int.html
   ASSERT(dst.is_128bit_simd(instr_set));
   ASSERT(src.is_gpr(instr_set));
-  return InstructionARM64(0x1E220000u, Rn(src.id()), Rd(dst.id()));
+  return InstructionARM64(0x1E220000u, Rn(src.id()), Rd(qreg(dst)));
 }
 
 InstructionARM64 float_to_int32(Register dst, Register src) {
@@ -1195,7 +1257,7 @@ InstructionARM64 float_to_int32(Register dst, Register src) {
   // https://www.scs.stanford.edu/~zyedidia/arm64/fcvtzs_float_int.html
   ASSERT(dst.is_gpr(instr_set));
   ASSERT(src.is_128bit_simd(instr_set));
-  return InstructionARM64(0x1E380000u, Rn(src.id()), Rd(dst.id()));
+  return InstructionARM64(0x1E380000u, Rn(qreg(src)), Rd(dst.id()));
 }
 
 InstructionARM64 nop() {
@@ -1251,13 +1313,13 @@ InstructionARM64 mov_vf_vf(Register dst, Register src) {
   // https://www.scs.stanford.edu/~zyedidia/arm64/orr_advsimd_reg.html
   ASSERT(dst.is_128bit_simd(instr_set));
   ASSERT(src.is_128bit_simd(instr_set));
-  return InstructionARM64(0x4EA01C00u, Rm(src.id()), Rn(src.id()), Rd(dst.id()));
+  return InstructionARM64(0x4EA01C00u, Rm(qreg(src)), Rn(qreg(src)), Rd(qreg(dst)));
 }
 
 InstructionARM64 loadvf_gpr64_plus_gpr64(Register dst, Register addr1, Register addr2) {
   // LDR Qt, [addr1, addr2] — 128-bit SIMD register load with register offset
   // size=00, V=1, opc=11: 0x3CE06800
-  return InstructionARM64(0x3CE06800u, Rm(addr2.id()), Rn(addr1.id()), Rt(dst.id()));
+  return InstructionARM64(0x3CE06800u, Rm(addr2.id()), Rn(addr1.id()), Rt(qreg(dst)));
 }
 
 InstructionARM64 loadvf_gpr64_plus_gpr64_plus_s8(Register dst,
@@ -1279,7 +1341,7 @@ InstructionARM64 loadvf_gpr64_plus_gpr64_plus_s32(Register dst,
 InstructionARM64 storevf_gpr64_plus_gpr64(Register value, Register addr1, Register addr2) {
   // STR Qt, [addr1, addr2] — 128-bit SIMD store with register offset
   // size=00, V=1, opc=10: 0x3CA06800
-  return InstructionARM64(0x3CA06800u, Rm(addr2.id()), Rn(addr1.id()), Rt(value.id()));
+  return InstructionARM64(0x3CA06800u, Rm(addr2.id()), Rn(addr1.id()), Rt(qreg(value)));
 }
 
 InstructionARM64 storevf_gpr64_plus_gpr64_plus_s8(Register value,
@@ -1302,7 +1364,7 @@ InstructionARM64 loadvf_rip_plus_s32(Register dest, s64 offset) {
   // LDR Qt, label — PC-relative 128-bit SIMD load
   // Encoding: 00_011100_imm19_Rt (size=00, V=1)
   (void)offset;
-  return InstructionARM64(Base(0b00011100, 8), Rt(dest.id()));
+  return InstructionARM64(Base(0b00011100, 8), Rt(qreg(dest)));
 }
 
 // TODO - rip relative loads and stores.
@@ -1338,7 +1400,7 @@ InstructionARM64 ext_16b(Register dst, Register src0, Register src1, u8 imm) {
   // EXT Vd.16B, Vn.16B, Vm.16B, #imm — byte rotate/extract from concatenation [src0:src1]
   // Advanced SIMD extract: 0_1_101110_00_0_Rm_0_imm4_0_Rn_Rd
   ASSERT(imm < 16);
-  return InstructionARM64(0x6E000000u, Rm(src1.id()), Field{(u32)imm << 11}, Rn(src0.id()), Rd(dst.id()));
+  return InstructionARM64(0x6E000000u, Rm(qreg(src1)), Field{(u32)imm << 11}, Rn(qreg(src0)), Rd(qreg(dst)));
 }
 
 InstructionARM64 ins_vf_element(Register dst, u8 dstIdx, Register src, u8 srcIdx) {
@@ -1348,7 +1410,7 @@ InstructionARM64 ins_vf_element(Register dst, u8 dstIdx, Register src, u8 srcIdx
   ASSERT(dstIdx < 4 && srcIdx < 4);
   u32 imm5 = ((u32)dstIdx << 2u) | 4u;
   u32 imm4 = (u32)srcIdx << 1u;
-  return InstructionARM64(0x6E000400u, Field{imm5 << 16}, Field{imm4 << 11}, Rn(src.id()), Rd(dst.id()));
+  return InstructionARM64(0x6E000400u, Field{imm5 << 16}, Field{imm4 << 11}, Rn(qreg(src)), Rd(qreg(dst)));
 }
 
 InstructionARM64 umov_gpr32_vf_element(Register gpr_dst, Register vf_src, u8 idx) {
@@ -1357,7 +1419,7 @@ InstructionARM64 umov_gpr32_vf_element(Register gpr_dst, Register vf_src, u8 idx
   // imm5 = (idx<<2)|4  (S-lane encoding: bit2=1, upper bits = lane index)
   ASSERT(idx < 4);
   u32 imm5 = ((u32)idx << 2u) | 4u;
-  return InstructionARM64(0x2E003C00u, Field{imm5 << 16}, Rn(vf_src.id()), Rd(gpr_dst.id()));
+  return InstructionARM64(0x2E003C00u, Field{imm5 << 16}, Rn(qreg(vf_src)), Rd(gpr_dst.id()));
 }
 
 InstructionARM64 ins_vf_element_from_gpr32(Register vf_dst, u8 idx, Register gpr_src) {
@@ -1366,13 +1428,13 @@ InstructionARM64 ins_vf_element_from_gpr32(Register vf_dst, u8 idx, Register gpr
   // imm5 = (idx<<2)|4  (S-lane encoding, same as ins_vf_element dst field)
   ASSERT(idx < 4);
   u32 imm5 = ((u32)idx << 2u) | 4u;
-  return InstructionARM64(0x4E001C00u, Field{imm5 << 16}, Rn(gpr_src.id()), Rd(vf_dst.id()));
+  return InstructionARM64(0x4E001C00u, Field{imm5 << 16}, Rn(gpr_src.id()), Rd(qreg(vf_dst)));
 }
 
 InstructionARM64 rev64_4s(Register dst, Register src) {
   // REV64 Vd.4S, Vn.4S — reverse 32-bit elements within each 64-bit lane
   // Advanced SIMD two-reg misc: 0_1_0_01110_10_1_00000_000010_Rn_Rd
-  return InstructionARM64(0x4EA00800u, Rn(src.id()), Rd(dst.id()));
+  return InstructionARM64(0x4EA00800u, Rn(qreg(src)), Rd(qreg(dst)));
 }
 
 InstructionARM64 splat_vf(Register dst, Register src, Register::VF_ELEMENT element) {
@@ -1384,72 +1446,72 @@ InstructionARM64 splat_vf(Register dst, Register src, Register::VF_ELEMENT eleme
   ASSERT(src.is_128bit_simd(instr_set));
   u32 idx = static_cast<u32>(element);  // 0=X, 1=Y, 2=Z, 3=W
   u32 imm5 = (idx << 2) | 0b100u;       // size=10 (32-bit S), index in upper bits
-  return InstructionARM64(0x4E000400u, Field{(imm5 & 31u) << 16}, Rn(src.id()), Rd(dst.id()));
+  return InstructionARM64(0x4E000400u, Field{(imm5 & 31u) << 16}, Rn(qreg(src)), Rd(qreg(dst)));
 }
 
 InstructionARM64 xor_vf(Register dst, Register src1, Register src2) {
   // EOR Vd.16B, Vn.16B, Vm.16B — 128-bit bitwise XOR
   // https://www.scs.stanford.edu/~zyedidia/arm64/eor_advsimd.html
   ASSERT(dst.is_128bit_simd(instr_set));
-  return InstructionARM64(0x6E201C00u, Rm(src2.id()), Rn(src1.id()), Rd(dst.id()));
+  return InstructionARM64(0x6E201C00u, Rm(qreg(src2)), Rn(qreg(src1)), Rd(qreg(dst)));
 }
 
 InstructionARM64 sub_vf(Register dst, Register src1, Register src2) {
   // FSUB Vd.4S, Vn.4S, Vm.4S — 4x float32 subtract
   // bit22=sz=1 (FSUB vs FADD)
   ASSERT(dst.is_128bit_simd(instr_set));
-  return InstructionARM64(0x4EA0D400u, Rm(src2.id()), Rn(src1.id()), Rd(dst.id()));
+  return InstructionARM64(0x4EA0D400u, Rm(qreg(src2)), Rn(qreg(src1)), Rd(qreg(dst)));
 }
 
 InstructionARM64 add_vf(Register dst, Register src1, Register src2) {
   // FADD Vd.4S, Vn.4S, Vm.4S — 4x float32 add
   ASSERT(dst.is_128bit_simd(instr_set));
-  return InstructionARM64(0x4E20D400u, Rm(src2.id()), Rn(src1.id()), Rd(dst.id()));
+  return InstructionARM64(0x4E20D400u, Rm(qreg(src2)), Rn(qreg(src1)), Rd(qreg(dst)));
 }
 
 InstructionARM64 mul_vf(Register dst, Register src1, Register src2) {
   // FMUL Vd.4S, Vn.4S, Vm.4S — 4x float32 multiply (U=1, opcode=11011)
   ASSERT(dst.is_128bit_simd(instr_set));
-  return InstructionARM64(0x6E20DC00u, Rm(src2.id()), Rn(src1.id()), Rd(dst.id()));
+  return InstructionARM64(0x6E20DC00u, Rm(qreg(src2)), Rn(qreg(src1)), Rd(qreg(dst)));
 }
 
 InstructionARM64 max_vf(Register dst, Register src1, Register src2) {
   // FMAX Vd.4S, Vn.4S, Vm.4S — 4x float32 maximum (opcode=11110)
   ASSERT(dst.is_128bit_simd(instr_set));
-  return InstructionARM64(0x4E20F400u, Rm(src2.id()), Rn(src1.id()), Rd(dst.id()));
+  return InstructionARM64(0x4E20F400u, Rm(qreg(src2)), Rn(qreg(src1)), Rd(qreg(dst)));
 }
 
 InstructionARM64 min_vf(Register dst, Register src1, Register src2) {
   // FMIN Vd.4S, Vn.4S, Vm.4S — 4x float32 minimum (sz=1, opcode=11110)
   ASSERT(dst.is_128bit_simd(instr_set));
-  return InstructionARM64(0x4EA0F400u, Rm(src2.id()), Rn(src1.id()), Rd(dst.id()));
+  return InstructionARM64(0x4EA0F400u, Rm(qreg(src2)), Rn(qreg(src1)), Rd(qreg(dst)));
 }
 
 InstructionARM64 div_vf(Register dst, Register src1, Register src2) {
   // FDIV Vd.4S, Vn.4S, Vm.4S — 4x float32 divide (U=1, opcode=11111)
   ASSERT(dst.is_128bit_simd(instr_set));
-  return InstructionARM64(0x6E20FC00u, Rm(src2.id()), Rn(src1.id()), Rd(dst.id()));
+  return InstructionARM64(0x6E20FC00u, Rm(qreg(src2)), Rn(qreg(src1)), Rd(qreg(dst)));
 }
 
 InstructionARM64 sqrt_vf(Register dst, Register src) {
   // FSQRT Vd.4S, Vn.4S — 4x float32 square root (2-reg unary)
   ASSERT(dst.is_128bit_simd(instr_set));
   ASSERT(src.is_128bit_simd(instr_set));
-  return InstructionARM64(0x6EA1F800u, Rn(src.id()), Rd(dst.id()));
+  return InstructionARM64(0x6EA1F800u, Rn(qreg(src)), Rd(qreg(dst)));
 }
 
 InstructionARM64 itof_vf(Register dst, Register src) {
   // SCVTF Vd.4S, Vn.4S — convert 4x int32 to float32
   ASSERT(dst.is_128bit_simd(instr_set));
   ASSERT(src.is_128bit_simd(instr_set));
-  return InstructionARM64(0x4E21D800u, Rn(src.id()), Rd(dst.id()));
+  return InstructionARM64(0x4E21D800u, Rn(qreg(src)), Rd(qreg(dst)));
 }
 
 InstructionARM64 ftoi_vf(Register dst, Register src) {
   // FCVTZS Vd.4S, Vn.4S — convert 4x float32 to int32 (truncate)
   ASSERT(dst.is_128bit_simd(instr_set));
   ASSERT(src.is_128bit_simd(instr_set));
-  return InstructionARM64(0x4EA1B800u, Rn(src.id()), Rd(dst.id()));
+  return InstructionARM64(0x4EA1B800u, Rn(qreg(src)), Rd(qreg(dst)));
 }
 
 // NEON parallel vector shifts (operating on 128-bit packed integer lanes):
@@ -1471,7 +1533,7 @@ InstructionARM64 pw_sra(Register dst, Register src, u8 imm) {
   ASSERT(src.is_128bit_simd(instr_set));
   ASSERT(imm >= 1 && imm <= 32);
   u32 immhb = 64u - imm;  // for 4S: immh:immb = 0b0100_xxx where bits = 32-imm
-  return InstructionARM64(0x4F000400u, Field{(immhb & 0x7Fu) << 16}, Rn(src.id()), Rd(dst.id()));
+  return InstructionARM64(0x4F000400u, Field{(immhb & 0x7Fu) << 16}, Rn(qreg(src)), Rd(qreg(dst)));
 }
 
 InstructionARM64 pw_srl(Register dst, Register src, u8 imm) {
@@ -1481,7 +1543,7 @@ InstructionARM64 pw_srl(Register dst, Register src, u8 imm) {
   ASSERT(src.is_128bit_simd(instr_set));
   ASSERT(imm >= 1 && imm <= 32);
   u32 immhb = 64u - imm;
-  return InstructionARM64(0x6F000400u, Field{(immhb & 0x7Fu) << 16}, Rn(src.id()), Rd(dst.id()));
+  return InstructionARM64(0x6F000400u, Field{(immhb & 0x7Fu) << 16}, Rn(qreg(src)), Rd(qreg(dst)));
 }
 
 InstructionARM64 ph_srl(Register dst, Register src, u8 imm) {
@@ -1491,7 +1553,7 @@ InstructionARM64 ph_srl(Register dst, Register src, u8 imm) {
   ASSERT(src.is_128bit_simd(instr_set));
   ASSERT(imm >= 1 && imm <= 16);
   u32 immhb = 32u - imm;
-  return InstructionARM64(0x6F000400u, Field{(immhb & 0x3Fu) << 16}, Rn(src.id()), Rd(dst.id()));
+  return InstructionARM64(0x6F000400u, Field{(immhb & 0x3Fu) << 16}, Rn(qreg(src)), Rd(qreg(dst)));
 }
 
 InstructionARM64 pw_sll(Register dst, Register src, u8 imm) {
@@ -1502,7 +1564,7 @@ InstructionARM64 pw_sll(Register dst, Register src, u8 imm) {
   ASSERT(src.is_128bit_simd(instr_set));
   ASSERT(imm >= 0 && imm <= 31);
   u32 immhb = 32u + imm;  // for SHL Vd.4S: immhb = 32+imm
-  return InstructionARM64(0x4F005400u, Field{(immhb & 0x7Fu) << 16}, Rn(src.id()), Rd(dst.id()));
+  return InstructionARM64(0x4F005400u, Field{(immhb & 0x7Fu) << 16}, Rn(qreg(src)), Rd(qreg(dst)));
 }
 
 InstructionARM64 ph_sll(Register dst, Register src, u8 imm) {
@@ -1512,28 +1574,28 @@ InstructionARM64 ph_sll(Register dst, Register src, u8 imm) {
   ASSERT(src.is_128bit_simd(instr_set));
   ASSERT(imm >= 0 && imm <= 15);
   u32 immhb = 16u + imm;
-  return InstructionARM64(0x4F005400u, Field{(immhb & 0x3Fu) << 16}, Rn(src.id()), Rd(dst.id()));
+  return InstructionARM64(0x4F005400u, Field{(immhb & 0x3Fu) << 16}, Rn(qreg(src)), Rd(qreg(dst)));
 }
 
 InstructionARM64 parallel_add_byte(Register dst, Register src0, Register src1) {
   // ADD Vd.16B, Vn.16B, Vm.16B — add 16x int8
   // "Advanced SIMD three same": 0_1_0_01110_00_1_Rm_100001_Rn_Rd (size=00 for byte)
-  return InstructionARM64(0x4E208400u, Rm(src1.id()), Rn(src0.id()), Rd(dst.id()));
+  return InstructionARM64(0x4E208400u, Rm(qreg(src1)), Rn(qreg(src0)), Rd(qreg(dst)));
 }
 
 InstructionARM64 parallel_bitwise_or(Register dst, Register src0, Register src1) {
   // ORR Vd.16B, Vn.16B, Vm.16B
-  return InstructionARM64(0x4EA01C00u, Rm(src1.id()), Rn(src0.id()), Rd(dst.id()));
+  return InstructionARM64(0x4EA01C00u, Rm(qreg(src1)), Rn(qreg(src0)), Rd(qreg(dst)));
 }
 
 InstructionARM64 parallel_bitwise_xor(Register dst, Register src0, Register src1) {
   // EOR Vd.16B, Vn.16B, Vm.16B
-  return InstructionARM64(0x6E201C00u, Rm(src1.id()), Rn(src0.id()), Rd(dst.id()));
+  return InstructionARM64(0x6E201C00u, Rm(qreg(src1)), Rn(qreg(src0)), Rd(qreg(dst)));
 }
 
 InstructionARM64 parallel_bitwise_and(Register dst, Register src0, Register src1) {
   // AND Vd.16B, Vn.16B, Vm.16B
-  return InstructionARM64(0x4E201C00u, Rm(src1.id()), Rn(src0.id()), Rd(dst.id()));
+  return InstructionARM64(0x4E201C00u, Rm(qreg(src1)), Rn(qreg(src0)), Rd(qreg(dst)));
 }
 
 // MIPS EE interleave/unpack operations mapped to ARM64 NEON:
@@ -1544,95 +1606,96 @@ InstructionARM64 parallel_bitwise_and(Register dst, Register src0, Register src1
 InstructionARM64 pextub_swapped(Register dst, Register src0, Register src1) {
   // Unpack high bytes (PUNPCKHBW equivalent) → ZIP2 Vd.16B, Vn.16B, Vm.16B
   // ZIP2 (high interleave) 16B: size=00: 0x4E007800
-  return InstructionARM64(0x4E007800u, Rm(src1.id()), Rn(src0.id()), Rd(dst.id()));
+  return InstructionARM64(0x4E007800u, Rm(qreg(src1)), Rn(qreg(src0)), Rd(qreg(dst)));
 }
 
 InstructionARM64 pextuh_swapped(Register dst, Register src0, Register src1) {
   // Unpack high halfwords → ZIP2 Vd.8H, Vn.8H, Vm.8H
   // ZIP2 8H: size=01: 0x4E407800
-  return InstructionARM64(0x4E407800u, Rm(src1.id()), Rn(src0.id()), Rd(dst.id()));
+  return InstructionARM64(0x4E407800u, Rm(qreg(src1)), Rn(qreg(src0)), Rd(qreg(dst)));
 }
 
 InstructionARM64 pextuw_swapped(Register dst, Register src0, Register src1) {
   // Unpack high words → ZIP2 Vd.4S, Vn.4S, Vm.4S
   // ZIP2 4S: size=10: 0x4E807800
-  return InstructionARM64(0x4E807800u, Rm(src1.id()), Rn(src0.id()), Rd(dst.id()));
+  return InstructionARM64(0x4E807800u, Rm(qreg(src1)), Rn(qreg(src0)), Rd(qreg(dst)));
 }
 
 InstructionARM64 pextlb_swapped(Register dst, Register src0, Register src1) {
   // Unpack low bytes → ZIP1 Vd.16B, Vn.16B, Vm.16B
   // ZIP1 16B: size=00: 0x4E003800
-  return InstructionARM64(0x4E003800u, Rm(src1.id()), Rn(src0.id()), Rd(dst.id()));
+  return InstructionARM64(0x4E003800u, Rm(qreg(src1)), Rn(qreg(src0)), Rd(qreg(dst)));
 }
 
 InstructionARM64 pextlh_swapped(Register dst, Register src0, Register src1) {
   // Unpack low halfwords → ZIP1 Vd.8H, Vn.8H, Vm.8H
   // ZIP1 8H: size=01: 0x4E403800
-  return InstructionARM64(0x4E403800u, Rm(src1.id()), Rn(src0.id()), Rd(dst.id()));
+  return InstructionARM64(0x4E403800u, Rm(qreg(src1)), Rn(qreg(src0)), Rd(qreg(dst)));
 }
 
 InstructionARM64 pextlw_swapped(Register dst, Register src0, Register src1) {
   // Unpack low words → ZIP1 Vd.4S, Vn.4S, Vm.4S
   // ZIP1 4S: size=10: 0x4E803800
-  return InstructionARM64(0x4E803800u, Rm(src1.id()), Rn(src0.id()), Rd(dst.id()));
+  return InstructionARM64(0x4E803800u, Rm(qreg(src1)), Rn(qreg(src0)), Rd(qreg(dst)));
 }
 
 InstructionARM64 parallel_compare_e_b(Register dst, Register src0, Register src1) {
   // CMEQ Vd.16B, Vn.16B, Vm.16B — compare equal, 16x int8
   // 0_1_0_01110_00_1_Rm_100011_Rn_Rd: 0x4E208C00
-  return InstructionARM64(0x4E208C00u, Rm(src1.id()), Rn(src0.id()), Rd(dst.id()));
+  return InstructionARM64(0x4E208C00u, Rm(qreg(src1)), Rn(qreg(src0)), Rd(qreg(dst)));
 }
 
 InstructionARM64 parallel_compare_e_h(Register dst, Register src0, Register src1) {
   // CMEQ Vd.8H, Vn.8H, Vm.8H — compare equal, 8x int16
   // size=01: 0x4E608C00
-  return InstructionARM64(0x4E608C00u, Rm(src1.id()), Rn(src0.id()), Rd(dst.id()));
+  return InstructionARM64(0x4E608C00u, Rm(qreg(src1)), Rn(qreg(src0)), Rd(qreg(dst)));
 }
 
 InstructionARM64 parallel_compare_e_w(Register dst, Register src0, Register src1) {
   // CMEQ Vd.4S, Vn.4S, Vm.4S — compare equal, 4x int32
   // size=10: 0x4EA08C00
-  return InstructionARM64(0x4EA08C00u, Rm(src1.id()), Rn(src0.id()), Rd(dst.id()));
+  return InstructionARM64(0x4EA08C00u, Rm(qreg(src1)), Rn(qreg(src0)), Rd(qreg(dst)));
 }
 
 InstructionARM64 parallel_compare_gt_b(Register dst, Register src0, Register src1) {
   // CMGT Vd.16B, Vn.16B, Vm.16B — compare greater-than (signed), 16x int8
   // 0_1_0_01110_00_1_Rm_001101_Rn_Rd: 0x4E203400
-  return InstructionARM64(0x4E203400u, Rm(src1.id()), Rn(src0.id()), Rd(dst.id()));
+  return InstructionARM64(0x4E203400u, Rm(qreg(src1)), Rn(qreg(src0)), Rd(qreg(dst)));
 }
 
 InstructionARM64 parallel_compare_gt_h(Register dst, Register src0, Register src1) {
   // CMGT Vd.8H — size=01: 0x4E603400
-  return InstructionARM64(0x4E603400u, Rm(src1.id()), Rn(src0.id()), Rd(dst.id()));
+  return InstructionARM64(0x4E603400u, Rm(qreg(src1)), Rn(qreg(src0)), Rd(qreg(dst)));
 }
 
 InstructionARM64 parallel_compare_gt_w(Register dst, Register src0, Register src1) {
   // CMGT Vd.4S — size=10: 0x4EA03400
-  return InstructionARM64(0x4EA03400u, Rm(src1.id()), Rn(src0.id()), Rd(dst.id()));
+  return InstructionARM64(0x4EA03400u, Rm(qreg(src1)), Rn(qreg(src0)), Rd(qreg(dst)));
 }
 
 InstructionARM64 vpunpcklqdq(Register dst, Register src0, Register src1) {
   // Unpack low quadwords → ZIP1 Vd.2D, Vn.2D, Vm.2D
   // ZIP1 2D: size=11: 0x4EC03800
-  return InstructionARM64(0x4EC03800u, Rm(src1.id()), Rn(src0.id()), Rd(dst.id()));
+  return InstructionARM64(0x4EC03800u, Rm(qreg(src1)), Rn(qreg(src0)), Rd(qreg(dst)));
 }
 
 InstructionARM64 pcpyld_swapped(Register dst, Register src0, Register src1) {
-  // MIPS PCPYLD: copy lower 64-bit of src1 to lower 64-bit of dst, src0 upper → dst upper
-  // ARM64: ZIP1 Vd.2D, Vn.2D(src1), Vm.2D(src0)  [swapped arg order]
-  return InstructionARM64(0x4EC03800u, Rm(src0.id()), Rn(src1.id()), Rd(dst.id()));
+  // x86 VPUNPCKLQDQ(dst, src0, src1): dst.lo = src0.lo, dst.hi = src1.lo
+  // ARM64 ZIP1 Vd.2D, Vn.2D, Vm.2D:  dst.lo = Vn.lo,   dst.hi = Vm.lo
+  // → Vn=src0 (Rn=src0), Vm=src1 (Rm=src1) to match x86 semantics
+  return InstructionARM64(0x4EC03800u, Rm(qreg(src1)), Rn(qreg(src0)), Rd(qreg(dst)));
 }
 
 InstructionARM64 pcpyud(Register dst, Register src0, Register src1) {
   // MIPS PCPYUD: copy upper 64-bit of src0 to lower 64-bit of dst, src1 upper → dst upper
   // ARM64: ZIP2 Vd.2D, Vn.2D(src0), Vm.2D(src1)
-  return InstructionARM64(0x4EC07800u, Rm(src1.id()), Rn(src0.id()), Rd(dst.id()));
+  return InstructionARM64(0x4EC07800u, Rm(qreg(src1)), Rn(qreg(src0)), Rd(qreg(dst)));
 }
 
 InstructionARM64 vpsubd(Register dst, Register src0, Register src1) {
   // SUB Vd.2D, Vn.2D, Vm.2D — subtract 2x int64
   // "Advanced SIMD three same" size=11: 0_1_1_01110_11_1_Rm_100001_Rn_Rd → 0x6EE08400
-  return InstructionARM64(0x6EE08400u, Rm(src1.id()), Rn(src0.id()), Rd(dst.id()));
+  return InstructionARM64(0x6EE08400u, Rm(qreg(src1)), Rn(qreg(src0)), Rd(qreg(dst)));
 }
 
 InstructionARM64 vpsrldq(Register dst, Register src, u8 imm) {
@@ -1669,13 +1732,13 @@ InstructionARM64 vpackuswb(Register dst, Register src0, Register src1) {
 InstructionARM64 uzp1_8h(Register dst, Register src0, Register src1) {
   // UZP1 Vd.8H, Vn.8H, Vm.8H — unzip even int16 elements (128-bit, 8x int16)
   // Advanced SIMD permute: Q=1, size=01, opcode=001 → 0x4E401800
-  return InstructionARM64(0x4E401800u, Rm(src1.id()), Rn(src0.id()), Rd(dst.id()));
+  return InstructionARM64(0x4E401800u, Rm(qreg(src1)), Rn(qreg(src0)), Rd(qreg(dst)));
 }
 
 InstructionARM64 uzp1_16b(Register dst, Register src0, Register src1) {
   // UZP1 Vd.16B, Vn.16B, Vm.16B — unzip even bytes (128-bit, 16x uint8)
   // Advanced SIMD permute: Q=1, size=00, opcode=001 → 0x4E001800
-  return InstructionARM64(0x4E001800u, Rm(src1.id()), Rn(src0.id()), Rd(dst.id()));
+  return InstructionARM64(0x4E001800u, Rm(qreg(src1)), Rn(qreg(src0)), Rd(qreg(dst)));
 }
 }  // namespace ARM64
 }  // namespace IGen

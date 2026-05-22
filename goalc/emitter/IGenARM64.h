@@ -319,6 +319,10 @@ InstructionARM64 load128_xmm128_reg_offset(Register simd_dest, Register base, s6
 
 InstructionARM64 store128_xmm128_reg_offset(Register base, Register xmm_val, s64 offset);
 
+InstructionARM64 stur_xmm128(Register gpr_addr, Register xmm_value, s64 offset);
+
+InstructionARM64 ldur_xmm128(Register simd_dest, Register gpr_addr, s64 offset);
+
 //;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 //   RIP loads and stores
 //;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -382,6 +386,26 @@ InstructionARM64 push_gpr64(Register reg);
  * Instruction to pop 64 bit gpr from the stack
  */
 InstructionARM64 pop_gpr64(Register reg);
+
+/*!
+ * Push a single 128-bit SIMD register onto the stack (STR Qt, [SP, #-16]!)
+ */
+InstructionARM64 push_xmm128(Register reg);
+
+/*!
+ * Pop a single 128-bit SIMD register from the stack (LDR Qt, [SP], #16)
+ */
+InstructionARM64 pop_xmm128(Register reg);
+
+/*!
+ * Push a pair of 128-bit SIMD registers onto the stack (STP Qt1, Qt2, [SP, #-32]!)
+ */
+InstructionARM64 stp_xmm128_pair(Register reg1, Register reg2);
+
+/*!
+ * Pop a pair of 128-bit SIMD registers from the stack (LDP Qt1, Qt2, [SP], #32)
+ */
+InstructionARM64 ldp_xmm128_pair(Register reg1, Register reg2);
 
 /*!
  * Call a function stored in a 64-bit gpr

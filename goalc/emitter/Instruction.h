@@ -64,8 +64,16 @@ constexpr Field Imm6(u32 x) {
   return Field{(x & 0b111111) << 10};
 }
 
+constexpr Field Imm7(s32 x) {
+  return Field{(static_cast<uint32_t>(x) & 0b1111111) << 15};
+}
+
 constexpr Field Imm9(s32 x) {
   return Field{(static_cast<uint32_t>(x) & 0b111111111) << 12};
+}
+
+constexpr Field Rt2(u32 x) {
+  return Field{(x & 31) << 10};
 }
 
 constexpr Field Imm12(u32 x) {

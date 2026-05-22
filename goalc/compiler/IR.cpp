@@ -1168,7 +1168,8 @@ void IR_StaticVarLoad::do_codegen_x86(emitter::ObjectGenerator* gen,
     auto instr =
         gen->add_instr(IGen::static_load_xmm32(*gen, get_reg(m_dest, allocs, irec), 0), irec);
     gen->link_instruction_static(instr, m_src->rec, 0);
-  } else if (m_dest->ireg().reg_class == RegClass::VECTOR_FLOAT) {
+  } else if (m_dest->ireg().reg_class == RegClass::VECTOR_FLOAT ||
+             m_dest->ireg().reg_class == RegClass::INT_128) {
     // we don't check the load info intentionally because we want to allow loading an entire
     // vector structure.
     auto instr =
@@ -1199,7 +1200,8 @@ void IR_StaticVarLoad::do_codegen_arm64(emitter::ObjectGenerator* gen,
     gen->add_instr(IGen::load_goal_xmm32(*gen, get_reg(m_dest, allocs, irec), scratch,
                                          gen->get_offset_reg(), 0),
                    irec);
-  } else if (m_dest->ireg().reg_class == RegClass::VECTOR_FLOAT) {
+  } else if (m_dest->ireg().reg_class == RegClass::VECTOR_FLOAT ||
+             m_dest->ireg().reg_class == RegClass::INT_128) {
     auto movz = gen->add_instr(InstructionARM64(0xD2800000u, ARM64::Rd(scratch.id())), irec);
     auto movk = gen->add_instr(InstructionARM64(0xF2A00000u, ARM64::Rd(scratch.id())), irec);
     gen->link_instruction_static_arm64_movw(movz, movk, m_src->rec, 0);

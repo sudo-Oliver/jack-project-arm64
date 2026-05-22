@@ -353,6 +353,21 @@ void* RPC_Player(unsigned int /*fno*/, void* data, int size) {
 void* RPC_Loader(unsigned int /*fno*/, void* data, int size) {
   int n_messages = size / SRPC_MESSAGE_SIZE;
   SoundRpcCommand* cmd = (SoundRpcCommand*)(data);
+  // [SRPC-DEBUG] dump key bytes so we can verify bank_name field
+  {
+    const unsigned char* b = (const unsigned char*)data;
+    fprintf(stderr,
+            "[SRPC-DEBUG] cmd=%04x b[0..7]=%02x%02x%02x%02x%02x%02x%02x%02x "
+            "b[8..15]=%02x%02x%02x%02x%02x%02x%02x%02x "
+            "b[16..23]=%02x%02x%02x%02x%02x%02x%02x%02x "
+            "b[24..31]=%02x%02x%02x%02x%02x%02x%02x%02x\n",
+            (unsigned)cmd->j1command,
+            b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7],
+            b[8],b[9],b[10],b[11],b[12],b[13],b[14],b[15],
+            b[16],b[17],b[18],b[19],b[20],b[21],b[22],b[23],
+            b[24],b[25],b[26],b[27],b[28],b[29],b[30],b[31]);
+    fflush(stderr);
+  }
   if (gSoundEnable) {
     // I don't think it should be possible to have > 1 message here - the buffer isn't big enough.
     if (n_messages > 1) {

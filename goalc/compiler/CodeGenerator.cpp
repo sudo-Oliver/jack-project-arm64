@@ -14,6 +14,7 @@
 
 #include "goalc/debugger/DebugInfo.h"
 #include "goalc/emitter/IGen.h"
+#include "goalc/emitter/IGenARM64.h"
 
 #include "fmt/format.h"
 
@@ -321,9 +322,28 @@ void CodeGenerator::do_goal_function_arm64(FunctionEnv* env, int f_idx) {
     stack_offset += 16;
   }
 
-  // ARM64: is_xmm() always false; Q-register (128-bit SIMD) saving is a future concern.
-  // Only GPR callee-saved regs matter here.
-  // push_gpr64 on ARM64 does STR [SP, #-16]! — always 16-byte aligned.
+  // Collect callee-saved SIMD (XMM/Q) registers, then save in pairs via STP.
+  std::vector<emitter::Register> saved_xmm_regs;
+  for (auto& saved_reg : allocs.used_saved_regs) {
+    if (saved_reg.is_xmm(m_gen.instr_set())) {
+      saved_xmm_regs.push_back(saved_reg);
+    }
+  }
+  // Emit STP pairs (most efficient), then single STR for odd remainder.
+  int xi = 0;
+  for (; xi + 1 < (int)saved_xmm_regs.size(); xi += 2) {
+    m_gen.add_instr_no_ir(
+        f_rec, IGen::ARM64::stp_xmm128_pair(saved_xmm_regs[xi], saved_xmm_regs[xi + 1]),
+        InstructionInfo::Kind::PROLOGUE);
+    stack_offset += 32;
+  }
+  if (xi < (int)saved_xmm_regs.size()) {
+    m_gen.add_instr_no_ir(f_rec, IGen::ARM64::push_xmm128(saved_xmm_regs[xi]),
+                          InstructionInfo::Kind::PROLOGUE);
+    stack_offset += 16;
+  }
+
+  // Save callee-saved GPRs. push_gpr64 does STR Xn, [SP, #-16]! — always 16-byte aligned.
   for (auto& saved_reg : allocs.used_saved_regs) {
     if (saved_reg.is_gpr(m_gen.instr_set())) {
       m_gen.add_instr_no_ir(f_rec, IGen::push_gpr64(m_gen, saved_reg),
@@ -364,9 +384,13 @@ void CodeGenerator::do_goal_function_arm64(FunctionEnv* env, int f_idx) {
                           i_rec);
         } else if (op.reg.is_xmm(m_gen.instr_set()) &&
                    (op.reg_class == RegClass::VECTOR_FLOAT || op.reg_class == RegClass::INT_128)) {
-          m_gen.add_instr(IGen::load128_xmm128_reg_offset(
-                              m_gen, op.reg, SP, allocs.get_slot_for_spill(op.slot) * GPR_SIZE),
-                          i_rec);
+          s64 spill_off = allocs.get_slot_for_spill(op.slot) * GPR_SIZE;
+          if (spill_off % 16 == 0) {
+            m_gen.add_instr(IGen::load128_xmm128_reg_offset(m_gen, op.reg, SP, spill_off), i_rec);
+          } else {
+            // STR Qt requires 16-byte aligned offset; use LDUR (unscaled, byte-granular).
+            m_gen.add_instr(IGen::ARM64::ldur_xmm128(op.reg, SP, spill_off), i_rec);
+          }
         } else {
           ASSERT(false);
         }
@@ -387,9 +411,13 @@ void CodeGenerator::do_goal_function_arm64(FunctionEnv* env, int f_idx) {
                           i_rec);
         } else if (op.reg.is_xmm(m_gen.instr_set()) &&
                    (op.reg_class == RegClass::VECTOR_FLOAT || op.reg_class == RegClass::INT_128)) {
-          m_gen.add_instr(IGen::store128_xmm128_reg_offset(
-                              m_gen, SP, op.reg, allocs.get_slot_for_spill(op.slot) * GPR_SIZE),
-                          i_rec);
+          s64 spill_off = allocs.get_slot_for_spill(op.slot) * GPR_SIZE;
+          if (spill_off % 16 == 0) {
+            m_gen.add_instr(IGen::store128_xmm128_reg_offset(m_gen, SP, op.reg, spill_off), i_rec);
+          } else {
+            // STR Qt requires 16-byte aligned offset; use STUR (unscaled, byte-granular).
+            m_gen.add_instr(IGen::ARM64::stur_xmm128(SP, op.reg, spill_off), i_rec);
+          }
         } else {
           ASSERT(false);
         }
@@ -411,6 +439,24 @@ void CodeGenerator::do_goal_function_arm64(FunctionEnv* env, int f_idx) {
     if (saved_reg.is_gpr(m_gen.instr_set())) {
       m_gen.add_instr_no_ir(f_rec, IGen::pop_gpr64(m_gen, saved_reg),
                             InstructionInfo::Kind::EPILOGUE);
+    }
+  }
+
+  // Restore SIMD regs: reverse of prologue save order.
+  // Prologue saved: pairs [0,1],[2,3],... then odd single at end (on top of stack).
+  {
+    int xmm_n = (int)saved_xmm_regs.size();
+    int pair_end = xmm_n & ~1;  // highest even index (number of regs in pairs)
+    // If odd, the last reg was pushed individually — restore it first (it's on top).
+    if (xmm_n & 1) {
+      m_gen.add_instr_no_ir(f_rec, IGen::ARM64::pop_xmm128(saved_xmm_regs[xmm_n - 1]),
+                            InstructionInfo::Kind::EPILOGUE);
+    }
+    // Restore pairs in reverse order.
+    for (int i = pair_end - 2; i >= 0; i -= 2) {
+      m_gen.add_instr_no_ir(
+          f_rec, IGen::ARM64::ldp_xmm128_pair(saved_xmm_regs[i], saved_xmm_regs[i + 1]),
+          InstructionInfo::Kind::EPILOGUE);
     }
   }
 
@@ -480,9 +526,25 @@ void CodeGenerator::do_asm_function_arm64(FunctionEnv* env, int f_idx, bool allo
     throw std::runtime_error("ASM Function has variables on the stack.");
   }
 
-  // Emit prologue: save any GOAL pseudo-callee-saved GPRs the allocator assigned.
-  // The allocator uses the full alloc order for ARM64 asm functions (is_asm_function=false),
-  // so it may assign X3, X5, X10-X12 which must be preserved per GOAL calling convention.
+  // Collect callee-saved SIMD regs for prologue/epilogue.
+  std::vector<emitter::Register> asm_saved_xmm;
+  for (auto& saved_reg : allocs.used_saved_regs) {
+    if (saved_reg.is_xmm(m_gen.instr_set())) {
+      asm_saved_xmm.push_back(saved_reg);
+    }
+  }
+
+  // Prologue: save SIMD pairs, then GPRs.
+  int axi = 0;
+  for (; axi + 1 < (int)asm_saved_xmm.size(); axi += 2) {
+    m_gen.add_instr_no_ir(f_rec,
+                          IGen::ARM64::stp_xmm128_pair(asm_saved_xmm[axi], asm_saved_xmm[axi + 1]),
+                          InstructionInfo::Kind::PROLOGUE);
+  }
+  if (axi < (int)asm_saved_xmm.size()) {
+    m_gen.add_instr_no_ir(f_rec, IGen::ARM64::push_xmm128(asm_saved_xmm[axi]),
+                          InstructionInfo::Kind::PROLOGUE);
+  }
   for (auto& saved_reg : allocs.used_saved_regs) {
     if (saved_reg.is_gpr(m_gen.instr_set())) {
       m_gen.add_instr_no_ir(f_rec, IGen::push_gpr64(m_gen, saved_reg),
@@ -498,11 +560,21 @@ void CodeGenerator::do_asm_function_arm64(FunctionEnv* env, int f_idx, bool allo
     }
     // GOAL asm functions embed their ret in the IR (IR_AsmRet). Pop saved regs before it.
     if (dynamic_cast<IR_AsmRet*>(ir.get()) && !allocs.used_saved_regs.empty()) {
+      // Epilogue: GPR pops in reverse, then SIMD restores.
       for (int i = int(allocs.used_saved_regs.size()); i-- > 0;) {
         auto& saved_reg = allocs.used_saved_regs.at(i);
         if (saved_reg.is_gpr(m_gen.instr_set())) {
           m_gen.add_instr(IGen::pop_gpr64(m_gen, saved_reg), i_rec);
         }
+      }
+      int axn = (int)asm_saved_xmm.size();
+      int ax_pair_end = axn & ~1;
+      if (axn & 1) {
+        m_gen.add_instr(IGen::ARM64::pop_xmm128(asm_saved_xmm[axn - 1]), i_rec);
+      }
+      for (int i = ax_pair_end - 2; i >= 0; i -= 2) {
+        m_gen.add_instr(IGen::ARM64::ldp_xmm128_pair(asm_saved_xmm[i], asm_saved_xmm[i + 1]),
+                        i_rec);
       }
     }
     ir->do_codegen_arm64(&m_gen, allocs, i_rec);
