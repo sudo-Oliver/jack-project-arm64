@@ -476,6 +476,11 @@ const std::vector<emitter::Register>& get_default_alloc_order_for_var(int v,
 
 bool try_spill_coloring(int var, RegAllocCache* cache, const AllocationInput& in, int debug_trace) {
   // todo, reject flagged "unspillables"
+  auto& lr_dbg = cache->live_ranges.at(var);
+  if (cache->iregs.at(var).reg_class == RegClass::INT_128) {
+    printf("[REGALLOC-DBG] spill INT_128 var=%d lr.min=%d lr.max=%d has_constraint=%d\n",
+           var, lr_dbg.min, lr_dbg.max, lr_dbg.has_constraint);
+  }
   if (debug_trace >= 1) {
     printf("---- SPILL VAR %d ----\n", var);
   }
@@ -527,6 +532,8 @@ bool try_spill_coloring(int var, RegAllocCache* cache, const AllocationInput& in
       // IR[0] executes — use store_before rather than store.
       if (!is_written && instr == lr.min && instr < lr.max) {
         bonus.store_before = true;
+        printf("[REGALLOC-DBG] store_before set: var=%d instr=%d lr.min=%d lr.max=%d reg=%s\n",
+               var, instr, lr.min, lr.max, current_assignment.to_string().c_str());
       }
     } else {
       // not assigned.
@@ -631,6 +638,11 @@ bool do_allocation_for_var(int var,
   if (can_be_in_register) {
     // first, let's see if there's a hint...
     auto& lr = cache->live_ranges.at(var);
+    // Debug: print INT_128 vars that have a constraint at instruction 0
+    if (cache->iregs.at(var).reg_class == RegClass::INT_128 && lr.has_constraint) {
+      printf("[REGALLOC-DBG] do_alloc INT_128 constrained var=%d min=%d max=%d\n",
+             var, lr.min, lr.max);
+    }
     if (lr.best_hint.is_assigned()) {
       colored = try_assignment_for_var(var, lr.best_hint, cache, in, debug_trace);
       if (debug_trace >= 2) {

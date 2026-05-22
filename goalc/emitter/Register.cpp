@@ -88,8 +88,12 @@ RegisterInfo RegisterInfo::make_register_info() {
   // Use q1, q8-q12, q15 for float arguments (8 slots).
   info.m_xmm_arg_regs =
       std::array<Register, N_ARGS>({XMM1, XMM8, XMM9, XMM10, XMM11, XMM12, XMM15, XMM0});
-  // Callee-saved GPRs available to GOAL (exclude specials x18/x20/x21/x22 and FP/LR).
-  info.m_saved_gprs = std::array<Register, N_SAVED_GPRS>({x19, X23, X24, X25, X26});
+  // Callee-saved GPRs available to GOAL: only x19 is actually in gpr_alloc_order.
+  // X23-X26 are excluded: X23/x22/x21/x20 are GOAL specials, and X24/X25/X26 (IDs 24/25/26)
+  // alias XMM8/XMM9/XMM10 (same IDs) — including them causes double-entries in used_saved_regs
+  // and generates illegal LDP Qt,Qt (same register twice) in function epilogues.
+  // Pad unused slots with Register() (id=-1 sentinel, never matches any allocation).
+  info.m_saved_gprs = std::array<Register, N_SAVED_GPRS>({x19, Register(), Register(), Register(), Register()});
   // Callee-saved SIMD: q8-q12, q15. q13(x29) and q14(x30) are blocked but harmless
   // in the saved list — they're never allocated so never trigger save/restore.
   info.m_saved_xmms =

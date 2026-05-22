@@ -648,6 +648,7 @@ void link_control::jak1_finish(bool jump_from_c_to_goal) {
       sys_icache_invalidate(g_ee_main_mem + EE_CODE_HEAP_START, EE_CODE_HEAP_SIZE);
       pthread_jit_write_protect_np(1);
 #endif
+      fprintf(stderr, "[EE-TOPLEVEL] executing top-level: %s\n", m_object_name); fflush(stderr);
       if (jump_from_c_to_goal) {
 #if defined(__APPLE__) && defined(__aarch64__)
         extern u8* g_goal_jit_stack_top;
@@ -662,6 +663,7 @@ void link_control::jak1_finish(bool jump_from_c_to_goal) {
 #if defined(__APPLE__) && defined(__aarch64__)
       pthread_jit_write_protect_np(0);
 #endif
+      fprintf(stderr, "[EE-TOPLEVEL] done: %s\n", m_object_name); fflush(stderr);
     }
 
     // inform compiler that we loaded.
