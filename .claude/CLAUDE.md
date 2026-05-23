@@ -13,10 +13,23 @@ This is a fork adding **native ARM64 (Apple Silicon)** support to OpenGOAL — a
 export LIBRARY_PATH="$LIBRARY_PATH:/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/lib"
 cmake -B build --preset=Release-macos-arm64-clang   # one-time configure
 cmake --build build --parallel $((`sysctl -n hw.logicalcpu`))
+cmake --build build --target gk --parallel $((`sysctl -n hw.logicalcpu`))  # just gk
 ./build/goalc-test                                   # all 616 unit tests
 ./build/goalc-test --gtest_filter="CodeTester.*"     # emitter/codegen tests only
 ./build/offline-test --iso_data_path iso_data/jak1 --game jak1  # needs ISO
 ```
+
+**CRITICAL: IR.cpp changes require CGO rebuild.** Edits to `goalc/compiler/IR.cpp` or the ARM64 emitter only affect future GOAL compilations. The pre-compiled CGOs in `iso_data/jak1/` must be regenerated:
+```sh
+./build/goalc/goalc -g jak1 -c "(build-kernel)"   # rebuild KERNEL.CGO
+./build/goalc/goalc -g jak1 -c "(build-game)"     # rebuild GAME.CGO (~9s for 519 targets)
+```
+
+**Boot timing (Apple Silicon M3 Pro, `-boot -debug -fakeiso`):**
+- IOP emulation init: ~3 minutes
+- GAME.CGO (346 objects) linking: ~11 minutes
+- Total to `time-of-day` module: ~14 minutes
+- Allow 25+ minutes for full boot to `kernel: machine started`
 
 ### ARM64-specific rules
 
