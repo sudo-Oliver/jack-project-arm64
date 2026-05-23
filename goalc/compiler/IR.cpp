@@ -905,16 +905,30 @@ void IR_IntegerMath::do_codegen_arm64(emitter::ObjectGenerator* gen,
                                       const AllocationResult& allocs,
                                       emitter::IR_Record irec) {
   switch (m_kind) {
-    case IntegerMathKind::ADD_64:
-      gen->add_instr(
-          IGen::add_gpr64_gpr64(*gen, get_reg(m_dest, allocs, irec), get_reg(m_arg, allocs, irec)),
-          irec);
+    case IntegerMathKind::ADD_64: {
+      auto dst = get_reg(m_dest, allocs, irec);
+      gen->add_instr(IGen::add_gpr64_gpr64(*gen, dst, get_reg(m_arg, allocs, irec)), irec);
+      // After converting a GOAL offset back to a host address (`.add sp off`), force 16-byte
+      // alignment. GOAL process stacks are allocated at process_struct_size + heap_base, and
+      // process_struct_size may not be a multiple of 16, making stack-top misaligned.
+      if (dst.id() == (int)ARM64_REG::SP) {
+        gen->add_instr(IGen::ARM64::and_sp_16byte_align(), irec);
+      }
       break;
-    case IntegerMathKind::SUB_64:
-      gen->add_instr(
-          IGen::sub_gpr64_gpr64(*gen, get_reg(m_dest, allocs, irec), get_reg(m_arg, allocs, irec)),
-          irec);
+    }
+    case IntegerMathKind::SUB_64: {
+      auto dst = get_reg(m_dest, allocs, irec);
+      auto src = get_reg(m_arg, allocs, irec);
+      // ARM64 shifted-register SUB encodes Rm=31 as XZR, not SP.
+      // Route SP through X16 (intra-procedure scratch) when it appears as src.
+      if (src.id() == (int)ARM64_REG::SP) {
+        gen->add_instr(IGen::mov_gpr64_gpr64(*gen, Register(ARM64_REG::X16), src), irec);
+        gen->add_instr(IGen::sub_gpr64_gpr64(*gen, dst, Register(ARM64_REG::X16)), irec);
+      } else {
+        gen->add_instr(IGen::sub_gpr64_gpr64(*gen, dst, src), irec);
+      }
       break;
+    }
     case IntegerMathKind::AND_64:
       gen->add_instr(
           IGen::and_gpr64_gpr64(*gen, get_reg(m_dest, allocs, irec), get_reg(m_arg, allocs, irec)),
@@ -1418,7 +1432,13 @@ void IR_LoadConstOffset::do_codegen_arm64(emitter::ObjectGenerator* gen,
   // For SIMD destinations (FLOAT/VECTOR), dest_reg is a SIMD register and cannot be used
   // for GPR address arithmetic.  Use X16 (IP0 scratch) for address computation instead.
   const bool dest_is_simd = (m_dest->ireg().reg_class != RegClass::GPR_64);
-  auto addr_scratch = dest_is_simd ? emitter::Register(emitter::X16) : dest_reg;
+  // ARM64: In load instructions, Rt=31 encodes XZR (not SP) — the result would be silently
+  // discarded. Furthermore, Rn=SP in a load instruction requires SP to be 16-byte aligned
+  // (EXC_ARM_SP_ALIGN). Use X16 for both address scratch and the load, then ADD SP, X16, #0.
+  const bool dest_is_sp =
+      (!dest_is_simd && dest_reg.id() == (int)emitter::ARM64_REG::SP);
+  auto addr_scratch =
+      (dest_is_simd || dest_is_sp) ? emitter::Register(emitter::X16) : dest_reg;
 
   auto effective_base = base_reg;
   if (m_offset != 0) {
@@ -1450,9 +1470,14 @@ void IR_LoadConstOffset::do_codegen_arm64(emitter::ObjectGenerator* gen,
   }
 
   if (m_dest->ireg().reg_class == RegClass::GPR_64) {
-    gen->add_instr(IGen::load_goal_gpr(*gen, dest_reg, effective_base, off_reg,
+    // When dest_is_sp: load into X16, then move X16 → SP with ADD SP, X16, #0.
+    auto load_dest = dest_is_sp ? emitter::Register(emitter::X16) : dest_reg;
+    gen->add_instr(IGen::load_goal_gpr(*gen, load_dest, effective_base, off_reg,
                                        0, m_info.size, m_info.sign_extend),
                    irec);
+    if (dest_is_sp) {
+      gen->add_instr(IGen::lea_reg_plus_off(*gen, dest_reg, load_dest, 0), irec);
+    }
   } else if (m_dest->ireg().reg_class == RegClass::FLOAT && m_info.size == 4 &&
              m_info.sign_extend == false && m_info.reg == RegClass::FLOAT) {
     gen->add_instr(IGen::load_goal_xmm32(*gen, dest_reg, effective_base, off_reg, 0), irec);
@@ -2101,16 +2126,22 @@ void IR_GetSymbolValueAsm::do_codegen_arm64(emitter::ObjectGenerator* gen,
                                             const AllocationResult& allocs,
                                             emitter::IR_Record irec) {
   auto dst_reg = m_use_coloring ? get_reg(m_dest, allocs, irec) : get_no_color_reg(m_dest);
-  emit_arm64_symbol_offset_load(gen, irec, dst_reg, m_sym_name);
-  gen->add_instr(IGen::add_gpr64_gpr64(*gen, dst_reg, gen->get_st_reg()), irec);
+  // When dst_reg is SP (id=31), MOVZ/MOVK/SXTW/LDR all treat Rd=31 as XZR, not SP.
+  // Route through X16 (ARM64 IP0, a designated scratch register) and MOV SP, X16 at the end.
+  auto compute_reg = (dst_reg.id() == ARM64_REG::SP) ? Register(ARM64_REG::X16) : dst_reg;
+  emit_arm64_symbol_offset_load(gen, irec, compute_reg, m_sym_name);
+  gen->add_instr(IGen::add_gpr64_gpr64(*gen, compute_reg, gen->get_st_reg()), irec);
   if (m_sext) {
-    gen->add_instr(IGen::load32s_gpr64_gpr64_plus_gpr64(*gen, dst_reg, dst_reg,
+    gen->add_instr(IGen::load32s_gpr64_gpr64_plus_gpr64(*gen, compute_reg, compute_reg,
                                                         gen->get_offset_reg()),
                    irec);
   } else {
-    gen->add_instr(IGen::load32u_gpr64_gpr64_plus_gpr64(*gen, dst_reg, dst_reg,
+    gen->add_instr(IGen::load32u_gpr64_gpr64_plus_gpr64(*gen, compute_reg, compute_reg,
                                                         gen->get_offset_reg()),
                    irec);
+  }
+  if (dst_reg.id() == ARM64_REG::SP) {
+    gen->add_instr(IGen::mov_gpr64_gpr64(*gen, dst_reg, compute_reg), irec);
   }
 }
 

@@ -29,11 +29,20 @@ static inline u32 qreg(Register r) {
 }
 
 InstructionARM64 mov_gpr64_gpr64(Register dst, Register src) {
+  ASSERT(dst.is_gpr(instr_set));
+  ASSERT(src.is_gpr(instr_set));
+  if (dst.id() == ARM64_REG::SP || src.id() == ARM64_REG::SP) {
+    // ORR encodes reg31 as XZR, not SP. Use ADD immediate form instead:
+    //   MOV SP, Xn  == ADD SP, Xn, #0  (Rd=31=SP, Rn=Xn)
+    //   MOV Xd, SP  == ADD Xd, SP, #0  (Rd=Xd, Rn=31=SP)
+    // In the ADD-immediate encoding both Rn=31 and Rd=31 are interpreted as SP.
+    // Encoding: 1_0_0_100010_0_000000000000_Rn_Rd  (ADD Xd|SP, Xn|SP, #0)
+    // https://www.scs.stanford.edu/~zyedidia/arm64/add_addsub_imm.html
+    return InstructionARM64(Base(0b1001000100, 10), Imm12(0), Rn(src.id()), Rd(dst.id()));
+  }
   // MOV Xd, Xn — alias for ORR Xd, XZR, Xn (shifted reg, no shift)
   // Encoding: 1_01_01010_00_0_Rm_000000_11111_Rd
   // https://www.scs.stanford.edu/~zyedidia/arm64/orr_log_shift.html
-  ASSERT(dst.is_gpr(instr_set));
-  ASSERT(src.is_gpr(instr_set));
   return InstructionARM64(Base(0b10101010000, 11), Rm(src.id()), Rn(31), Rd(dst.id()));
 }
 
@@ -914,20 +923,48 @@ InstructionARM64 sub_gpr64_imm_lsl12(Register reg, u32 imm12) {
 }
 
 InstructionARM64 add_gpr64_gpr64(Register dst, Register src) {
-  // ADD Xd, Xn, Xm — data processing (shifted register, shift=0)
-  // Encoding: 1_0_0_01011_00_0_Rm_000000_Rn_Rd
-  // https://www.scs.stanford.edu/~zyedidia/arm64/add_addsub_shift.html
   ASSERT(dst.is_gpr(instr_set));
   ASSERT(src.is_gpr(instr_set));
+  // The shifted-register form encodes reg31 as XZR, so SP as dst or src gives a silent NOP.
+  // Use the extended-register form (UXTX, shift=0) whenever SP is involved — it correctly
+  // reads/writes reg31 as SP in the Rn and Rd positions.
+  // Encoding: 1_0_0_01011_00_1_Rm_011_000_Rn_Rd  (ADD extended, 64-bit, UXTX)
+  // https://www.scs.stanford.edu/~zyedidia/arm64/add_addsub_ext.html
+  if (dst.id() == ARM64_REG::SP) {
+    // ADD SP, SP, Xm, UXTX — Rn=Rd=SP=31, Rm=src
+    return InstructionARM64(Base(0b10001011001, 11), Rm(src.id()), Field{3u << 13},
+                            Rn(ARM64_REG::SP), Rd(ARM64_REG::SP));
+  }
+  if (src.id() == ARM64_REG::SP) {
+    // ADD Xd, SP, Xd, UXTX — commutative: put SP in Rn (valid), dst reg in Rm
+    // Rm=31 in extended form would be XZR, so we swap operands to keep SP in Rn.
+    return InstructionARM64(Base(0b10001011001, 11), Rm(dst.id()), Field{3u << 13},
+                            Rn(ARM64_REG::SP), Rd(dst.id()));
+  }
+  // Non-SP case: shifted register form (ADD Xd, Xn, Xm, shift=0)
+  // Encoding: 1_0_0_01011_00_0_Rm_000000_Rn_Rd
+  // https://www.scs.stanford.edu/~zyedidia/arm64/add_addsub_shift.html
   return InstructionARM64(Base(0b10001011000, 11), Rm(src.id()), Rn(dst.id()), Rd(dst.id()));
 }
 
 InstructionARM64 sub_gpr64_gpr64(Register dst, Register src) {
-  // SUB Xd, Xn, Xm — data processing (shifted register, shift=0)
-  // Encoding: 1_1_0_01011_00_0_Rm_000000_Rn_Rd
-  // https://www.scs.stanford.edu/~zyedidia/arm64/sub_addsub_shift.html
   ASSERT(dst.is_gpr(instr_set));
   ASSERT(src.is_gpr(instr_set));
+  // Same SP issue as add_gpr64_gpr64: use extended-register form when dst=SP.
+  // Encoding: 1_1_0_01011_00_1_Rm_011_000_Rn_Rd  (SUB extended, 64-bit, UXTX)
+  // https://www.scs.stanford.edu/~zyedidia/arm64/sub_addsub_ext.html
+  if (dst.id() == ARM64_REG::SP) {
+    // SUB SP, SP, Xm, UXTX — Rn=Rd=SP=31, Rm=src
+    return InstructionARM64(Base(0b11001011001, 11), Rm(src.id()), Field{3u << 13},
+                            Rn(ARM64_REG::SP), Rd(ARM64_REG::SP));
+  }
+  // SUB with src=SP in Rm is not supported (Rm=31 in extended form = XZR, not SP).
+  // This case does not arise in GOAL gkernel.gc; only (.sub sp off) patterns are used.
+  ASSERT_MSG(src.id() != ARM64_REG::SP,
+             "sub_gpr64_gpr64: src=SP unsupported (Rm=31 = XZR in extended form)");
+  // Non-SP case: shifted register form (SUB Xd, Xn, Xm, shift=0)
+  // Encoding: 1_1_0_01011_00_0_Rm_000000_Rn_Rd
+  // https://www.scs.stanford.edu/~zyedidia/arm64/sub_addsub_shift.html
   return InstructionARM64(Base(0b11001011000, 11), Rm(src.id()), Rn(dst.id()), Rd(dst.id()));
 }
 
@@ -1037,6 +1074,13 @@ InstructionARM64 and_gpr64_gpr64(Register dst, Register src) {
   ASSERT(dst.is_gpr(instr_set));
   ASSERT(src.is_gpr(instr_set));
   return InstructionARM64(Base(0b10001010000, 11), Rm(src.id()), Rn(dst.id()), Rd(dst.id()));
+}
+
+InstructionARM64 and_sp_16byte_align() {
+  // AND SP, SP, #0xfffffffffffffff0 — force 16-byte SP alignment.
+  // AND (immediate): sf=1, opc=00, N=1, immr=4, imms=59, Rn=31, Rd=31
+  // Computed: 0x9244EFFF
+  return InstructionARM64(0x9244EFFFu);
 }
 
 InstructionARM64 xor_gpr64_gpr64(Register dst, Register src) {
