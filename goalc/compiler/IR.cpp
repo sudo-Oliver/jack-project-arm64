@@ -1415,10 +1415,13 @@ void IR_LoadConstOffset::do_codegen_arm64(emitter::ObjectGenerator* gen,
   auto base_reg = m_use_coloring ? get_reg(m_base, allocs, irec) : get_no_color_reg(m_base);
   auto off_reg = gen->get_offset_reg();
 
-  // For SIMD destinations (FLOAT/VECTOR), dest_reg is a SIMD register and cannot be used
-  // for GPR address arithmetic.  Use X16 (IP0 scratch) for address computation instead.
+  // For SIMD destinations (FLOAT/VECTOR), dest_reg cannot be used for GPR address arithmetic.
+  // For SP (reg 31): LDR/STR encode Rt=31 as XZR (not SP), so we must load into X16 and
+  // then MOV SP, X16.  Use X16 (IP0 scratch) for address computation in both cases.
   const bool dest_is_simd = (m_dest->ireg().reg_class != RegClass::GPR_64);
-  auto addr_scratch = dest_is_simd ? emitter::Register(emitter::X16) : dest_reg;
+  const bool dest_is_sp = (!dest_is_simd && dest_reg.id() == 31);
+  auto addr_scratch =
+      (dest_is_simd || dest_is_sp) ? emitter::Register(emitter::X16) : dest_reg;
 
   auto effective_base = base_reg;
   if (m_offset != 0) {
@@ -1450,9 +1453,15 @@ void IR_LoadConstOffset::do_codegen_arm64(emitter::ObjectGenerator* gen,
   }
 
   if (m_dest->ireg().reg_class == RegClass::GPR_64) {
-    gen->add_instr(IGen::load_goal_gpr(*gen, dest_reg, effective_base, off_reg,
+    // When dest=SP (id==31): LDR Rt=31 is XZR in all ARM64 load encodings (not SP).
+    // Load into X16 scratch then MOV SP, X16 (= ADD SP, X16, #0).
+    auto load_dst = dest_is_sp ? emitter::Register(emitter::X16) : dest_reg;
+    gen->add_instr(IGen::load_goal_gpr(*gen, load_dst, effective_base, off_reg,
                                        0, m_info.size, m_info.sign_extend),
                    irec);
+    if (dest_is_sp) {
+      gen->add_instr(IGen::ARM64::mov_gpr64_gpr64(dest_reg, load_dst), irec);
+    }
   } else if (m_dest->ireg().reg_class == RegClass::FLOAT && m_info.size == 4 &&
              m_info.sign_extend == false && m_info.reg == RegClass::FLOAT) {
     gen->add_instr(IGen::load_goal_xmm32(*gen, dest_reg, effective_base, off_reg, 0), irec);
@@ -1827,7 +1836,9 @@ void IR_AsmRet::do_codegen_arm64(emitter::ObjectGenerator* gen,
                                  const AllocationResult& allocs,
                                  emitter::IR_Record irec) {
   (void)allocs;
-  gen->add_instr(IGen::ret(*gen), irec);
+  // Return via X28 which holds the saved LR from do_asm_function_arm64 prologue.
+  // Using a register (not stack) is safe even if the asm function modified SP.
+  gen->add_instr(IGen::ret_rn(*gen, emitter::Register(emitter::X28)), irec);
 }
 
 ///////////////////////
@@ -2101,16 +2112,23 @@ void IR_GetSymbolValueAsm::do_codegen_arm64(emitter::ObjectGenerator* gen,
                                             const AllocationResult& allocs,
                                             emitter::IR_Record irec) {
   auto dst_reg = m_use_coloring ? get_reg(m_dest, allocs, irec) : get_no_color_reg(m_dest);
-  emit_arm64_symbol_offset_load(gen, irec, dst_reg, m_sym_name);
-  gen->add_instr(IGen::add_gpr64_gpr64(*gen, dst_reg, gen->get_st_reg()), irec);
+  // When dst=SP (id==31): MOVZ/MOVK/LDR all encode Rd/Rt=31 as XZR, not SP.
+  // Use X16 (IP0 scratch) for all intermediate computation; MOV SP, X16 at the end.
+  const bool dst_is_sp = (dst_reg.id() == 31);
+  auto work_reg = dst_is_sp ? emitter::Register(emitter::X16) : dst_reg;
+  emit_arm64_symbol_offset_load(gen, irec, work_reg, m_sym_name);
+  gen->add_instr(IGen::add_gpr64_gpr64(*gen, work_reg, gen->get_st_reg()), irec);
   if (m_sext) {
-    gen->add_instr(IGen::load32s_gpr64_gpr64_plus_gpr64(*gen, dst_reg, dst_reg,
+    gen->add_instr(IGen::load32s_gpr64_gpr64_plus_gpr64(*gen, work_reg, work_reg,
                                                         gen->get_offset_reg()),
                    irec);
   } else {
-    gen->add_instr(IGen::load32u_gpr64_gpr64_plus_gpr64(*gen, dst_reg, dst_reg,
+    gen->add_instr(IGen::load32u_gpr64_gpr64_plus_gpr64(*gen, work_reg, work_reg,
                                                         gen->get_offset_reg()),
                    irec);
+  }
+  if (dst_is_sp) {
+    gen->add_instr(IGen::ARM64::mov_gpr64_gpr64(dst_reg, work_reg), irec);
   }
 }
 

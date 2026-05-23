@@ -114,6 +114,7 @@
 
 (defbehavior init-time-of-day time-of-day-proc ()
   "Initialize the time-of-day process"
+  (format 0 "TOD: init-time-of-day start~%")
   (stack-size-set! (-> self main-thread) 128)
   (set! (-> self year) 0)
   (set! (-> self month) 0)
@@ -126,16 +127,23 @@
   (set! (-> self time-of-day) 0.0)
   (if *time-of-day-fast* (set! (-> self time-ratio) 18000.0) (set! (-> self time-ratio) 300.0))
   (set! (-> self star-count) 0)
+  (format 0 "TOD: init about to create-launch-control~%")
   (set! (-> self stars) (create-launch-control group-stars self))
+  (format 0 "TOD: init stars done~%")
   (set! (-> self sun) (create-launch-control group-sun self))
+  (format 0 "TOD: init sun done~%")
   (set! (-> self green-sun) (create-launch-control group-green-sun self))
+  (format 0 "TOD: init green-sun done, going to time-of-day-tick~%")
   (go time-of-day-tick)
   (none))
 
 (defun start-time-of-day ()
   "Start up the time of day process. Kill any existing ones"
+  (format 0 "TOD: start-time-of-day: kill-by-name~%")
   (kill-by-name 'time-of-day-proc *active-pool*)
+  (format 0 "TOD: start-time-of-day: process-spawn~%")
   (set! *time-of-day-proc* (process-spawn time-of-day-proc :init init-time-of-day))
+  (format 0 "TOD: start-time-of-day: done~%")
   (none))
 
 (defun time-of-day-setup ((arg0 symbol))
@@ -455,4 +463,6 @@
   #f)
 
 ;; start the time of day process!!
+(format 0 "TOD: calling start-time-of-day~%")
 (start-time-of-day)
+(format 0 "TOD: start-time-of-day returned~%")

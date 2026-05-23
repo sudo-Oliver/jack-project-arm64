@@ -392,6 +392,24 @@ TEST(CodeTester, execute_push_pop_gprs_arm64) {
 #endif
 }
 
+// Verify add/sub/mov_gpr64_gpr64 use extended-register form when dst=SP (id=31),
+// preventing the shifted-register Rd=31→XZR bug that made all SP arithmetic a NOP.
+TEST(CodeTester, add_sub_mov_sp_arm64) {
+  using namespace emitter;
+  using emitter::ARM64_REG;
+  CodeTester tester(InstructionSet::ARM64);
+  tester.init_code_buffer(64);
+  // ADD SP, SP, X0, UXTX #0  → 0x8B2063FF → ff 63 20 8b
+  tester.emit(IGen::ARM64::add_gpr64_gpr64(Register(ARM64_REG::SP), Register(ARM64_REG::X0)));
+  // SUB SP, SP, X0, UXTX #0  → 0xCB2063FF → ff 63 20 cb
+  tester.emit(IGen::ARM64::sub_gpr64_gpr64(Register(ARM64_REG::SP), Register(ARM64_REG::X0)));
+  // MOV SP, X0 = ADD SP, X0, #0  → 0x9100001F → 1f 00 00 91
+  tester.emit(IGen::ARM64::mov_gpr64_gpr64(Register(ARM64_REG::SP), Register(ARM64_REG::X0)));
+  // MOV X0, SP = ADD X0, SP, #0  → 0x910003E0 → e0 03 00 91
+  tester.emit(IGen::ARM64::mov_gpr64_gpr64(Register(ARM64_REG::X0), Register(ARM64_REG::SP)));
+  EXPECT_EQ(tester.dump_to_hex_string(), "ff 63 20 8b ff 63 20 cb 1f 00 00 91 e0 03 00 91");
+}
+
 // Tests for new pre/post-indexed SIMD push/pop instructions (push_xmm128, pop_xmm128)
 // and STP/LDP pair variants (stp_xmm128_pair, ldp_xmm128_pair).
 // These are the canonical callee-saved Q-register save/restore path for ARM64 GOAL functions.

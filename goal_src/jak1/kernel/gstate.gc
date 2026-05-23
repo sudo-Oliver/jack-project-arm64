@@ -298,7 +298,9 @@ It type checks the arguments for the entry function.
        ;; tell the kernel that we did a go during init
        (set! (-> pp status) 'initialize-go)
        ;; abandon this thread, go back to what initialized us!
+       (format 0 "GSTATE: about to throw 'initialize~%")
        (throw 'initialize #t)
+       (format 0 "GSTATE: throw returned (BAD)~%")
        #t)
       ((!= (-> *kernel-context* current-process) pp)
        ;; we aren't actually in process pp right now.

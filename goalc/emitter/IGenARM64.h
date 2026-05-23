@@ -376,6 +376,7 @@ InstructionARM64 store64_gpr64_plus_s32(Register addr, int32_t offset, Register 
  * Function return. Pops the 64-bit return address (real) off the stack and jumps to it.
  */
 InstructionARM64 ret();
+InstructionARM64 ret_rn(Register reg);
 
 /*!
  * Instruction to push gpr (64-bits) onto the stack

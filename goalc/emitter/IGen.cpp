@@ -601,6 +601,10 @@ Instruction ret(const ObjectGenerator& gen) {
   IGEN_DISPATCH(ret);
 }
 
+Instruction ret_rn(const ObjectGenerator& gen, Register reg) {
+  IGEN_DISPATCH(ret_rn, reg);
+}
+
 Instruction push_gpr64(const ObjectGenerator& gen, Register reg) {
   IGEN_DISPATCH(push_gpr64, reg);
 }

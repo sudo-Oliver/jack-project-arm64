@@ -281,6 +281,15 @@ void Compiler::color_object_file(FileEnv* env) {
       input.debug_settings.print_analysis = true;
       input.debug_settings.allocate_log_level = 2;
     }
+#if defined(__aarch64__)
+    // Temporary: dump IR + regalloc for new catch-frame to diagnose ARM64 store-zero bug
+    if (f->name().find("catch-frame") != std::string::npos) {
+      for (auto& i : f->code()) {
+        input.debug_instruction_names.push_back(i->print());
+      }
+      input.debug_settings.print_result = true;
+    }
+#endif
 
     m_debug_stats.total_funcs++;
 

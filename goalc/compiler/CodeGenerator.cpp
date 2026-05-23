@@ -567,6 +567,75 @@ void CodeGenerator::do_asm_function_arm64(FunctionEnv* env, int f_idx, bool allo
     throw std::runtime_error("ASM Function has variables on the stack.");
   }
 
+  // Detect IR_AsmRet / IR_AsmPop: kernel asm functions like thread-suspend and
+  // throw-dispatch use (.pop) to read the caller's return address from the stack
+  // (x86 CALL semantics). On ARM64 BLR puts return address in X30, not the stack,
+  // so we must differentiate two cases:
+  //
+  // has_asm_pop && has_asm_ret ("stack-managed"):
+  //   Prologue pushes X30 onto stack, emulating x86 CALL. (.pop) reads it.
+  //   IR_AsmRet emits LDR X30,[SP],#16 + RET X30 (pop-and-jump).
+  //
+  // !has_asm_pop && has_asm_ret ("register-saved"):
+  //   Prologue saves X30 into X28 (callee-saved). Safe even if SP changes.
+  //   IR_AsmRet emits RET X28.
+  bool has_asm_ret = false;
+  bool has_asm_pop = false;
+  bool has_asm_push = false;
+  for (auto& ir : env->code()) {
+    if (dynamic_cast<IR_AsmRet*>(ir.get())) {
+      has_asm_ret = true;
+    }
+    if (dynamic_cast<IR_AsmPop*>(ir.get())) {
+      has_asm_pop = true;
+    }
+    if (dynamic_cast<IR_AsmPush*>(ir.get())) {
+      has_asm_push = true;
+    }
+  }
+
+  if (has_asm_ret) {
+    auto x28 = emitter::Register(emitter::X28);
+    auto x30 = emitter::Register(emitter::X30);
+
+    if (has_asm_pop) {
+      // Stack-managed: push X30 so (.pop) reads the correct return address.
+      m_gen.add_instr_no_ir(f_rec, IGen::push_gpr64(m_gen, x30),
+                            InstructionInfo::Kind::PROLOGUE);
+    } else {
+      // Register-saved: MOV X28, X30 — safe even if asm function modifies SP.
+      m_gen.add_instr_no_ir(f_rec, IGen::mov_gpr64_gpr64(m_gen, x28, x30),
+                            InstructionInfo::Kind::PROLOGUE);
+    }
+
+    for (int ir_idx = 0; ir_idx < int(env->code().size()); ir_idx++) {
+      auto& ir = env->code().at(ir_idx);
+      auto i_rec = m_gen.add_ir(f_rec);
+      if (!allocs.stack_ops.at(ir_idx).ops.empty()) {
+        throw std::runtime_error("ASM Function used a bonus op.");
+      }
+      if (has_asm_pop && dynamic_cast<IR_AsmRet*>(ir.get())) {
+        // Pop return address from stack and jump there (LDR X30,[SP],#16 + RET X30).
+        m_gen.add_instr(IGen::pop_gpr64(m_gen, x30), i_rec);
+        m_gen.add_instr(IGen::ret_rn(m_gen, x30), i_rec);
+      } else {
+        ir->do_codegen_arm64(&m_gen, allocs, i_rec);
+      }
+    }
+    return;
+  }
+
+  // Non-IR_AsmRet path: compiler manages callee-saved reg save/restore.
+
+  // If this asm function pushes callee-saved regs to set up kernel state (thread-resume,
+  // reset-and-call), push X30 first. On x86, CALL pushes the return address before the
+  // callee-saved pushes; thread-suspend pops the callee-saved regs then RET which pops
+  // the return address. On ARM64 BLR does not push, so we must do it explicitly.
+  if (has_asm_push) {
+    auto x30 = emitter::Register(emitter::X30);
+    m_gen.add_instr_no_ir(f_rec, IGen::push_gpr64(m_gen, x30), InstructionInfo::Kind::PROLOGUE);
+  }
+
   // Collect callee-saved SIMD regs for prologue/epilogue.
   std::vector<emitter::Register> asm_saved_xmm;
   for (auto& saved_reg : allocs.used_saved_regs) {

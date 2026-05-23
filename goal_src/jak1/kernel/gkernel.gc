@@ -1594,11 +1594,21 @@
 (defun throw ((name symbol) value)
   "Dynamic throw."
   (rlet ((pp :reg r13 :type process))
+    (format 0 "KERNEL: throw called name=~A pp=~X sft=~X~%" name (the uint pp) (the uint (-> pp stack-frame-top)))
     (let ((cur (-> pp stack-frame-top)))
-      (while cur
+      (when (not cur)
+        (format 0 "KERNEL: throw stack-frame-top is null!~%"))
+      ;; use (!= 0) guard to avoid infinite loop when next field is integer 0 (not #f)
+      (while (and cur (!= (the int cur) 0))
+        (let ((raw (the (pointer uint32) (the uint cur))))
+          (format 0 "KERNEL: frame ~X raw[0]=~X raw[1]=~X raw[2]=~X~%"
+            (the uint cur) (-> raw 0) (-> raw 1) (-> raw 2)))
+        (format 0 "KERNEL: throw checking frame ~X type=~A name=~A~%" (the uint cur) (-> cur type) (-> cur name))
         (when (and (eq? (-> cur name) name) (eq? (-> cur type) catch-frame))
           ;; match!
-          (throw-dispatch (the catch-frame cur) value))
+          (format 0 "KERNEL: throw found catch-frame, calling throw-dispatch~%")
+          (throw-dispatch (the catch-frame cur) value)
+          (format 0 "KERNEL: throw-dispatch returned (BAD)~%"))
         (if (eq? (-> cur type) protect-frame)
           ;; call the cleanup function
           ((-> (the protect-frame cur) exit)))
@@ -1801,10 +1811,13 @@
                          (set! pp this)
                          ;; set us as initializing
                          (set! (-> pp status) 'initialize)
+                         ;; debug: verify catch-frame type is initialized
+                         (format 0 "KERNEL: catch-frame-type=~X pp=~X~%" (the uint catch-frame) (the uint pp))
                          ;; run!
                          (the object (new 'stack 'catch-frame 'initialize func param-array)))))
         ;; the function returned, either through a throw or through actually returning.
         ;; the status will give us a clue of what happened.
+        (format 0 "KERNEL: run-function-in-process returned, status=~A~%" (-> pp status))
         (case (-> pp status)
           (('initialize)
            ;; we returned and didn't change status.
@@ -1814,6 +1827,7 @@
           (('initialize-go)
            ;; we returned with a (suspend) or (go) ? not sure
            ;; either way, we're ready for next time!
+           (format 0 "KERNEL: run-function-in-process got initialize-go~%")
            (set! (-> pp status) 'waiting-to-run)
            (when (eq? (-> pp pool type) dead-pool-heap)
              ;; we can shrink the heap now.

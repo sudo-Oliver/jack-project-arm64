@@ -1358,6 +1358,13 @@ InstructionX86 ret() {
   return InstructionX86(0xc3);
 }
 
+InstructionX86 ret_rn(Register reg) {
+  // x86 has no "RET Rn"; ret_rn is ARM64-only — not callable on x86.
+  (void)reg;
+  ASSERT_MSG(false, "ret_rn is ARM64-only");
+  return InstructionX86(0xc3);
+}
+
 InstructionX86 push_gpr64(Register reg) {
   ASSERT(reg.is_gpr(instr_set));
   if (reg.hw_id(instr_set) >= 8) {

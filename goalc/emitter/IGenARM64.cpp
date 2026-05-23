@@ -29,11 +29,17 @@ static inline u32 qreg(Register r) {
 }
 
 InstructionARM64 mov_gpr64_gpr64(Register dst, Register src) {
+  ASSERT(dst.is_gpr(instr_set));
+  ASSERT(src.is_gpr(instr_set));
+  if (dst.id() == 31 || src.id() == 31) {
+    // MOV SP, Xn / MOV Xd, SP — must use ADD (immediate) with #0; in this encoding Rd/Rn=31→SP.
+    // ORR (logical shifted reg) encodes 31 as XZR, so it cannot reach SP.
+    // ADD (immediate): 1_0_0_100010_00_000000000000_Rn_Rd
+    return InstructionARM64(Base(0b10010001, 8), Rn(src.id()), Rd(dst.id()));
+  }
   // MOV Xd, Xn — alias for ORR Xd, XZR, Xn (shifted reg, no shift)
   // Encoding: 1_01_01010_00_0_Rm_000000_11111_Rd
   // https://www.scs.stanford.edu/~zyedidia/arm64/orr_log_shift.html
-  ASSERT(dst.is_gpr(instr_set));
-  ASSERT(src.is_gpr(instr_set));
   return InstructionARM64(Base(0b10101010000, 11), Rm(src.id()), Rn(31), Rd(dst.id()));
 }
 
@@ -770,6 +776,12 @@ InstructionARM64 ret() {
   return InstructionARM64(Base(0b1101011001011111000000, 22), Rn(30));
 }
 
+InstructionARM64 ret_rn(Register reg) {
+  // RET Xn — branch to address in arbitrary register
+  ASSERT(reg.is_gpr(instr_set));
+  return InstructionARM64(Base(0b1101011001011111000000, 22), Rn(reg.id()));
+}
+
 InstructionARM64 push_gpr64(Register reg) {
   // ARM64 stack grows down, so we subtract 16 from SP and store the register
   // Equivalent assembly: STR reg, [SP, #-16]!
@@ -914,20 +926,33 @@ InstructionARM64 sub_gpr64_imm_lsl12(Register reg, u32 imm12) {
 }
 
 InstructionARM64 add_gpr64_gpr64(Register dst, Register src) {
-  // ADD Xd, Xn, Xm — data processing (shifted register, shift=0)
-  // Encoding: 1_0_0_01011_00_0_Rm_000000_Rn_Rd
-  // https://www.scs.stanford.edu/~zyedidia/arm64/add_addsub_shift.html
   ASSERT(dst.is_gpr(instr_set));
   ASSERT(src.is_gpr(instr_set));
+  if (dst.id() == 31) {
+    // ADD SP, SP, Xm, UXTX #0 — extended register form; Rd=31→SP (not XZR).
+    // Shifted-register form (bit21=0) treats Rd=31 as XZR → NOP for SP writes.
+    // Extended register (bit21=1): 1_0_0_01011_00_1_Rm_011_000_Rn_Rd
+    // UXTX option=011 at [15:13], imm3=000 at [12:10] → Field(0x6000)
+    return InstructionARM64(Base(0b10001011001, 11), Rm(src.id()), Field(0x6000u), Rn(31), Rd(31));
+  }
+  // ADD Xd, Xd, Xm — data processing (shifted register, shift=0)
+  // Encoding: 1_0_0_01011_00_0_Rm_000000_Rn_Rd
+  // https://www.scs.stanford.edu/~zyedidia/arm64/add_addsub_shift.html
   return InstructionARM64(Base(0b10001011000, 11), Rm(src.id()), Rn(dst.id()), Rd(dst.id()));
 }
 
 InstructionARM64 sub_gpr64_gpr64(Register dst, Register src) {
-  // SUB Xd, Xn, Xm — data processing (shifted register, shift=0)
-  // Encoding: 1_1_0_01011_00_0_Rm_000000_Rn_Rd
-  // https://www.scs.stanford.edu/~zyedidia/arm64/sub_addsub_shift.html
   ASSERT(dst.is_gpr(instr_set));
   ASSERT(src.is_gpr(instr_set));
+  if (dst.id() == 31) {
+    // SUB SP, SP, Xm, UXTX #0 — extended register form; Rd=31→SP (not XZR).
+    // Extended register (bit21=1): 1_1_0_01011_00_1_Rm_011_000_Rn_Rd
+    // UXTX option=011 at [15:13], imm3=000 at [12:10] → Field(0x6000)
+    return InstructionARM64(Base(0b11001011001, 11), Rm(src.id()), Field(0x6000u), Rn(31), Rd(31));
+  }
+  // SUB Xd, Xd, Xm — data processing (shifted register, shift=0)
+  // Encoding: 1_1_0_01011_00_0_Rm_000000_Rn_Rd
+  // https://www.scs.stanford.edu/~zyedidia/arm64/sub_addsub_shift.html
   return InstructionARM64(Base(0b11001011000, 11), Rm(src.id()), Rn(dst.id()), Rd(dst.id()));
 }
 
