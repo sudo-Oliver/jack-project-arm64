@@ -47,6 +47,14 @@ emitter::Register Compiler::parse_register(const goos::Object& code) {
   }
 
   auto nas = code.as_symbol();
+  if (std::string_view(nas.name_ptr) == "lr") {
+#if defined(__aarch64__)
+    return emitter::Register(emitter::ARM64_REG::X30);
+#else
+    return emitter::Register(emitter::RAX);
+#endif
+  }
+
   for (int i = 0; i < 32; i++) {
     if (std::string_view(nas.name_ptr) == reg_names[i]) {
 #if defined(__aarch64__)

@@ -550,6 +550,7 @@
          (temp :reg rax :type uint)
          (off :reg r15 :type uint)
          (sp :reg rsp :type uint)
+         (lr :reg lr :type uint)
          (s0 :reg rbx :type uint)
          (s1 :reg rbp :type uint)
          (s2 :reg r10 :type uint)
@@ -563,8 +564,10 @@
          (xmm13 :reg xmm13 :class fpr)
          (xmm14 :reg xmm14 :class fpr)
          (xmm15 :reg xmm15 :class fpr))
-    ;; get the return address pushed by "call" in the suspend.
-    (.pop temp)
+    ;; get the return address. x86 call pushes it; ARM64 BLR stores it in LR.
+    (#if ARM64_PORT
+      (.mov :color #f temp lr)
+      (.pop temp))
     ;; convert to a GOAL address
     (.sub temp off)
     ;; store return address in thread
@@ -1371,7 +1374,40 @@
                                  ;; we're sleeping. Move us to suspended, in case we were in waiting to run.
                                  (set! (-> this status) 'suspended)
                                  ;; not sleeping. call resume hook. This will return once the main thread suspends again.
-                                 ((-> this main-thread resume-hook) (-> this main-thread)))
+                                 (begin
+                                   (#when ARM64_PORT
+                                     (format 0
+                                             "ARM64 dispatch proc=~X name=~A status=~A main=~X~%"
+                                             (the uint this)
+                                             (-> this name)
+                                             (-> this status)
+                                             (the uint (-> this main-thread)))
+                                     (format 0
+                                             "ARM64 dispatch hook=~X pc=~X sp=~X~%"
+                                             (the uint (-> this main-thread resume-hook))
+                                             (the uint (-> this main-thread pc))
+                                             (the uint (-> this main-thread sp)))
+                                     (format 0
+                                             "ARM64 dispatch r0=~X r1=~X r2=~X~%"
+                                             (the uint (-> this main-thread rreg 0))
+                                             (the uint (-> this main-thread rreg 1))
+                                             (the uint (-> this main-thread rreg 2)))
+                                     (format 0
+                                             "ARM64 dispatch r3=~X r4=~X r5=~X r6=~X~%"
+                                             (the uint (-> this main-thread rreg 3))
+                                             (the uint (-> this main-thread rreg 4))
+                                             (the uint (-> this main-thread rreg 5))
+                                             (the uint (-> this main-thread rreg 6))))
+                                   ((-> this main-thread resume-hook) (-> this main-thread))
+                                   (#when ARM64_PORT
+                                     (set! this (-> *kernel-context* current-process)))
+                                   (#when ARM64_PORT
+                                     (format 0
+                                             "ARM64 dispatch returned proc=~X status=~A pc=~X sp=~X~%"
+                                             (the uint this)
+                                             (-> this status)
+                                             (the uint (-> this main-thread pc))
+                                             (the uint (-> this main-thread sp))))))
                                ;; check for deadness
                                (cond
                                  ((eq? (-> this status) 'dead)
@@ -1453,6 +1489,7 @@
          (temp :reg rax :type uint)
          (off :reg r15 :type uint)
          (sp :reg rsp :type uint)
+         (lr :reg lr :type uint)
          (s0 :reg rbx :type uint)
          (s1 :reg rbp :type uint)
          (s2 :reg r10 :type (pointer uint64))
@@ -1472,8 +1509,11 @@
       (set! (-> this type) type-to-make)
       (set! (-> this name) name)
       ;; get the return address (the compiler won't touch the stack because we're an asm-func)
-      (.pop temp)
-      (.push temp)
+      (#if ARM64_PORT
+        (.mov :color #f temp lr)
+        (begin
+          (.pop temp)
+          (.push temp)))
       ;; make it a GOAL address so it fits in 32 bits
       (.sub temp off)
       ;; store it
@@ -1481,6 +1521,10 @@
       ;; todo, do we need a stack offset here?
       ;; remember the stack pointer
       (set! temp sp)
+      ;; ARM64 asm-func codegen saves LR with a 16-byte push. A throw must restore
+      ;; the caller's SP, not the constructor's internal LR-save slot.
+      (#when ARM64_PORT
+        (+! temp 16))
       (.sub temp off)
       (set! (-> this sp) (the int temp))
       ;; back up registers we care about
@@ -1536,6 +1580,7 @@
          (temp :reg rax :type uint)
          (off :reg r15 :type uint)
          (sp :reg rsp :type uint)
+         (lr :reg lr :type uint)
          (s0 :reg rbx :type uint)
          (s1 :reg rbp :type uint)
          (s2 :reg r10 :type (pointer uint64))
@@ -1582,11 +1627,17 @@
     ;; set stack pointer
     (set! sp (the uint (-> this sp)))
     (.add sp off)
-    ;; overwrite our return address
-    (.pop temp)
-    (set! temp (the uint (-> this ra)))
-    (.add temp off)
-    (.push temp)
+    ;; overwrite our return address. x86 RET reads the stack; ARM64 RET reads LR.
+    (#if ARM64_PORT
+      (begin
+        (set! temp (the uint (-> this ra)))
+        (.add :color #f temp off)
+        (.mov :color #f lr temp))
+      (begin
+        (.pop temp)
+        (set! temp (the uint (-> this ra)))
+        (.add temp off)
+        (.push temp)))
     ;; load the return register
     (.mov temp value)
     (.ret)))
@@ -1594,21 +1645,12 @@
 (defun throw ((name symbol) value)
   "Dynamic throw."
   (rlet ((pp :reg r13 :type process))
-    (format 0 "KERNEL: throw called name=~A pp=~X sft=~X~%" name (the uint pp) (the uint (-> pp stack-frame-top)))
     (let ((cur (-> pp stack-frame-top)))
-      (when (not cur)
-        (format 0 "KERNEL: throw stack-frame-top is null!~%"))
       ;; use (!= 0) guard to avoid infinite loop when next field is integer 0 (not #f)
       (while (and cur (!= (the int cur) 0))
-        (let ((raw (the (pointer uint32) (the uint cur))))
-          (format 0 "KERNEL: frame ~X raw[0]=~X raw[1]=~X raw[2]=~X~%"
-            (the uint cur) (-> raw 0) (-> raw 1) (-> raw 2)))
-        (format 0 "KERNEL: throw checking frame ~X type=~A name=~A~%" (the uint cur) (-> cur type) (-> cur name))
         (when (and (eq? (-> cur name) name) (eq? (-> cur type) catch-frame))
           ;; match!
-          (format 0 "KERNEL: throw found catch-frame, calling throw-dispatch~%")
-          (throw-dispatch (the catch-frame cur) value)
-          (format 0 "KERNEL: throw-dispatch returned (BAD)~%"))
+          (throw-dispatch (the catch-frame cur) value))
         (if (eq? (-> cur type) protect-frame)
           ;; call the cleanup function
           ((-> (the protect-frame cur) exit)))
@@ -1789,6 +1831,19 @@
   ;; allocate the main thread (sets everything up.)
   (let ((thread (new 'process 'cpu-thread this 'code PROCESS_STACK_SAVE_SIZE stack-top)))
     (set! (-> this main-thread) thread))
+  (#when ARM64_PORT
+    (when (eq? name 'hud-battle-enemy)
+      (format 0
+              "ARM64 activate hud this=~X main=~X top=~X ppointer=~X self=~X heap-cur=~X~%"
+              (the uint this)
+              (the uint (-> this main-thread))
+              (the uint (-> this top-thread))
+              (the uint (-> this ppointer))
+              (the uint (-> this self))
+              (the uint (-> this heap-cur)))))
+  (#when ARM64_PORT
+    (when (zero? (the-as uint (-> this main-thread)))
+      (set! (-> this main-thread) (the cpu-thread (-> this top-thread)))))
   (change-parent this dest))
 
 (defun run-function-in-process ((this process) (func function) a0 a1 a2 a3 a4 a5)
@@ -1796,7 +1851,8 @@
   The function will run until it attempts to change state. At the first attempt to change state,
   this function will return.  The idea is that you use this when you want to initialize a process NOW.
   This will then return the value of the function you called!"
-  (rlet ((pp :reg r13 :type process))
+  (rlet ((pp :reg r13 :type process)
+         (old-pp-reg :reg r12 :type process))
     (let ((param-array (new 'stack-no-clear 'array 'uint64 6)))
       ;; copy params to the stack.
       (set! (-> param-array 0) (the uint64 a0))
@@ -1805,19 +1861,18 @@
       (set! (-> param-array 3) (the uint64 a3))
       (set! (-> param-array 4) (the uint64 a4))
       (set! (-> param-array 5) (the uint64 a5))
-      (let* ((old-pp pp)
-             (func-val (begin
+      (let* ((func-val (begin
+                         ;; Keep old pp in a fixed callee-saved register. A normal local can be
+                         ;; clobbered by nested process-spawn/run-function-in-process on ARM64.
+                         (set! old-pp-reg pp)
                          ;; set the process
                          (set! pp this)
                          ;; set us as initializing
                          (set! (-> pp status) 'initialize)
-                         ;; debug: verify catch-frame type is initialized
-                         (format 0 "KERNEL: catch-frame-type=~X pp=~X~%" (the uint catch-frame) (the uint pp))
                          ;; run!
                          (the object (new 'stack 'catch-frame 'initialize func param-array)))))
         ;; the function returned, either through a throw or through actually returning.
         ;; the status will give us a clue of what happened.
-        (format 0 "KERNEL: run-function-in-process returned, status=~A~%" (-> pp status))
         (case (-> pp status)
           (('initialize)
            ;; we returned and didn't change status.
@@ -1827,14 +1882,13 @@
           (('initialize-go)
            ;; we returned with a (suspend) or (go) ? not sure
            ;; either way, we're ready for next time!
-           (format 0 "KERNEL: run-function-in-process got initialize-go~%")
            (set! (-> pp status) 'waiting-to-run)
            (when (eq? (-> pp pool type) dead-pool-heap)
              ;; we can shrink the heap now.
              (shrink-heap (the dead-pool-heap (-> pp pool)) pp)))
           (else (format 0 "GOT UNKNOWN INIT: ~A~%" (-> pp status))))
         ;; restore the old pp
-        (set! pp old-pp)
+        (set! pp old-pp-reg)
         func-val))))
 
 (defun set-to-run-bootstrap ()
@@ -1845,7 +1899,7 @@
    It also creates a return trampoline to return-from-thread-dead, so if the main thread returns, the
    process is properly cleaned up by deactivate."
   (declare (asm-func none)
-           ;;(print-asm)
+           (print-asm)
            )
   (rlet ((s0 :reg rbx :type uint)
          (s1 :reg rbp :type uint)

@@ -139,6 +139,14 @@ void KernelCheckAndDispatch() {
 
     Timer kernel_dispatch_timer;
     if (MasterUseKernel) {
+      if (dispatch_count == 1) {
+        auto strb = intern_from_c("set-to-run-bootstrap");
+        auto tres = intern_from_c("thread-resume");
+        fprintf(stderr,
+                "[KERNEL-DBG] kernel-dispatcher=0x%08x set-to-run-bootstrap=0x%08x "
+                "thread-resume=0x%08x\n",
+                kernel_dispatcher->value, strb->value, tres->value);
+      }
       // use the GOAL kernel.
       call_goal_on_stack(Ptr<Function>(kernel_dispatcher->value), goal_stack, s7.offset,
                          g_ee_main_mem);

@@ -62,6 +62,29 @@ u64 new_illegal(u32 allocation, u32 type) {
  */
 u64 alloc_from_heap(u32 heapSymbol, u32 type, s32 size, u32 pp) {
   using namespace jak1_symbols;
+  if (size <= 0) {
+    fprintf(stderr, "[ALLOC-DBG] bad alloc_from_heap heap=0x%08x type=0x%08x size=%d pp=0x%08x\n",
+            heapSymbol, type, size, pp);
+    if (type) {
+      Ptr<Type> typ(type);
+      const char* type_name = "<no-symbol>";
+      if (typ->symbol.offset && info(typ->symbol)->str.offset) {
+        type_name = info(typ->symbol)->str->data();
+      }
+      fprintf(stderr,
+              "[ALLOC-DBG] type=%s parent=0x%08x alloc=%u padded=%u heap_base=%u methods=%u "
+              "new=0x%08x\n",
+              type_name, typ->parent.offset, typ->allocated_size, typ->padded_size, typ->heap_base,
+              typ->num_methods, typ->new_method.offset);
+    }
+    if (pp && pp != UNKNOWN_PP) {
+      fprintf(stderr,
+              "[ALLOC-DBG] pp type=0x%08x status=0x%08x heap_base=0x%08x heap_top=0x%08x "
+              "heap_cur=0x%08x\n",
+              *Ptr<u32>(pp - BASIC_OFFSET), *Ptr<u32>(pp + 0x24), *Ptr<u32>(pp + 0x4c),
+              *Ptr<u32>(pp + 0x50), *Ptr<u32>(pp + 0x54));
+    }
+  }
   ASSERT(size > 0);
 
   // align to 16 bytes (part one)

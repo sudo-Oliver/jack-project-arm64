@@ -1,5 +1,9 @@
 #include "mips2c_table.h"
 
+#if defined(__APPLE__) && defined(__aarch64__)
+#include <libkern/OSCacheControl.h>
+#endif
+
 #include "common/log/log.h"
 #include "common/symbols.h"
 
@@ -15,6 +19,8 @@ extern "C" {
 void _mips2c_call_systemv();
 #elif defined __APPLE__ && defined __x86_64__
 void _mips2c_call_systemv() asm("_mips2c_call_systemv");
+#elif defined __APPLE__ && defined __aarch64__
+void _mips2c_call_arm64() asm("_mips2c_call_arm64");
 #endif
 void _mips2c_call_windows();
 }
@@ -669,6 +675,26 @@ void LinkedFunctionTable::reg(const std::string& name, u64 (*exec)(void*), u32 s
 
   // this is short stub that will jump to the appropriate function.
   Ptr<u8> jump_to_asm;
+#if defined(__APPLE__) && defined(__aarch64__)
+  Ptr<u8> raw;
+  switch (g_game_version) {
+    case GameVersion::Jak1:
+      raw = kmalloc(kcodeheap, 0x40, KMALLOC_MEMSET, "mips2c-trampoline");
+      *Ptr<u32>(raw.offset) = *(s7 + jak1_symbols::FIX_SYM_FUNCTION_TYPE);
+      break;
+    case GameVersion::Jak2:
+      raw = kmalloc(kcodeheap, 0x40, KMALLOC_MEMSET, "mips2c-trampoline");
+      *Ptr<u32>(raw.offset) = ::jak2::u32_in_fixed_sym(jak2_symbols::FIX_SYM_FUNCTION_TYPE);
+      break;
+    case GameVersion::Jak3:
+      raw = kmalloc(kcodeheap, 0x40, KMALLOC_MEMSET, "mips2c-trampoline");
+      *Ptr<u32>(raw.offset) = ::jak3::u32_in_fixed_sym(jak3_symbols::FIX_SYM_FUNCTION_TYPE);
+      break;
+    default:
+      ASSERT(false);
+  }
+  jump_to_asm = raw + BASIC_OFFSET;
+#else
   switch (g_game_version) {
     case GameVersion::Jak1:
       jump_to_asm = Ptr<u8>(::jak1::alloc_heap_object(s7.offset + jak1_symbols::FIX_SYM_GLOBAL_HEAP,
@@ -688,11 +714,46 @@ void LinkedFunctionTable::reg(const std::string& name, u64 (*exec)(void*), u32 s
     default:
       ASSERT(false);
   }
+#endif
 
   it.first->second.goal_trampoline = jump_to_asm;
 
   u8* ptr = jump_to_asm.c();
 
+#if defined(__APPLE__) && defined(__aarch64__)
+  {
+    uint64_t exec_addr = (uint64_t)exec;
+    uint64_t trampoline_addr = (uint64_t)_mips2c_call_arm64;
+    int offset = 0;
+
+    auto write_u32 = [&](uint32_t val) {
+      ptr[offset++] = val & 0xFF;
+      ptr[offset++] = (val >> 8) & 0xFF;
+      ptr[offset++] = (val >> 16) & 0xFF;
+      ptr[offset++] = (val >> 24) & 0xFF;
+    };
+
+    // x16 = exec function pointer
+    write_u32(0xD2800000u | ((exec_addr & 0xFFFFu) << 5) | 16u);
+    write_u32(0xF2A00000u | (((exec_addr >> 16) & 0xFFFFu) << 5) | 16u);
+    write_u32(0xF2C00000u | (((exec_addr >> 32) & 0xFFFFu) << 5) | 16u);
+    write_u32(0xF2E00000u | (((exec_addr >> 48) & 0xFFFFu) << 5) | 16u);
+
+    // x17 = MIPS2C stack reservation
+    write_u32(0xD2800000u | (((uint64_t)stack_size & 0xFFFFu) << 5) | 17u);
+    write_u32(0xF2A00000u | ((((uint64_t)stack_size >> 16) & 0xFFFFu) << 5) | 17u);
+
+    // x8 = shared ARM64 MIPS2C bridge
+    write_u32(0xD2800000u | ((trampoline_addr & 0xFFFFu) << 5) | 8u);
+    write_u32(0xF2A00000u | (((trampoline_addr >> 16) & 0xFFFFu) << 5) | 8u);
+    write_u32(0xF2C00000u | (((trampoline_addr >> 32) & 0xFFFFu) << 5) | 8u);
+    write_u32(0xF2E00000u | (((trampoline_addr >> 48) & 0xFFFFu) << 5) | 8u);
+
+    // br x8
+    write_u32(0xD61F0100u);
+    sys_icache_invalidate(ptr, 0x40);
+  }
+#else
   {
     // linux
 
@@ -739,6 +800,7 @@ void LinkedFunctionTable::reg(const std::string& name, u64 (*exec)(void*), u32 s
     ptr++;
     *ptr = 0xe0;
   }
+#endif
 }
 
 u32 LinkedFunctionTable::get(const std::string& name) {

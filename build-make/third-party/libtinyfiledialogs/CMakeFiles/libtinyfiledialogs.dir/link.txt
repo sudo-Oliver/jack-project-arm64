@@ -1,0 +1,1 @@
+/usr/bin/clang -g -arch arm64 -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk -dynamiclib -Wl,-headerpad_max_install_names -o liblibtinyfiledialogs.dylib -install_name @rpath/liblibtinyfiledialogs.dylib CMakeFiles/libtinyfiledialogs.dir/tinyfiledialogs.c.o

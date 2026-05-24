@@ -1,0 +1,27 @@
+
+# Consider dependencies only in project.
+set(CMAKE_DEPENDS_IN_PROJECT_ONLY OFF)
+
+# The set of languages for which implicit dependencies are needed:
+set(CMAKE_DEPENDS_LANGUAGES
+  )
+
+# The set of dependency files which are needed:
+set(CMAKE_DEPENDS_DEPENDENCY_FILES
+  "/Users/olli/Code/Jack/jack-project-arm64/test/offline/config/config.cpp" "CMakeFiles/offline-test.dir/test/offline/config/config.cpp.o" "gcc" "CMakeFiles/offline-test.dir/test/offline/config/config.cpp.o.d"
+  "/Users/olli/Code/Jack/jack-project-arm64/test/offline/framework/execution.cpp" "CMakeFiles/offline-test.dir/test/offline/framework/execution.cpp.o" "gcc" "CMakeFiles/offline-test.dir/test/offline/framework/execution.cpp.o.d"
+  "/Users/olli/Code/Jack/jack-project-arm64/test/offline/framework/file_management.cpp" "CMakeFiles/offline-test.dir/test/offline/framework/file_management.cpp.o" "gcc" "CMakeFiles/offline-test.dir/test/offline/framework/file_management.cpp.o.d"
+  "/Users/olli/Code/Jack/jack-project-arm64/test/offline/framework/orchestration.cpp" "CMakeFiles/offline-test.dir/test/offline/framework/orchestration.cpp.o" "gcc" "CMakeFiles/offline-test.dir/test/offline/framework/orchestration.cpp.o.d"
+  "/Users/olli/Code/Jack/jack-project-arm64/test/offline/offline_test_main.cpp" "CMakeFiles/offline-test.dir/test/offline/offline_test_main.cpp.o" "gcc" "CMakeFiles/offline-test.dir/test/offline/offline_test_main.cpp.o.d"
+  )
+
+# Targets to which this target links which contain Fortran sources.
+set(CMAKE_Fortran_TARGET_LINKED_INFO_FILES
+  )
+
+# Targets to which this target links which contain Fortran sources.
+set(CMAKE_Fortran_TARGET_FORWARD_LINKED_INFO_FILES
+  )
+
+# Fortran module output directory.
+set(CMAKE_Fortran_TARGET_MODULE_DIR "")

@@ -1,0 +1,1 @@
+/usr/bin/clang -g -arch arm64 -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk -dynamiclib -Wl,-headerpad_max_install_names -o libsqlite3.dylib -install_name @rpath/libsqlite3.dylib CMakeFiles/sqlite3.dir/sqlite3.c.o

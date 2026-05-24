@@ -276,6 +276,9 @@
         post))
 
 (defbehavior hud-init-by-other hud ((arg0 int))
+  (#when ARM64_PORT
+    (with-pp
+      (format 0 "ARM64 hud-init start self=~X pp=~X~%" (the uint self) (the uint pp))))
   (set! (-> self nb-of-icons) 0)
   (set! (-> self nb-of-particles) 0)
   (set! (-> self max-nb-of-particles) 7)
@@ -291,11 +294,26 @@
   (set! (-> self y-offset) 0)
   (set! (-> self next-y-offset) 0)
   (set-time! (-> self last-hide-time))
+  (#when ARM64_PORT
+    (with-pp
+      (format 0 "ARM64 hud-init before masks self=~X pp=~X~%" (the uint self) (the uint pp))))
   (logior! (-> self mask) (process-mask menu))
   (logclear! (-> self mask) (process-mask pause progress))
+  (#when ARM64_PORT
+    (with-pp
+      (format 0 "ARM64 hud-init before init-particles self=~X pp=~X~%" (the uint self) (the uint pp))))
   (init-particles! self arg0)
+  (#when ARM64_PORT
+    (with-pp
+      (format 0 "ARM64 hud-init after init-particles self=~X pp=~X~%" (the uint self) (the uint pp))))
   (draw-icons self)
+  (#when ARM64_PORT
+    (with-pp
+      (format 0 "ARM64 hud-init after draw-icons self=~X pp=~X~%" (the uint self) (the uint pp))))
   (draw-particles self)
+  (#when ARM64_PORT
+    (with-pp
+      (format 0 "ARM64 hud-init before go self=~X pp=~X~%" (the uint self) (the uint pp))))
   (go hud-hidden)
   (none))
 

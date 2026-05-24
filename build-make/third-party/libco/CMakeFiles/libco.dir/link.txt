@@ -1,0 +1,2 @@
+/usr/bin/ar qc liblibco.a CMakeFiles/libco.dir/libco.c.o
+/usr/bin/ranlib liblibco.a

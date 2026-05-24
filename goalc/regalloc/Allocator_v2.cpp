@@ -295,19 +295,25 @@ AssignmentOrder REG_temp_only_order = {{emitter::XMM7, emitter::XMM6, emitter::X
                                         emitter::XMM3, emitter::XMM2, emitter::XMM1, emitter::XMM0},
                                        {emitter::R9, emitter::R8, emitter::RCX, emitter::RDX,
                                         emitter::RSI, emitter::RDI, emitter::RAX}};
-std::vector<emitter::Register> allowable_local_var_move_elim = {
-    emitter::R9,    emitter::R8,    emitter::RCX,   emitter::RDX,  emitter::RSI,   emitter::RDI,
-    emitter::RAX,   emitter::RBX,   emitter::RBP,   emitter::R12,  emitter::R11,   emitter::R10,
-    emitter::XMM7,  emitter::XMM6,  emitter::XMM5,  emitter::XMM4, emitter::XMM3,  emitter::XMM2,
-    emitter::XMM1,  emitter::XMM0,  emitter::XMM8,  emitter::XMM9, emitter::XMM10, emitter::XMM11,
-    emitter::XMM12, emitter::XMM13, emitter::XMM14, emitter::XMM15};
-
 const std::vector<emitter::Register>& get_alloc_order(int var_idx,
                                                       const AllocationInput& in,
                                                       const RACache& cache,
                                                       bool saved_first) {
   bool is_gpr =
       emitter::reg_class_to_hw(cache.iregs.at(var_idx).reg_class) == emitter::HWRegKind::GPR;
+#if defined(__aarch64__)
+  // The legacy orders above are x86-register-id based. On ARM64 the XMM ids collide with
+  // special GPRs (XMM5 == x21/st, XMM6 == x22/off, etc.), so every ARM64 allocation path
+  // must use RegisterInfo's platform-specific safe orders.
+  (void)saved_first;
+  if (is_gpr) {
+    return in.is_asm_function ? emitter::gRegInfo.get_gpr_temp_alloc_order()
+                              : emitter::gRegInfo.get_gpr_alloc_order();
+  } else {
+    return in.is_asm_function ? emitter::gRegInfo.get_xmm_temp_alloc_order()
+                              : emitter::gRegInfo.get_xmm_alloc_order();
+  }
+#else
   if (in.is_asm_function) {
     if (is_gpr) {
       return REG_temp_only_order.gprs;
@@ -336,6 +342,7 @@ const std::vector<emitter::Register>& get_alloc_order(int var_idx,
       }
     }
   }
+#endif
 }
 
 /*!
@@ -641,6 +648,30 @@ bool vector_contains(const std::vector<T>& vec, const T& obj) {
   return false;
 }
 
+bool is_in_any_alloc_order(emitter::HWRegKind hw_kind, emitter::Register reg) {
+  switch (hw_kind) {
+    case emitter::HWRegKind::GPR:
+      return vector_contains(emitter::gRegInfo.get_gpr_alloc_order(), reg) ||
+             vector_contains(emitter::gRegInfo.get_gpr_temp_alloc_order(), reg) ||
+             vector_contains(emitter::gRegInfo.get_gpr_spill_alloc_order(), reg);
+    case emitter::HWRegKind::XMM:
+      return vector_contains(emitter::gRegInfo.get_xmm_alloc_order(), reg) ||
+             vector_contains(emitter::gRegInfo.get_xmm_temp_alloc_order(), reg) ||
+             vector_contains(emitter::gRegInfo.get_xmm_spill_alloc_order(), reg);
+    default:
+      return false;
+  }
+}
+
+bool can_local_var_move_eliminate(const RACache& cache,
+                                  int target_var_idx,
+                                  int other_var_idx,
+                                  emitter::Register reg) {
+  auto target_hw_kind = emitter::reg_class_to_hw(cache.iregs.at(target_var_idx).reg_class);
+  auto other_hw_kind = emitter::reg_class_to_hw(cache.iregs.at(other_var_idx).reg_class);
+  return target_hw_kind == other_hw_kind && is_in_any_alloc_order(target_hw_kind, reg);
+}
+
 /*!
  * Is it okay to assign the given variable to the register?
  */
@@ -648,7 +679,8 @@ bool check_register_assign_at(const AllocationInput& input,
                               RACache& cache,
                               int var_idx,
                               int instr_idx,
-                              emitter::Register reg) {
+                              emitter::Register reg,
+                              bool allow_clobber_for_stack_read = false) {
   // Step 1: check other assignments
 
   // look at everybody else in the interference graph
@@ -687,8 +719,14 @@ bool check_register_assign_at(const AllocationInput& input,
 
   if (vector_contains(instr.clobber, reg)) {
     // there's two cases where this is okay.
+    // 0: for a spilled stack variable used as a read-only temporary at this instruction, the
+    // stack slot remains authoritative after the instruction. This is required for function
+    // arguments on ARM64: the arg register is read by the call and then caller-clobbered.
+    if (allow_clobber_for_stack_read) {
+      // ok
+    }
     // 1: if we aren't live-out. The clobber won't clobber anything.
-    if (!cache.liveout_per_instr.at(instr_idx)[var_idx]) {
+    else if (!cache.liveout_per_instr.at(instr_idx)[var_idx]) {
       // ok
     } else {
       // otherwise, we need to write it.
@@ -890,8 +928,9 @@ loop_top:
       auto& check_other_var = cache->vars.at(check_other_reg);
       if (check_other_var.assigned_to_reg()) {
         auto reg = check_other_var.reg();
-        if (vector_contains(allowable_local_var_move_elim, reg)) {
-          if (check_register_assign_at(input, *cache, var_idx, instr_idx, reg)) {
+        if (can_local_var_move_eliminate(*cache, var_idx, check_other_reg, reg)) {
+          if (check_register_assign_at(input, *cache, var_idx, instr_idx, reg,
+                                       is_read && !is_written)) {
             var.set_stack_slot_reg(reg, instr_idx);
             bonus.reg = reg;
             bonus.slot = my_slot;
@@ -903,7 +942,8 @@ loop_top:
     }
 
     for (auto reg : order) {
-      if (check_register_assign_at(input, *cache, var_idx, instr_idx, reg)) {
+      if (check_register_assign_at(input, *cache, var_idx, instr_idx, reg,
+                                   is_read && !is_written)) {
         var.set_stack_slot_reg(reg, instr_idx);
         bonus.reg = reg;
         bonus.slot = my_slot;
@@ -949,10 +989,14 @@ loop_top:
       return false;
     }
 
-    bonus.load = is_read;
+    if (!is_written && instr_idx == var.first_live() && instr_idx < var.last_live()) {
+      bonus.store_before = true;
+    }
+
+    bonus.load = is_read && !bonus.store_before;
     bonus.store = is_written;
 
-    if (bonus.load || bonus.store) {
+    if (bonus.load || bonus.store || bonus.store_before) {
       bonus_ops.push_back(BonusToAdd{bonus, instr_idx});
     }
   }
@@ -1012,7 +1056,7 @@ bool run_assignment_on_var(const AllocationInput& input,
       const auto& other_var = cache->vars.at(other_live_var_idx);
       if (other_var.assigned_to_reg() &&
           safe_overlap(input, *cache, var, other_var, var.first_live())) {
-        if (vector_contains(allowable_local_var_move_elim, other_var.reg())) {
+        if (can_local_var_move_eliminate(*cache, var_idx, other_live_var_idx, other_var.reg())) {
           bool worked = check_register_assign(input, *cache, var_idx, other_var.reg());
           if (trace) {
             lg::print("m0 trying var {} in {}: {}\n", cache->iregs.at(var_idx).to_string(),
@@ -1040,7 +1084,7 @@ bool run_assignment_on_var(const AllocationInput& input,
 
       if (other_var.assigned_to_reg() &&
           safe_overlap(input, *cache, var, other_var, var.last_live())) {
-        if (vector_contains(allowable_local_var_move_elim, other_var.reg())) {
+        if (can_local_var_move_eliminate(*cache, var_idx, other_live_var_idx, other_var.reg())) {
           bool worked = check_register_assign(input, *cache, var_idx, other_var.reg());
           if (trace) {
             lg::print("m1 trying var {} in {}: {}\n", cache->iregs.at(var_idx).to_string(),

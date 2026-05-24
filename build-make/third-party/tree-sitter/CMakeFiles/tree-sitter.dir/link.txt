@@ -1,0 +1,1 @@
+/usr/bin/clang -g -arch arm64 -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk -dynamiclib -Wl,-headerpad_max_install_names -o libtree-sitter.dylib -install_name @rpath/libtree-sitter.dylib "CMakeFiles/tree-sitter.dir/tree-sitter/lib/src/lib.c.o" "CMakeFiles/tree-sitter.dir/tree-sitter-opengoal/parser.c.o"

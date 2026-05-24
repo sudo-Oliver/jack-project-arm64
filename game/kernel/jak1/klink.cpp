@@ -635,7 +635,17 @@ void link_control::jak1_finish(bool jump_from_c_to_goal) {
 
   ObjectFileHeader* ofh = m_link_block_ptr.cast<ObjectFileHeader>().c();
   lg::debug("link finish: {}", m_object_name);
-  fprintf(stderr, "[EE-LINK] link finish: %s entry=0x%x\n", m_object_name, m_entry.offset); fflush(stderr);
+  fprintf(stderr,
+          "[EE-LINK] link finish: %s entry=0x%x seg0=0x%x+0x%x seg1=0x%x+0x%x seg2=0x%x+0x%x\n",
+          m_object_name,
+          m_entry.offset,
+          ofh->code_infos[0].offset,
+          ofh->code_infos[0].size,
+          ofh->code_infos[1].offset,
+          ofh->code_infos[1].size,
+          ofh->code_infos[2].offset,
+          ofh->code_infos[2].size);
+  fflush(stderr);
   if (ofh->object_file_version == 3) {
     // todo check function type of entry
 

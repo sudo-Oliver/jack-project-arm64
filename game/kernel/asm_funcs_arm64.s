@@ -119,20 +119,16 @@ _stack_call_arm64:
 
 ;; Call c++ code through mips2c.
 ;; GOAL will call a dynamically generated trampoline.
-;; The trampoline will have pushed the exec function and stack offset onto the stack
+;; The trampoline sets x16 = exec function and x17 = stack reservation.
 .global _mips2c_call_arm64
 .align 4
 _mips2c_call_arm64:
   stp	x29, x30, [sp, #-16]!
   mov	x29, sp
-  ;; TODO - this is really weird using half an XMM, this makes the arm assembly
-  ;; more difficult - this probably isn't required for arm?
-  ;; grab the address to call and put it in xmm0
-  ;; TODO - this stack pointer manipulation might be a problem for ARM64 which requires 16byte alignment
-  ;; sub sp, 8
-  ldr q0, [sp, #+16]
-  ;; grab the stack offset
-  ldr x0, [sp, #+8]
+
+  ;; Keep the fake GOAL stack reservation ABI-aligned before calling C++.
+  add x17, x17, #15
+  and x17, x17, #0xfffffffffffffff0
 
   ;; first, save quadword registers
   stp q15, q14, [sp, #-32]!
@@ -162,19 +158,16 @@ _mips2c_call_arm64:
 
   mov x0, sp ;; move the stack pointer to the new position
 
-  sub sp, sp, x8 ;; allocate space on the stack for GOAL fake stack
-  stp x8, x8, [sp, #-16]! ;; and remember this so we can find our way back
+  sub sp, sp, x17 ;; allocate space on the stack for GOAL fake stack
+  str x17, [sp, #-16]! ;; and remember this so we can find our way back
 
-  ;; TODO - this used to be a movq rax, xmm0
-  ;; TODO - not sure why an `xmm` was used because that movq only uses the lower 64bits anyway
-  mov x0, v0.d[0] ; represents the lower 64 bits of q0
-  blr x8 ;; call!
+  blr x16 ;; call!
 
   ;; unallocate
-  ldp x8, x8, [sp], #16
-  add sp, sp, x8
+  ldr x17, [sp], #16
+  add sp, sp, x17
 
-  ldr x8, [sp, #+32]
+  ldr x0, [sp, #+32]
 
   add sp, sp, 1280 ; reset the stackpointer back
 
@@ -183,7 +176,6 @@ _mips2c_call_arm64:
   ldp q12, q13, [sp], #32
   ldp q14, q15, [sp], #32
 
-  add sp, sp, 24 ;; 16 for the stuff pushed by trampoline
   ldp	x29, x30, [sp], #16
   ret
 
@@ -294,13 +286,10 @@ _call_goal_on_stack_asm_arm64:
   stp x24, x25, [sp, #-16]!
   stp x26, x27, [sp, #-16]!
   stp x19, x28, [sp, #-16]!
-  ;; Save old host SP into x23 (callee-saved, preserved by GOAL ABI via saved-reg frame above)
-  ;; GOAL functions preserve x20, x21, x22 but MAY use x23 — however we've already saved x23
-  ;; on the host stack, and x23 is callee-saved per ARM64 ABI so a well-behaved callee restores it.
-  ;; The GOAL runtime sets x20/x21/x22 as GOAL reserved registers and must not clobber x23.
-  ;; throw-dispatch restores GOAL register context (including R12=X26, R13=X24, R14=X25, etc.)
-  ;; from the catch frame — those writes must not leak into the C++ caller's register state.
-  mov x23, sp
+  ;; Save old host SP into x28. GOAL asm maps x23/x26 as saved registers, and throw-dispatch
+  ;; can restore them from catch frames before this trampoline returns. x28 is kept outside
+  ;; GOAL allocation and asm-register mapping, so it is safe as the host-SP scratch.
+  mov x28, sp
 
   ;; Switch to GOAL stack, aligning to 16 bytes (ARM64 ABI requirement).
   ;; Reserve headroom below the stack top for compiler-generated prologues/spills.
@@ -317,9 +306,8 @@ _call_goal_on_stack_asm_arm64:
   ;; Call GOAL function
   blr x3
 
-  ;; Switch back to old host stack (x23 holds it; GOAL code preserves x23 since it's not
-  ;; a GOAL reserved register and ARM64 ABI designates x23 as callee-saved)
-  mov sp, x23
+  ;; Switch back to old host stack.
+  mov sp, x28
 
   ;; Restore callee-saved registers (reverse push order)
   ldp x19, x28, [sp], #16

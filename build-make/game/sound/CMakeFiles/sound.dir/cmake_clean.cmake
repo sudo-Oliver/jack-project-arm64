@@ -1,0 +1,41 @@
+file(REMOVE_RECURSE
+  "CMakeFiles/sound.dir/989snd/ame_handler.cpp.o"
+  "CMakeFiles/sound.dir/989snd/ame_handler.cpp.o.d"
+  "CMakeFiles/sound.dir/989snd/blocksound_handler.cpp.o"
+  "CMakeFiles/sound.dir/989snd/blocksound_handler.cpp.o.d"
+  "CMakeFiles/sound.dir/989snd/lfo.cpp.o"
+  "CMakeFiles/sound.dir/989snd/lfo.cpp.o.d"
+  "CMakeFiles/sound.dir/989snd/loader.cpp.o"
+  "CMakeFiles/sound.dir/989snd/loader.cpp.o.d"
+  "CMakeFiles/sound.dir/989snd/midi_handler.cpp.o"
+  "CMakeFiles/sound.dir/989snd/midi_handler.cpp.o.d"
+  "CMakeFiles/sound.dir/989snd/musicbank.cpp.o"
+  "CMakeFiles/sound.dir/989snd/musicbank.cpp.o.d"
+  "CMakeFiles/sound.dir/989snd/player.cpp.o"
+  "CMakeFiles/sound.dir/989snd/player.cpp.o.d"
+  "CMakeFiles/sound.dir/989snd/sfxblock.cpp.o"
+  "CMakeFiles/sound.dir/989snd/sfxblock.cpp.o.d"
+  "CMakeFiles/sound.dir/989snd/sfxgrain.cpp.o"
+  "CMakeFiles/sound.dir/989snd/sfxgrain.cpp.o.d"
+  "CMakeFiles/sound.dir/989snd/util.cpp.o"
+  "CMakeFiles/sound.dir/989snd/util.cpp.o.d"
+  "CMakeFiles/sound.dir/989snd/vagvoice.cpp.o"
+  "CMakeFiles/sound.dir/989snd/vagvoice.cpp.o.d"
+  "CMakeFiles/sound.dir/common/envelope.cpp.o"
+  "CMakeFiles/sound.dir/common/envelope.cpp.o.d"
+  "CMakeFiles/sound.dir/common/synth.cpp.o"
+  "CMakeFiles/sound.dir/common/synth.cpp.o.d"
+  "CMakeFiles/sound.dir/common/voice.cpp.o"
+  "CMakeFiles/sound.dir/common/voice.cpp.o.d"
+  "CMakeFiles/sound.dir/sdshim.cpp.o"
+  "CMakeFiles/sound.dir/sdshim.cpp.o.d"
+  "CMakeFiles/sound.dir/sndshim.cpp.o"
+  "CMakeFiles/sound.dir/sndshim.cpp.o.d"
+  "libsound.a"
+  "libsound.pdb"
+)
+
+# Per-language clean rules from dependency scanning.
+foreach(lang CXX)
+  include(CMakeFiles/sound.dir/cmake_clean_${lang}.cmake OPTIONAL)
+endforeach()

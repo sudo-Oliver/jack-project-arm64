@@ -549,13 +549,22 @@ static void dump_arm64_crash_context(uint64_t pc,
 
   // Instructions around PC (16 before, 8 after)
   write(2, "[EE-CRASH] Instructions around PC:\n", 35);
-  const uint32_t* code = (const uint32_t*)pc;
-  for (int i = -16; i <= 8; i++) {
-    n = __builtin_snprintf(buf, sizeof(buf),
-      "  [%+3d] 0x%016llx: 0x%08x%s\n",
-      i, (unsigned long long)(code + i), code[i],
-      (i == 0) ? "  <-- FAULT" : "");
-    write(2, buf, n);
+  {
+    uintptr_t ee_base = (uintptr_t)g_ee_main_mem;
+    uintptr_t ee_end = ee_base + EE_MAIN_MEM_SIZE;
+    if (pc >= ee_base && pc + (8 * sizeof(uint32_t)) < ee_end &&
+        pc >= ee_base + (16 * sizeof(uint32_t))) {
+      const uint32_t* code = (const uint32_t*)pc;
+      for (int i = -16; i <= 8; i++) {
+        n = __builtin_snprintf(buf, sizeof(buf),
+          "  [%+3d] 0x%016llx: 0x%08x%s\n",
+          i, (unsigned long long)(code + i), code[i],
+          (i == 0) ? "  <-- FAULT" : "");
+        write(2, buf, n);
+      }
+    } else {
+      write(2, "  PC outside EE memory; skipped\n", 32);
+    }
   }
 
   // Dump EE memory around x0 (EE-relative pointer = first arg at crash call site)
@@ -591,6 +600,19 @@ static void dump_arm64_crash_context(uint64_t pc,
         n = __builtin_snprintf(buf, sizeof(buf),
           "  [%+3d] EE+0x%08x: 0x%08x\n",
           i*4, (uint32_t)(x1_rel - 4 + i*4), mem2[i+1]);
+        write(2, buf, n);
+      }
+    }
+    // x20 is GOAL pp on ARM64. Dump first process fields to diagnose null main/top thread.
+    uint32_t pp_rel = (uint32_t)xregs[20];
+    uintptr_t pp_host = ee_base + pp_rel;
+    if (pp_rel >= 4 && pp_host + 160 < ee_end) {
+      write(2, "[EE-CRASH] EE[pp-4..pp+156]:\n", 30);
+      const uint32_t* mem3 = (const uint32_t*)(pp_host - 4);
+      for (int i = -1; i <= 39; i++) {
+        n = __builtin_snprintf(buf, sizeof(buf),
+          "  [%+4d] EE+0x%08x: 0x%08x\n",
+          i * 4, (uint32_t)(pp_rel - 4 + i * 4), mem3[i + 1]);
         write(2, buf, n);
       }
     }

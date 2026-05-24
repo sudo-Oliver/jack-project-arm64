@@ -113,6 +113,13 @@
 
    If the continue is changed, resets the death and time counters
    "
+  (#when ARM64_PORT
+    (format 0
+            "ARM64 set-continue enter this=~X arg0=~X type=~X current=~X~%"
+            (the uint this)
+            (the uint arg0)
+            (the uint (if arg0 (-> arg0 type) 0))
+            (the uint (-> this current-continue))))
   (let ((s5-0 (-> this current-continue)))
     (if (null? arg0) (set! arg0 #f))
     (case (-> arg0 type)
@@ -238,9 +245,33 @@
        ;; start a temporary process to restart things
        (process-spawn-function process
          (lambda ((arg0 symbol) (arg1 symbol) (arg2 continue-point) (arg3 game-save))
+           (#when ARM64_PORT
+             (rlet ((pp :reg r13 :type process))
+               (format 0
+                       "ARM64 game-info restart pp=~X arg0=~X arg1=~X arg2=~X arg3=~X target=~X~%"
+                       (the uint pp)
+                       (the uint arg0)
+                       (the uint arg1)
+                       (the uint arg2)
+                       (the uint arg3)
+                       (the uint *target*))))
            (stop arg0)
+           (#when ARM64_PORT
+             (format 0 "ARM64 game-info after stop~%"))
            (reset-actors arg1)
+           (#when ARM64_PORT
+             (format 0 "ARM64 game-info after reset-actors~%"))
+           (#when ARM64_PORT
+             (format 0
+                     "ARM64 game-info before set-continue gi=~X arg2=~X type=~X~%"
+                     (the uint *game-info*)
+                     (the uint arg2)
+                     (the uint (if arg2 (-> arg2 type) 0))))
            (set-continue! *game-info* arg2)
+           (#when ARM64_PORT
+             (format 0
+                     "ARM64 game-info after set-continue current=~X~%"
+                     (the uint (-> *game-info* current-continue))))
            (when arg3
              (load-game! *game-info* arg3)
              (set! arg2 (get-or-create-continue! *game-info*)))

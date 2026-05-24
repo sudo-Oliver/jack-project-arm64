@@ -1266,10 +1266,21 @@
   (none))
 
 (defun stop ((arg0 symbol))
+  (#when ARM64_PORT
+    (format 0
+            "ARM64 stop start arg0=~X target=~X active=~X game-info=~X~%"
+            (the uint arg0)
+            (the uint *target*)
+            (the uint *active-pool*)
+            (the uint *game-info*)))
   (when *target*
+    (#when ARM64_PORT
+      (format 0 "ARM64 stop kill target=~X~%" (the uint *target*)))
     (kill-by-name 'target *active-pool*)
     (set! *target* #f))
   (set! (-> *game-info* mode) arg0)
+  (#when ARM64_PORT
+    (format 0 "ARM64 stop done mode=~X~%" (the uint (-> *game-info* mode))))
   0)
 
 (defun start ((arg0 symbol) (arg1 continue-point))

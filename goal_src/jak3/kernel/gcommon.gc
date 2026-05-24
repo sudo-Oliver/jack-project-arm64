@@ -11,6 +11,7 @@
 
 ;; disable PS2 only code and enable PC-specific code
 (defglobalconstant PC_PORT #t)
+(defglobalconstant ARM64_PORT #t)
 
 ;; whether we're allowed to use more memory than the original game or not
 (defglobalconstant BIG_MEMORY #t)

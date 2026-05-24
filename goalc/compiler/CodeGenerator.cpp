@@ -26,6 +26,76 @@ CodeGenerator::CodeGenerator(FileEnv* env,
                              InstructionSet instruction_set)
     : m_gen(version, instruction_set), m_fe(env), m_debug_info(debug_info) {}
 
+namespace {
+constexpr u32 kEeMainMemorySize = 0x08000000;
+
+Instruction arm64_branch_hs_skip_one() {
+  // B.HS +8: skip exactly one 4-byte ARM64 instruction.
+  return InstructionARM64(0x54000042u);
+}
+
+void emit_arm64_mov_gpr64_u64(ObjectGenerator& gen,
+                              FunctionRecord f_rec,
+                              InstructionInfo::Kind kind,
+                              Register dst,
+                              u64 value) {
+  bool emitted_movz = false;
+  for (int hw = 0; hw < 4; ++hw) {
+    const u64 chunk = (value >> (hw * 16)) & 0xffff;
+    if (!chunk) {
+      continue;
+    }
+
+    const u32 hw_field = static_cast<u32>(hw) << 21;
+    const u32 imm_field = static_cast<u32>(chunk) << 5;
+    const u32 base = emitted_movz ? 0xF2800000u : 0xD2800000u;
+    gen.add_instr_no_ir(f_rec,
+                        InstructionARM64(base, ARM64::Field{hw_field}, ARM64::Field{imm_field},
+                                         ARM64::Rd(dst.id())),
+                        kind);
+    emitted_movz = true;
+  }
+}
+
+void emit_arm64_mov_gpr64_u64(ObjectGenerator& gen, IR_Record i_rec, Register dst, u64 value) {
+  bool emitted_movz = false;
+  for (int hw = 0; hw < 4; ++hw) {
+    const u64 chunk = (value >> (hw * 16)) & 0xffff;
+    if (!chunk) {
+      continue;
+    }
+
+    const u32 hw_field = static_cast<u32>(hw) << 21;
+    const u32 imm_field = static_cast<u32>(chunk) << 5;
+    const u32 base = emitted_movz ? 0xF2800000u : 0xD2800000u;
+    gen.add_instr(InstructionARM64(base, ARM64::Field{hw_field}, ARM64::Field{imm_field},
+                                   ARM64::Rd(dst.id())),
+                  i_rec);
+    emitted_movz = true;
+  }
+}
+
+void emit_arm64_lr_relative_guard(ObjectGenerator& gen,
+                                  FunctionRecord f_rec,
+                                  InstructionInfo::Kind kind) {
+  const auto lr = Register(ARM64_REG::X30);
+  const auto scratch = Register(ARM64_REG::X16);
+  emit_arm64_mov_gpr64_u64(gen, f_rec, kind, scratch, kEeMainMemorySize);
+  gen.add_instr_no_ir(f_rec, IGen::cmp_gpr64_gpr64(gen, lr, scratch), kind);
+  gen.add_instr_no_ir(f_rec, arm64_branch_hs_skip_one(), kind);
+  gen.add_instr_no_ir(f_rec, IGen::add_gpr64_gpr64(gen, lr, gen.get_offset_reg()), kind);
+}
+
+void emit_arm64_lr_relative_guard(ObjectGenerator& gen, IR_Record i_rec) {
+  const auto lr = Register(ARM64_REG::X30);
+  const auto scratch = Register(ARM64_REG::X16);
+  emit_arm64_mov_gpr64_u64(gen, i_rec, scratch, kEeMainMemorySize);
+  gen.add_instr(IGen::cmp_gpr64_gpr64(gen, lr, scratch), i_rec);
+  gen.add_instr(arm64_branch_hs_skip_one(), i_rec);
+  gen.add_instr(IGen::add_gpr64_gpr64(gen, lr, gen.get_offset_reg()), i_rec);
+}
+}  // namespace
+
 /*!
  * Generate an object file.
  */
@@ -385,6 +455,19 @@ void CodeGenerator::do_goal_function_arm64(FunctionEnv* env, int f_idx) {
   }
   debug->stack_usage = stack_offset;
 
+  std::vector<bool> arm64_pop_lr_before_jump(env->code().size(), false);
+  for (int i = 0; i < int(env->code().size()); i++) {
+    if (!dynamic_cast<IR_JumpReg*>(env->code().at(i).get())) {
+      continue;
+    }
+    for (int j = std::max(0, i - 3); j < i; j++) {
+      if (dynamic_cast<IR_AsmPush*>(env->code().at(j).get())) {
+        arm64_pop_lr_before_jump.at(i) = true;
+        break;
+      }
+    }
+  }
+
   for (int ir_idx = 0; ir_idx < int(env->code().size()); ir_idx++) {
     auto& ir = env->code().at(ir_idx);
     auto i_rec = m_gen.add_ir(f_rec);
@@ -436,6 +519,13 @@ void CodeGenerator::do_goal_function_arm64(FunctionEnv* env, int f_idx) {
           ASSERT(false);
         }
       }
+    }
+
+    // Inline asm in normal GOAL functions sometimes emulates x86 tail-call trampolines:
+    //   push return-trampoline; jr target
+    // ARM64 RET uses LR instead of popping the stack, so consume the pushed trampoline here.
+    if (arm64_pop_lr_before_jump.at(ir_idx)) {
+      m_gen.add_instr(IGen::pop_gpr64(m_gen, lr_reg), i_rec);
     }
 
     ir->do_codegen_arm64(&m_gen, allocs, i_rec);
@@ -505,6 +595,7 @@ void CodeGenerator::do_goal_function_arm64(FunctionEnv* env, int f_idx) {
     m_gen.add_instr_no_ir(f_rec, IGen::pop_gpr64(m_gen, lr_reg), InstructionInfo::Kind::EPILOGUE);
   }
 
+  emit_arm64_lr_relative_guard(m_gen, f_rec, InstructionInfo::Kind::EPILOGUE);
   m_gen.add_instr_no_ir(f_rec, IGen::ret(m_gen), InstructionInfo::Kind::EPILOGUE);
 }
 
@@ -567,13 +658,10 @@ void CodeGenerator::do_asm_function_arm64(FunctionEnv* env, int f_idx, bool allo
     throw std::runtime_error("ASM Function has variables on the stack.");
   }
 
-  // Collect callee-saved SIMD regs for prologue/epilogue.
-  std::vector<emitter::Register> asm_saved_xmm;
-  for (auto& saved_reg : allocs.used_saved_regs) {
-    if (saved_reg.is_xmm(m_gen.instr_set())) {
-      asm_saved_xmm.push_back(saved_reg);
-    }
-  }
+  // Match x86 asm-func behavior: do not synthesize callee-saved register
+  // prologues/epilogues here. Kernel asm functions switch stacks manually and
+  // save/restore the GOAL context themselves; compiler-inserted pushes/pops can
+  // restore x22/off from the wrong stack after a context switch.
 
   // ARM64-specific: detect kernel context-switching asm function patterns.
   // On x86, CALL pushes the return address to the stack and RET pops it.
@@ -590,15 +678,25 @@ void CodeGenerator::do_asm_function_arm64(FunctionEnv* env, int f_idx, bool allo
   bool arm64_has_kernel_sp_load = false;  // has .load-sym sp *kernel-sp* — thread-suspend / return-from-thread
   bool arm64_has_kernel_sp_store = false; // has set! *kernel-sp* — reset-and-call / thread-resume (NOT set-to-run-bootstrap)
   bool arm64_has_early_pop = false;       // .pop before *kernel-sp* load — thread-suspend
-  bool arm64_has_push_before_jr = false;  // .push before .jr — reset-and-call (not thread-resume)
+  bool arm64_has_push_near_jr = false;    // .push immediately before .jr — reset-and-call
+  bool arm64_has_push_before_jr = false;  // any .push before .jr — set-to-run-bootstrap
 
   for (int i = 0; i < (int)env->code().size(); i++) {
     auto& cur_ir = env->code().at(i);
     if (dynamic_cast<IR_JumpReg*>(cur_ir.get())) {
       arm64_has_jump_reg = true;
-      // Check if there's a .push in the last few IR ops (reset-and-call pushes the
-      // return-from-thread trampoline just before .jr; thread-resume does not).
+      // Check if there's a .push in the last few IR ops. reset-and-call pushes the
+      // return-from-thread trampoline just before .jr; thread-resume only has earlier
+      // saved-register pushes and must not pop those as LR.
       for (int j = std::max(0, i - 3); j < i; j++) {
+        if (dynamic_cast<IR_AsmPush*>(env->code().at(j).get())) {
+          arm64_has_push_near_jr = true;
+          break;
+        }
+      }
+      // set-to-run-bootstrap pushes return-from-thread-dead earlier, before argument
+      // moves. It does not store *kernel-sp*, unlike thread-resume/reset-and-call.
+      for (int j = 0; j < i; j++) {
         if (dynamic_cast<IR_AsmPush*>(env->code().at(j).get())) {
           arm64_has_push_before_jr = true;
           break;
@@ -633,10 +731,12 @@ void CodeGenerator::do_asm_function_arm64(FunctionEnv* env, int f_idx, bool allo
   const bool arm64_push_lr_at_start =
       (arm64_has_jump_reg && arm64_has_kernel_sp_store) ||
       arm64_has_early_pop;
-  // Load [SP] into X30 just before .jr so the process function's eventual BR X30
-  // jumps to return-from-thread (which reset-and-call pushed onto the process stack).
-  // Only for reset-and-call (has a .push immediately before .jr), not thread-resume.
-  const bool arm64_ldr_lr_before_jr = arm64_has_push_before_jr;
+  // Pop X30 just before .jr so the process function's eventual BR X30 jumps to the
+  // return trampoline pushed onto the process stack. This must consume the stack slot:
+  // x86 RET pops the return address, while ARM64 RET reads LR and leaves SP unchanged.
+  const bool arm64_pop_lr_before_jr =
+      arm64_has_push_near_jr ||
+      (arm64_has_jump_reg && arm64_has_push_before_jr && !arm64_has_kernel_sp_store);
   // Pop X30 before .ret in functions that restore the kernel stack so that
   // BR X30 (= .ret) jumps back to the original kernel call site.
   // Also applies to throw-dispatch which replaces the return address via .pop/.push.
@@ -648,24 +748,6 @@ void CodeGenerator::do_asm_function_arm64(FunctionEnv* env, int f_idx, bool allo
                           InstructionInfo::Kind::PROLOGUE);
   }
 
-  // Prologue: save SIMD pairs, then GPRs.
-  int axi = 0;
-  for (; axi + 1 < (int)asm_saved_xmm.size(); axi += 2) {
-    m_gen.add_instr_no_ir(f_rec,
-                          IGen::ARM64::stp_xmm128_pair(asm_saved_xmm[axi], asm_saved_xmm[axi + 1]),
-                          InstructionInfo::Kind::PROLOGUE);
-  }
-  if (axi < (int)asm_saved_xmm.size()) {
-    m_gen.add_instr_no_ir(f_rec, IGen::ARM64::push_xmm128(asm_saved_xmm[axi]),
-                          InstructionInfo::Kind::PROLOGUE);
-  }
-  for (auto& saved_reg : allocs.used_saved_regs) {
-    if (saved_reg.is_gpr(m_gen.instr_set())) {
-      m_gen.add_instr_no_ir(f_rec, IGen::push_gpr64(m_gen, saved_reg),
-                            InstructionInfo::Kind::PROLOGUE);
-    }
-  }
-
   for (int ir_idx = 0; ir_idx < int(env->code().size()); ir_idx++) {
     auto& ir = env->code().at(ir_idx);
     auto i_rec = m_gen.add_ir(f_rec);
@@ -673,39 +755,20 @@ void CodeGenerator::do_asm_function_arm64(FunctionEnv* env, int f_idx, bool allo
       throw std::runtime_error("ASM Function used a bonus op.");
     }
 
-    // ARM64-specific: before .jr (BR), load [SP] into X30 so that when the process function
-    // returns via BR X30, it lands on the return-from-thread trampoline that was pushed to
-    // the process stack just above (in reset-and-call's .push temp).
-    if (arm64_ldr_lr_before_jr && dynamic_cast<IR_JumpReg*>(ir.get())) {
-      m_gen.add_instr(
-          IGen::load64_gpr64_plus_s32(m_gen, Register(ARM64_REG::X30), 0, Register(ARM64_REG::SP)),
-          i_rec);
-    }
-
-    // GOAL asm functions embed their ret in the IR (IR_AsmRet). Pop saved regs before it.
-    if (dynamic_cast<IR_AsmRet*>(ir.get()) && !allocs.used_saved_regs.empty()) {
-      // Epilogue: GPR pops in reverse, then SIMD restores.
-      for (int i = int(allocs.used_saved_regs.size()); i-- > 0;) {
-        auto& saved_reg = allocs.used_saved_regs.at(i);
-        if (saved_reg.is_gpr(m_gen.instr_set())) {
-          m_gen.add_instr(IGen::pop_gpr64(m_gen, saved_reg), i_rec);
-        }
-      }
-      int axn = (int)asm_saved_xmm.size();
-      int ax_pair_end = axn & ~1;
-      if (axn & 1) {
-        m_gen.add_instr(IGen::ARM64::pop_xmm128(asm_saved_xmm[axn - 1]), i_rec);
-      }
-      for (int i = ax_pair_end - 2; i >= 0; i -= 2) {
-        m_gen.add_instr(IGen::ARM64::ldp_xmm128_pair(asm_saved_xmm[i], asm_saved_xmm[i + 1]),
-                        i_rec);
-      }
+    // ARM64-specific: before .jr (BR), pop the trampoline address into X30 so that when the
+    // process function returns via BR X30, it lands on return-from-thread/return-from-thread-dead.
+    if (arm64_pop_lr_before_jr && dynamic_cast<IR_JumpReg*>(ir.get())) {
+      m_gen.add_instr(IGen::pop_gpr64(m_gen, Register(ARM64_REG::X30)), i_rec);
     }
 
     // ARM64-specific: pop X30 before .ret so BR X30 returns to the kernel call site
     // that was pushed to the kernel stack at function entry (by arm64_push_lr_at_start above).
     if (arm64_pop_lr_before_ret && dynamic_cast<IR_AsmRet*>(ir.get())) {
       m_gen.add_instr(IGen::pop_gpr64(m_gen, Register(ARM64_REG::X30)), i_rec);
+    }
+
+    if (dynamic_cast<IR_AsmRet*>(ir.get())) {
+      emit_arm64_lr_relative_guard(m_gen, i_rec);
     }
 
     ir->do_codegen_arm64(&m_gen, allocs, i_rec);

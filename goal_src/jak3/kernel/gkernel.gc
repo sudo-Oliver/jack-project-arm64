@@ -627,6 +627,7 @@
          (temp :reg rax :type uint)
          (off :reg r15 :type uint)
          (sp :reg rsp :type uint)
+         (lr :reg lr :type uint)
          (s0 :reg rbx :type uint)
          (s1 :reg rbp :type uint)
          (s2 :reg r10 :type uint)
@@ -643,8 +644,10 @@
          (xmm15 :reg xmm15 :class fpr)
          )
 
-    ;; get the return address pushed by "call" in the suspend.
-    (.pop temp)
+    ;; get the return address. x86 call pushes it; ARM64 BLR stores it in LR.
+    (#if ARM64_PORT
+      (.mov :color #f temp lr)
+      (.pop temp))
     ;; convert to a GOAL address
     (.sub temp off)
     ;; store return address in thread
@@ -1703,6 +1706,7 @@
          (temp :reg rax :type uint)
          (off :reg r15 :type uint)
          (sp :reg rsp :type uint)
+         (lr :reg lr :type uint)
          (s0 :reg rbx :type uint)
          (s1 :reg rbp :type uint)
          (s2 :reg r10 :type (pointer uint64))
@@ -1725,8 +1729,11 @@
       (set! (-> this type) type-to-make)
       (set! (-> this name) name)
       ;; get the return address (the compiler won't touch the stack because we're an asm-func)
-      (.pop temp)
-      (.push temp)
+      (#if ARM64_PORT
+        (.mov :color #f temp lr)
+        (begin
+          (.pop temp)
+          (.push temp)))
       ;; make it a GOAL address so it fits in 32 bits
       (.sub temp off)
       ;; store it
@@ -1735,6 +1742,10 @@
       ;; todo, do we need a stack offset here?
       ;; remember the stack pointer
       (set! temp sp)
+      ;; ARM64 asm-func codegen saves LR with a 16-byte push. A throw must restore
+      ;; the caller's SP, not the constructor's internal LR-save slot.
+      (#when ARM64_PORT
+        (+! temp 16))
       (.sub temp off)
       (set! (-> this sp) (the int temp))
 
@@ -1808,6 +1819,7 @@
          (temp :reg rax :type uint)
          (off :reg r15 :type uint)
          (sp :reg rsp :type uint)
+         (lr :reg lr :type uint)
          (s0 :reg rbx :type uint)
          (s1 :reg rbp :type uint)
          (s2 :reg r10 :type (pointer uint64))
@@ -1861,11 +1873,17 @@
     (set! sp (the uint (-> this sp)))
     (.add sp off)
 
-    ;; overwrite our return address
-    (.pop temp)
-    (set! temp (the uint (-> this ra)))
-    (.add temp off)
-    (.push temp)
+    ;; overwrite our return address. x86 RET reads the stack; ARM64 RET reads LR.
+    (#if ARM64_PORT
+      (begin
+        (set! temp (the uint (-> this ra)))
+        (.add :color #f temp off)
+        (.mov :color #f lr temp))
+      (begin
+        (.pop temp)
+        (set! temp (the uint (-> this ra)))
+        (.add temp off)
+        (.push temp)))
 
     ;; load the return register
     (.mov temp value)

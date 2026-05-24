@@ -266,7 +266,8 @@ void IR_Return::do_codegen_arm64(emitter::ObjectGenerator* gen,
                                  emitter::IR_Record irec) {
   auto val_reg = get_reg(m_value, allocs, irec);
   auto dest_reg = get_reg(m_return_reg, allocs, irec);
-  if (val_reg == dest_reg) {
+
+  if (m_value->ireg().reg_class == m_return_reg->ireg().reg_class && val_reg == dest_reg) {
     gen->add_instr(IGen::null(*gen), irec);
   } else {
     regset_common(gen, allocs, irec, m_return_reg, m_value, true);
@@ -584,7 +585,9 @@ std::string IR_FunctionCall::print() {
 RegAllocInstr IR_FunctionCall::to_rai() {
   RegAllocInstr rai;
   rai.read.push_back(m_func->ireg());
+#if !defined(__aarch64__)
   rai.write.push_back(m_func->ireg());  // todo, can we avoid this?
+#endif
   rai.write.push_back(m_ret->ireg());
   for (auto& arg : m_args) {
     rai.read.push_back(arg->ireg());
@@ -631,9 +634,10 @@ void IR_FunctionCall::do_codegen_arm64(emitter::ObjectGenerator* gen,
                                        const AllocationResult& allocs,
                                        emitter::IR_Record irec) {
   auto freg = get_reg(m_func, allocs, irec);
-  // X8 is ARM64 scratch (not an arg reg), so using it here never clobbers X0-X7 args.
-  // In-place add into freg would corrupt arg0 if freg==X0.
-  auto scratch = emitter::Register(emitter::X8);
+  // X16/IP0 is reserved for JIT scratch and is not in the GOAL alloc order.
+  // In-place add into freg would corrupt arg0 if freg==X0; X8 is allocatable, so it can
+  // corrupt a live GOAL temp in call-heavy code.
+  auto scratch = emitter::Register(emitter::X16);
   gen->add_instr(IGen::mov_gpr64_gpr64(*gen, scratch, freg), irec);
   gen->add_instr(IGen::add_gpr64_gpr64(*gen, scratch, gen->get_offset_reg()), irec);
   gen->add_instr(IGen::call_r64(*gen, scratch), irec);

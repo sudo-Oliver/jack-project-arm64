@@ -693,7 +693,9 @@ ThreadID get_current_thread_id() {
   return ThreadID("not implemented on macOS");
 }
 
-bool attach_and_break(const ThreadID& tid);
+bool attach_and_break(const ThreadID& tid) {
+  return false;
+}
 
 void allow_debugging() {
   printf("allow_debugging not implemented on macOS\n");
@@ -714,7 +716,9 @@ bool break_now(const ThreadID& tid) {
 bool cont_now(const ThreadID& tid) {
   return false;
 }
-bool open_memory(const ThreadID& tid, MemoryHandle* out);
+bool open_memory(const ThreadID& tid, MemoryHandle* out) {
+  return false;
+}
 bool close_memory(const ThreadID& tid, MemoryHandle* handle) {
   return false;
 }

@@ -1,0 +1,1 @@
+/usr/bin/clang -g -arch arm64 -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk -dynamiclib -Wl,-headerpad_max_install_names -o libxdelta3.dylib -install_name @rpath/libxdelta3.dylib CMakeFiles/xdelta3.dir/xdelta3.c.o
