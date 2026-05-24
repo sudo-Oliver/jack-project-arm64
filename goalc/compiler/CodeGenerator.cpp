@@ -627,16 +627,20 @@ void CodeGenerator::do_asm_function_arm64(FunctionEnv* env, int f_idx, bool allo
   //     excluded — it is entered via BR (tail-jump), not BLR, making X30 stale.
   //   - thread-suspend (early .pop + *kernel-sp* load): so the .pop temp instruction
   //     reads the process return address that BLR stored in X30.
+  //   - throw-dispatch (early .pop, NO *kernel-sp* load): x86 replaces the return address
+  //     on the stack with the catch handler's address before .ret, so BLR must push X30
+  //     first for .pop to consume, then .push puts the catch handler, then BR X30 jumps there.
   const bool arm64_push_lr_at_start =
       (arm64_has_jump_reg && arm64_has_kernel_sp_store) ||
-      (arm64_has_early_pop && arm64_has_kernel_sp_load);
+      arm64_has_early_pop;
   // Load [SP] into X30 just before .jr so the process function's eventual BR X30
   // jumps to return-from-thread (which reset-and-call pushed onto the process stack).
   // Only for reset-and-call (has a .push immediately before .jr), not thread-resume.
   const bool arm64_ldr_lr_before_jr = arm64_has_push_before_jr;
   // Pop X30 before .ret in functions that restore the kernel stack so that
   // BR X30 (= .ret) jumps back to the original kernel call site.
-  const bool arm64_pop_lr_before_ret = arm64_has_kernel_sp_load;
+  // Also applies to throw-dispatch which replaces the return address via .pop/.push.
+  const bool arm64_pop_lr_before_ret = arm64_has_kernel_sp_load || arm64_has_early_pop;
 
   // Prologue: push X30 (ARM64-specific) before any auto-saved callee regs.
   if (arm64_push_lr_at_start) {
