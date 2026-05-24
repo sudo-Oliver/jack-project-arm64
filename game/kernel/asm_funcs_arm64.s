@@ -271,10 +271,15 @@ _call_goal_on_stack_asm_arm64:
   mov x29, sp
   stp x20, x21, [sp, #-16]!
   stp x22, x23, [sp, #-16]!
+  stp x24, x25, [sp, #-16]!
+  stp x26, x27, [sp, #-16]!
+  str x28,      [sp, #-16]!
   ;; Save old host SP into x23 (callee-saved, preserved by GOAL ABI via saved-reg frame above)
   ;; GOAL functions preserve x20, x21, x22 but MAY use x23 — however we've already saved x23
   ;; on the host stack, and x23 is callee-saved per ARM64 ABI so a well-behaved callee restores it.
   ;; The GOAL runtime sets x20/x21/x22 as GOAL reserved registers and must not clobber x23.
+  ;; throw-dispatch restores GOAL register context (including R12=X26, R13=X24, R14=X25, etc.)
+  ;; from the catch frame — those writes must not leak into the C++ caller's register state.
   mov x23, sp
 
   ;; Switch to GOAL stack, aligning to 16 bytes (ARM64 ABI requirement).
@@ -296,7 +301,10 @@ _call_goal_on_stack_asm_arm64:
   ;; a GOAL reserved register and ARM64 ABI designates x23 as callee-saved)
   mov sp, x23
 
-  ;; Restore callee-saved registers
+  ;; Restore callee-saved registers (reverse push order)
+  ldr x28,      [sp], #16
+  ldp x26, x27, [sp], #16
+  ldp x24, x25, [sp], #16
   ldp x22, x23, [sp], #16
   ldp x20, x21, [sp], #16
   ldp x29, x30, [sp], #16
