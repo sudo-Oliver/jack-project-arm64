@@ -650,12 +650,7 @@ void link_control::jak1_finish(bool jump_from_c_to_goal) {
 #endif
       fprintf(stderr, "[EE-TOPLEVEL] executing top-level: %s\n", m_object_name); fflush(stderr);
       if (jump_from_c_to_goal) {
-#if defined(__APPLE__) && defined(__aarch64__)
-        extern u8* g_goal_jit_stack_top;
-        u64 goal_stack = (u64)g_goal_jit_stack_top - 8;
-#else
         u64 goal_stack = u64(g_ee_main_mem) + EE_MAIN_MEM_SIZE - 8;
-#endif
         call_goal_on_stack(m_entry.cast<Function>(), goal_stack, s7.offset, g_ee_main_mem);
       } else {
         call_goal(m_entry.cast<Function>(), 0, 0, 0, s7.offset, g_ee_main_mem);

@@ -567,81 +567,81 @@ void CodeGenerator::do_asm_function_arm64(FunctionEnv* env, int f_idx, bool allo
     throw std::runtime_error("ASM Function has variables on the stack.");
   }
 
-  // Detect IR_AsmRet / IR_AsmPop: kernel asm functions like thread-suspend and
-  // throw-dispatch use (.pop) to read the caller's return address from the stack
-  // (x86 CALL semantics). On ARM64 BLR puts return address in X30, not the stack,
-  // so we must differentiate two cases:
-  //
-  // has_asm_pop && has_asm_ret ("stack-managed"):
-  //   Prologue pushes X30 onto stack, emulating x86 CALL. (.pop) reads it.
-  //   IR_AsmRet emits LDR X30,[SP],#16 + RET X30 (pop-and-jump).
-  //
-  // !has_asm_pop && has_asm_ret ("register-saved"):
-  //   Prologue saves X30 into X28 (callee-saved). Safe even if SP changes.
-  //   IR_AsmRet emits RET X28.
-  bool has_asm_ret = false;
-  bool has_asm_pop = false;
-  bool has_asm_push = false;
-  for (auto& ir : env->code()) {
-    if (dynamic_cast<IR_AsmRet*>(ir.get())) {
-      has_asm_ret = true;
-    }
-    if (dynamic_cast<IR_AsmPop*>(ir.get())) {
-      has_asm_pop = true;
-    }
-    if (dynamic_cast<IR_AsmPush*>(ir.get())) {
-      has_asm_push = true;
-    }
-  }
-
-  if (has_asm_ret) {
-    auto x28 = emitter::Register(emitter::X28);
-    auto x30 = emitter::Register(emitter::X30);
-
-    if (has_asm_pop) {
-      // Stack-managed: push X30 so (.pop) reads the correct return address.
-      m_gen.add_instr_no_ir(f_rec, IGen::push_gpr64(m_gen, x30),
-                            InstructionInfo::Kind::PROLOGUE);
-    } else {
-      // Register-saved: MOV X28, X30 — safe even if asm function modifies SP.
-      m_gen.add_instr_no_ir(f_rec, IGen::mov_gpr64_gpr64(m_gen, x28, x30),
-                            InstructionInfo::Kind::PROLOGUE);
-    }
-
-    for (int ir_idx = 0; ir_idx < int(env->code().size()); ir_idx++) {
-      auto& ir = env->code().at(ir_idx);
-      auto i_rec = m_gen.add_ir(f_rec);
-      if (!allocs.stack_ops.at(ir_idx).ops.empty()) {
-        throw std::runtime_error("ASM Function used a bonus op.");
-      }
-      if (has_asm_pop && dynamic_cast<IR_AsmRet*>(ir.get())) {
-        // Pop return address from stack and jump there (LDR X30,[SP],#16 + RET X30).
-        m_gen.add_instr(IGen::pop_gpr64(m_gen, x30), i_rec);
-        m_gen.add_instr(IGen::ret_rn(m_gen, x30), i_rec);
-      } else {
-        ir->do_codegen_arm64(&m_gen, allocs, i_rec);
-      }
-    }
-    return;
-  }
-
-  // Non-IR_AsmRet path: compiler manages callee-saved reg save/restore.
-
-  // If this asm function pushes callee-saved regs to set up kernel state (thread-resume,
-  // reset-and-call), push X30 first. On x86, CALL pushes the return address before the
-  // callee-saved pushes; thread-suspend pops the callee-saved regs then RET which pops
-  // the return address. On ARM64 BLR does not push, so we must do it explicitly.
-  if (has_asm_push) {
-    auto x30 = emitter::Register(emitter::X30);
-    m_gen.add_instr_no_ir(f_rec, IGen::push_gpr64(m_gen, x30), InstructionInfo::Kind::PROLOGUE);
-  }
-
   // Collect callee-saved SIMD regs for prologue/epilogue.
   std::vector<emitter::Register> asm_saved_xmm;
   for (auto& saved_reg : allocs.used_saved_regs) {
     if (saved_reg.is_xmm(m_gen.instr_set())) {
       asm_saved_xmm.push_back(saved_reg);
     }
+  }
+
+  // ARM64-specific: detect kernel context-switching asm function patterns.
+  // On x86, CALL pushes the return address to the stack and RET pops it.
+  // On ARM64, BLR stores the return address in X30 (LR) and RET = BR X30.
+  // The GOAL kernel switches between kernel/process stacks in asm functions
+  // (reset-and-call, thread-resume, thread-suspend, return-from-thread), and these
+  // rely on the x86 CALL/RET stack discipline. We emulate it on ARM64 by:
+  //   1. Pushing X30 at function entry where the x86 CALL would have pushed the return addr.
+  //   2. Loading [SP] into X30 before .jr so the process function's BR X30 lands on
+  //      return-from-thread (the trampoline reset-and-call pushed to the process stack).
+  //   3. Popping X30 before .ret in functions that restore the kernel stack, so BR X30
+  //      returns to the original kernel call site.
+  bool arm64_has_jump_reg = false;        // has .jr — reset-and-call / thread-resume / set-to-run-bootstrap
+  bool arm64_has_kernel_sp_load = false;  // has .load-sym sp *kernel-sp* — thread-suspend / return-from-thread
+  bool arm64_has_kernel_sp_store = false; // has set! *kernel-sp* — reset-and-call / thread-resume (NOT set-to-run-bootstrap)
+  bool arm64_has_early_pop = false;       // .pop before *kernel-sp* load — thread-suspend
+  bool arm64_has_push_before_jr = false;  // .push before .jr — reset-and-call (not thread-resume)
+
+  for (int i = 0; i < (int)env->code().size(); i++) {
+    auto& cur_ir = env->code().at(i);
+    if (dynamic_cast<IR_JumpReg*>(cur_ir.get())) {
+      arm64_has_jump_reg = true;
+      // Check if there's a .push in the last few IR ops (reset-and-call pushes the
+      // return-from-thread trampoline just before .jr; thread-resume does not).
+      for (int j = std::max(0, i - 3); j < i; j++) {
+        if (dynamic_cast<IR_AsmPush*>(env->code().at(j).get())) {
+          arm64_has_push_before_jr = true;
+          break;
+        }
+      }
+    }
+    if (!arm64_has_kernel_sp_load && dynamic_cast<IR_AsmPop*>(cur_ir.get())) {
+      arm64_has_early_pop = true;
+    }
+    if (dynamic_cast<IR_GetSymbolValueAsm*>(cur_ir.get())) {
+      if (cur_ir->print().find("*kernel-sp*") != std::string::npos) {
+        arm64_has_kernel_sp_load = true;
+      }
+    }
+    if (dynamic_cast<IR_SetSymbolValue*>(cur_ir.get())) {
+      if (cur_ir->print().find("*kernel-sp*") != std::string::npos) {
+        arm64_has_kernel_sp_store = true;
+      }
+    }
+  }
+
+  // Push X30 at function entry for:
+  //   - reset-and-call / thread-resume (has .jr AND stores *kernel-sp*): so the kernel
+  //     return addr ends up on the kernel stack for thread-suspend to pop later.
+  //     set-to-run-bootstrap also has .jr but does NOT store *kernel-sp*, so it is
+  //     excluded — it is entered via BR (tail-jump), not BLR, making X30 stale.
+  //   - thread-suspend (early .pop + *kernel-sp* load): so the .pop temp instruction
+  //     reads the process return address that BLR stored in X30.
+  const bool arm64_push_lr_at_start =
+      (arm64_has_jump_reg && arm64_has_kernel_sp_store) ||
+      (arm64_has_early_pop && arm64_has_kernel_sp_load);
+  // Load [SP] into X30 just before .jr so the process function's eventual BR X30
+  // jumps to return-from-thread (which reset-and-call pushed onto the process stack).
+  // Only for reset-and-call (has a .push immediately before .jr), not thread-resume.
+  const bool arm64_ldr_lr_before_jr = arm64_has_push_before_jr;
+  // Pop X30 before .ret in functions that restore the kernel stack so that
+  // BR X30 (= .ret) jumps back to the original kernel call site.
+  const bool arm64_pop_lr_before_ret = arm64_has_kernel_sp_load;
+
+  // Prologue: push X30 (ARM64-specific) before any auto-saved callee regs.
+  if (arm64_push_lr_at_start) {
+    m_gen.add_instr_no_ir(f_rec, IGen::push_gpr64(m_gen, Register(ARM64_REG::X30)),
+                          InstructionInfo::Kind::PROLOGUE);
   }
 
   // Prologue: save SIMD pairs, then GPRs.
@@ -668,6 +668,16 @@ void CodeGenerator::do_asm_function_arm64(FunctionEnv* env, int f_idx, bool allo
     if (!allocs.stack_ops.at(ir_idx).ops.empty()) {
       throw std::runtime_error("ASM Function used a bonus op.");
     }
+
+    // ARM64-specific: before .jr (BR), load [SP] into X30 so that when the process function
+    // returns via BR X30, it lands on the return-from-thread trampoline that was pushed to
+    // the process stack just above (in reset-and-call's .push temp).
+    if (arm64_ldr_lr_before_jr && dynamic_cast<IR_JumpReg*>(ir.get())) {
+      m_gen.add_instr(
+          IGen::load64_gpr64_plus_s32(m_gen, Register(ARM64_REG::X30), 0, Register(ARM64_REG::SP)),
+          i_rec);
+    }
+
     // GOAL asm functions embed their ret in the IR (IR_AsmRet). Pop saved regs before it.
     if (dynamic_cast<IR_AsmRet*>(ir.get()) && !allocs.used_saved_regs.empty()) {
       // Epilogue: GPR pops in reverse, then SIMD restores.
@@ -687,6 +697,13 @@ void CodeGenerator::do_asm_function_arm64(FunctionEnv* env, int f_idx, bool allo
                         i_rec);
       }
     }
+
+    // ARM64-specific: pop X30 before .ret so BR X30 returns to the kernel call site
+    // that was pushed to the kernel stack at function entry (by arm64_push_lr_at_start above).
+    if (arm64_pop_lr_before_ret && dynamic_cast<IR_AsmRet*>(ir.get())) {
+      m_gen.add_instr(IGen::pop_gpr64(m_gen, Register(ARM64_REG::X30)), i_rec);
+    }
+
     ir->do_codegen_arm64(&m_gen, allocs, i_rec);
   }
 }

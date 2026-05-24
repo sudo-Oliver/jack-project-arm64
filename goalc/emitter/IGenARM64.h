@@ -507,6 +507,12 @@ InstructionARM64 or_gpr64_gpr64(Register dst, Register src);
 InstructionARM64 and_gpr64_gpr64(Register dst, Register src);
 
 /*!
+ * AND SP, SP, #0xfffffffffffffff0 — force 16-byte alignment of the stack pointer.
+ * Used after switching to a GOAL process stack whose top may not be 16-byte aligned.
+ */
+InstructionARM64 and_sp_16byte_align();
+
+/*!
  * Xor of two gprs
  */
 InstructionARM64 xor_gpr64_gpr64(Register dst, Register src);

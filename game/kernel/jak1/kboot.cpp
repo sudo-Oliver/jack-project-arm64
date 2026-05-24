@@ -27,10 +27,6 @@
 
 using namespace ee;
 
-#if defined(__APPLE__) && defined(__aarch64__)
-extern u8* g_goal_jit_stack_top;
-#endif
-
 namespace jak1 {
 VideoMode BootVideoMode;
 
@@ -116,13 +112,12 @@ s32 goal_main(int argc, const char* const* argv) {
  * Main loop to dispatch the GOAL kernel.
  */
 void KernelCheckAndDispatch() {
-#if defined(__APPLE__) && defined(__aarch64__)
-  fprintf(stderr, "[EE-DEBUG] g_goal_jit_stack_top=%p g_ee_main_mem=%p\n",
-          (void*)g_goal_jit_stack_top, (void*)g_ee_main_mem); fflush(stderr);
-  u64 goal_stack = (u64)g_goal_jit_stack_top - 8;
-#else
+  // Use the top of EE memory as the GOAL kernel stack. The region [80MB, 128MB) of
+  // EE memory is regular non-MAP_JIT pages (replaced in runtime.cpp), so stack writes
+  // are safe even under pthread_jit_write_protect_np exec-mode. This makes all
+  // GOAL stack pointers (kernel and process) EE-relative, which gkernel.gc requires
+  // for its (.sub sp off) / (.add sp off) EE-relative arithmetic to work correctly.
   u64 goal_stack = u64(g_ee_main_mem) + EE_MAIN_MEM_SIZE - 8;
-#endif
   int dispatch_count = 0;
   lg::info("[EE] KernelCheckAndDispatch starting, stack at 0x{:016x}", goal_stack);
 
