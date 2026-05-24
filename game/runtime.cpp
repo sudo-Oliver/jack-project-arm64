@@ -558,6 +558,61 @@ static void dump_arm64_crash_context(uint64_t pc,
     write(2, buf, n);
   }
 
+  // Dump EE memory around x0 (EE-relative pointer = first arg at crash call site)
+  // and x1 (second arg). Both are EE-relative offsets from x22 (g_ee_main_mem).
+  {
+    uintptr_t ee_base = (uintptr_t)g_ee_main_mem;
+    uintptr_t ee_end  = ee_base + EE_MAIN_MEM_SIZE;
+    // x0 and x1 at crash: likely the args to the function being called (BLR X8)
+    uint32_t x0_rel = (uint32_t)xregs[0];
+    uint32_t x1_rel = (uint32_t)xregs[1];
+    n = __builtin_snprintf(buf, sizeof(buf),
+      "[EE-CRASH] EE args at crash: x0(EE-rel)=0x%08x  x1(EE-rel)=0x%08x  x22(base)=0x%016llx\n",
+      x0_rel, x1_rel, (unsigned long long)xregs[22]);
+    write(2, buf, n);
+    // Dump EE[x0-4 .. x0+32]: shows the object x0 points into (task-cstage or task-control)
+    uintptr_t x0_host = ee_base + x0_rel;
+    if (x0_rel >= 4 && x0_host + 36 < ee_end) {
+      write(2, "[EE-CRASH] EE[x0-4..x0+32]:\n", 29);
+      const uint32_t* mem = (const uint32_t*)(x0_host - 4);
+      for (int i = -1; i <= 8; i++) {
+        n = __builtin_snprintf(buf, sizeof(buf),
+          "  [%+3d] EE+0x%08x: 0x%08x\n",
+          i*4, (uint32_t)(x0_rel - 4 + i*4), mem[i+1]);
+        write(2, buf, n);
+      }
+    }
+    // Dump EE[x1-4 .. x1+32] if x1 looks valid
+    uintptr_t x1_host = ee_base + x1_rel;
+    if (x1_rel >= 4 && x1_host + 36 < ee_end) {
+      write(2, "[EE-CRASH] EE[x1-4..x1+32]:\n", 29);
+      const uint32_t* mem2 = (const uint32_t*)(x1_host - 4);
+      for (int i = -1; i <= 8; i++) {
+        n = __builtin_snprintf(buf, sizeof(buf),
+          "  [%+3d] EE+0x%08x: 0x%08x\n",
+          i*4, (uint32_t)(x1_rel - 4 + i*4), mem2[i+1]);
+        write(2, buf, n);
+      }
+    }
+  }
+
+  // Instructions around LR (caller site) — helps identify the faulting call
+  {
+    uintptr_t ee_base = (uintptr_t)g_ee_main_mem;
+    uintptr_t ee_end  = ee_base + EE_MAIN_MEM_SIZE;
+    if (lr >= ee_base && lr < ee_end) {
+      write(2, "[EE-CRASH] Instructions around LR (caller):\n", 44);
+      const uint32_t* lrcode = (const uint32_t*)lr;
+      for (int i = -120; i <= 2; i++) {
+        n = __builtin_snprintf(buf, sizeof(buf),
+          "  [%+3d] 0x%016llx: 0x%08x%s\n",
+          i, (unsigned long long)(lrcode + i), lrcode[i],
+          (i == -1) ? "  <-- CALL SITE" : (i == 0) ? "  <-- LR (next)" : "");
+        write(2, buf, n);
+      }
+    }
+  }
+
   // Backtrace
   write(2, "[EE-CRASH] Backtrace:\n", 22);
   void* frames[32];

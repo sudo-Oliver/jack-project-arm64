@@ -24,6 +24,14 @@ _arg_call_arm64:
   stp  x29, x30, [sp, #-16]!
   mov  x29, sp
 
+  ;; Save GOAL reserved registers (pp=x20, st=x21, off=x22).
+  ;; ARM64 ABI designates x20-x22 callee-saved, so a well-behaved C function
+  ;; preserves them. We save them here anyway as defense-in-depth: if any C
+  ;; function in the call chain (e.g. via re-entrant call_goal) clobbers them
+  ;; without restoring, GOAL's runtime state survives.
+  stp x20, x21, [sp, #-16]!
+  str x22, [sp, #-16]!
+
   ;; Save callee-saved SIMD registers below the frame.
   stp q15, q14, [sp, #-32]!
   stp q13, q12, [sp, #-32]!
@@ -42,6 +50,10 @@ _arg_call_arm64:
   ldp q10, q11, [sp], #32
   ldp q12, q13, [sp], #32
   ldp q14, q15, [sp], #32
+
+  ;; Restore GOAL reserved registers.
+  ldr x22, [sp], #16
+  ldp x20, x21, [sp], #16
 
   ;; Restore frame pointer and GOAL return address, then return to GOAL code.
   ldp  x29, x30, [sp], #16
@@ -63,6 +75,10 @@ _stack_call_arm64:
   ;; Standard prologue: save GOAL frame-pointer and GOAL lr.
   stp  x29, x30, [sp, #-16]!
   mov  x29, sp
+
+  ;; Save GOAL reserved registers (pp=x20, st=x21, off=x22) — same rationale as _arg_call_arm64.
+  stp x20, x21, [sp, #-16]!
+  str x22, [sp, #-16]!
 
   ;; Save callee-saved SIMD registers.
   stp q15, q14, [sp, #-32]!
@@ -92,6 +108,10 @@ _stack_call_arm64:
   ldp q10, q11, [sp], #32
   ldp q12, q13, [sp], #32
   ldp q14, q15, [sp], #32
+
+  ;; Restore GOAL reserved registers.
+  ldr x22, [sp], #16
+  ldp x20, x21, [sp], #16
 
   ;; Restore frame pointer and GOAL return address, then return to GOAL code.
   ldp  x29, x30, [sp], #16
@@ -273,7 +293,7 @@ _call_goal_on_stack_asm_arm64:
   stp x22, x23, [sp, #-16]!
   stp x24, x25, [sp, #-16]!
   stp x26, x27, [sp, #-16]!
-  str x28,      [sp, #-16]!
+  stp x19, x28, [sp, #-16]!
   ;; Save old host SP into x23 (callee-saved, preserved by GOAL ABI via saved-reg frame above)
   ;; GOAL functions preserve x20, x21, x22 but MAY use x23 — however we've already saved x23
   ;; on the host stack, and x23 is callee-saved per ARM64 ABI so a well-behaved callee restores it.
@@ -302,7 +322,7 @@ _call_goal_on_stack_asm_arm64:
   mov sp, x23
 
   ;; Restore callee-saved registers (reverse push order)
-  ldr x28,      [sp], #16
+  ldp x19, x28, [sp], #16
   ldp x26, x27, [sp], #16
   ldp x24, x25, [sp], #16
   ldp x22, x23, [sp], #16

@@ -72,11 +72,21 @@ Register get_reg_asm(const RegVal* rv,
   return use_coloring ? get_reg(rv, allocs, irec) : get_no_color_reg(rv);
 }
 
+// Catch unexpected writes to GOAL-reserved registers (x20=pp, x21=st, x22=off).
+// These should NEVER be written by unconstrained GOAL code; any write is a codegen bug.
+void assert_arm64_not_reserved_dst(Register dst, const char* ir_name) {
+  ASSERT_MSG(dst.id() != emitter::ARM64_REG::x21 && dst.id() != emitter::ARM64_REG::x20 &&
+                 dst.id() != emitter::ARM64_REG::x22,
+             fmt::format("{}: dst={} is GOAL-reserved (x20=pp x21=st x22=off)", ir_name,
+                         dst.id()));
+}
+
 void load_constant(u64 value,
                    emitter::ObjectGenerator* gen,
                    emitter::IR_Record irec,
                    Register dest_reg) {
   if (gen->instr_set() == InstructionSet::ARM64) {
+    assert_arm64_not_reserved_dst(dest_reg, "load_constant");
     if (value == 0) {
       gen->add_instr(IGen::xor_gpr64_gpr64(*gen, dest_reg, dest_reg), irec);
       return;
@@ -195,6 +205,7 @@ void emit_arm64_symbol_offset_load(ObjectGenerator* gen,
                                    IR_Record irec,
                                    Register dst,
                                    const std::string& sym_name) {
+  assert_arm64_not_reserved_dst(dst, "emit_arm64_symbol_offset_load");
   auto movz = gen->add_instr(InstructionARM64(0xD2800000u, ARM64::Rd(dst.id())), irec);
   auto movk = gen->add_instr(
       InstructionARM64(0xF2800000u, ARM64::Field{1u << 21}, ARM64::Rd(dst.id())), irec);
@@ -907,6 +918,7 @@ void IR_IntegerMath::do_codegen_arm64(emitter::ObjectGenerator* gen,
   switch (m_kind) {
     case IntegerMathKind::ADD_64: {
       auto dst = get_reg(m_dest, allocs, irec);
+      assert_arm64_not_reserved_dst(dst, "IR_IntegerMath::ADD_64");
       gen->add_instr(IGen::add_gpr64_gpr64(*gen, dst, get_reg(m_arg, allocs, irec)), irec);
       // After converting a GOAL offset back to a host address (`.add sp off`), force 16-byte
       // alignment. GOAL process stacks are allocated at process_struct_size + heap_base, and

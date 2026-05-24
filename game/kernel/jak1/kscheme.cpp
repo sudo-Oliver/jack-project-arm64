@@ -868,6 +868,14 @@ Ptr<Type> alloc_and_init_type(Ptr<Symbol> sym, u32 method_count) {
 
   // add to symbol table.
   sym->value = new_type;
+  // debug: trace type registration to correlate with arm64 sym_offset patching
+  if (info(sym)->str.offset && info(sym)->str->len) {
+    const char* tname = info(sym)->str->data();
+    if (strcmp(tname, "task-cstage") == 0) {
+      fmt::print(stderr, "[KSCHEME-DBG] alloc_and_init_type: sym.offset=0x{:08x} s7=0x{:08x} new_type=0x{:08x} ee_val_after=0x{:08x}\n",
+                 sym.offset, s7.offset, new_type, *Ptr<uint32_t>(sym.offset));
+    }
+  }
   return Ptr<Type>(new_type);
 }
 
