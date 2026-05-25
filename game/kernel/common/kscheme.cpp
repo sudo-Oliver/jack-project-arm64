@@ -148,7 +148,8 @@ u64 call_goal(Ptr<Function> f, u64 a, u64 b, u64 c, u64 st, void* offset) {
   }
   pthread_jit_write_protect_np(1);
   u64 result = _call_goal_asm_arm64(a, b, c, fptr, st_ptr, offset);
-  pthread_jit_write_protect_np(0);
+  // Leave this thread executable. call_goal may be used from a C callback that returns directly
+  // back into GOAL; switching to write mode here causes a MAP_JIT fetch fault at the GOAL return.
   return result;
 #elif defined __APPLE__ && defined __x86_64__
   return _call_goal_asm_systemv(a, b, c, fptr, st_ptr, offset);
@@ -173,7 +174,7 @@ u64 call_goal_on_stack(Ptr<Function> f, u64 rsp, u64 st, void* offset) {
   }
   pthread_jit_write_protect_np(1);
   u64 result = _call_goal_on_stack_asm_arm64(rsp, 0, 0, fptr, st_ptr, offset);
-  pthread_jit_write_protect_np(0);
+  // Leave this thread executable for the same GOAL->C->GOAL nesting case as call_goal.
   return result;
 #elif defined __APPLE__ && defined __x86_64__
   return _call_goal_on_stack_asm_systemv(rsp, 0, 0, fptr, st_ptr, offset);

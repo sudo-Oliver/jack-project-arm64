@@ -832,15 +832,21 @@ void gl_texture_relocate(u32 destination, u32 source, u32 format) {
 }
 
 void gl_set_levels(const std::vector<std::string>& levels) {
-  g_gfx_data->loader->set_want_levels(levels);
+  if (g_gfx_data) {
+    g_gfx_data->loader->set_want_levels(levels);
+  }
 }
 
 void gl_set_active_levels(const std::vector<std::string>& levels) {
-  g_gfx_data->loader->set_active_levels(levels);
+  if (g_gfx_data) {
+    g_gfx_data->loader->set_active_levels(levels);
+  }
 }
 
 void gl_set_pmode_alp(float val) {
-  g_gfx_data->pmode_alp = val;
+  if (g_gfx_data) {
+    g_gfx_data->pmode_alp = val;
+  }
 }
 
 const GfxRendererModule gRendererOpenGL = {

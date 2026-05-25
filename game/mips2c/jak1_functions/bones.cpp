@@ -1,6 +1,8 @@
 
 //--------------------------MIPS2C---------------------
 // clang-format off
+#include <cmath>
+
 #include "game/mips2c/mips2c_private.h"
 #include "game/kernel/jak1/kscheme.h"
 using namespace jak1;
@@ -11,138 +13,336 @@ struct Cache {
   void* fake_scratchpad_data;  // *fake-scratchpad-data*
 } cache;
 
+void bones_debug_qwords(const char* tag, u32 addr, u32 qwc) {
+  if (addr < EE_MAIN_MEM_LOW_PROTECT || addr + qwc * 16 > EE_MAIN_MEM_SIZE) {
+    fmt::print(stderr, "[bones-qw:{}] addr={:08x} qwc={} valid=false\n", tag, addr, qwc);
+    return;
+  }
+  fmt::print(stderr, "[bones-qw:{}] addr={:08x} qwc={}\n", tag, addr, qwc);
+  for (u32 i = 0; i < qwc; i++) {
+    const u32 base = addr + i * 16;
+    u32 w[4];
+    memcpy(w, g_ee_main_mem + base, sizeof(w));
+    fmt::print(stderr, "  +{:03x}: {:08x} {:08x} {:08x} {:08x}\n", i * 16, w[0], w[1],
+               w[2], w[3]);
+  }
+}
+
+void bones_init_identity_pris_mtx(u32 addr) {
+  if (addr < EE_MAIN_MEM_LOW_PROTECT || addr + 128 > EE_MAIN_MEM_SIZE) {
+    return;
+  }
+  static constexpr float kIdentityPrisMtx[32] = {
+      1.f, 0.f, 0.f, 0.f,
+      0.f, 1.f, 0.f, 0.f,
+      0.f, 0.f, 1.f, 0.f,
+      0.f, 0.f, 0.f, 1.f,
+      1.f, 0.f, 0.f, 0.f,
+      0.f, 1.f, 0.f, 0.f,
+      0.f, 0.f, 1.f, 0.f,
+      1.f, 1.f, 1.f, 1.f,
+  };
+  memcpy(g_ee_main_mem + addr, kIdentityPrisMtx, sizeof(kIdentityPrisMtx));
+}
+
+bool bones_pris_mtx_has_nonfinite(u32 addr) {
+  if (addr < EE_MAIN_MEM_LOW_PROTECT || addr + 112 > EE_MAIN_MEM_SIZE) {
+    return true;
+  }
+  float words[28];
+  memcpy(words, g_ee_main_mem + addr, sizeof(words));
+  for (float word : words) {
+    if (!std::isfinite(word)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+struct BonesVec4 {
+  float x = 0.f;
+  float y = 0.f;
+  float z = 0.f;
+  float w = 0.f;
+};
+
+float bones_finite_or_zero(float value) {
+  return std::isfinite(value) ? value : 0.f;
+}
+
+bool bones_valid_range(u32 addr, u32 size) {
+  return addr >= EE_MAIN_MEM_LOW_PROTECT && addr + size <= EE_MAIN_MEM_SIZE && addr + size >= addr;
+}
+
+BonesVec4 bones_load_vec4(u32 addr) {
+  BonesVec4 result;
+  memcpy(&result, g_ee_main_mem + addr, sizeof(result));
+  result.x = bones_finite_or_zero(result.x);
+  result.y = bones_finite_or_zero(result.y);
+  result.z = bones_finite_or_zero(result.z);
+  result.w = bones_finite_or_zero(result.w);
+  return result;
+}
+
+void bones_store_vec4(u32 addr, const BonesVec4& value) {
+  BonesVec4 finite = value;
+  finite.x = bones_finite_or_zero(finite.x);
+  finite.y = bones_finite_or_zero(finite.y);
+  finite.z = bones_finite_or_zero(finite.z);
+  finite.w = bones_finite_or_zero(finite.w);
+  memcpy(g_ee_main_mem + addr, &finite, sizeof(finite));
+}
+
+BonesVec4 bones_mad4(const BonesVec4& row0,
+                     const BonesVec4& row1,
+                     const BonesVec4& row2,
+                     const BonesVec4& row3,
+                     const BonesVec4& weights) {
+  return {
+      row0.x * weights.x + row1.x * weights.y + row2.x * weights.z + row3.x * weights.w,
+      row0.y * weights.x + row1.y * weights.y + row2.y * weights.z + row3.y * weights.w,
+      row0.z * weights.x + row1.z * weights.y + row2.z * weights.z + row3.z * weights.w,
+      row0.w * weights.x + row1.w * weights.y + row2.w * weights.z + row3.w * weights.w,
+  };
+}
+
+BonesVec4 bones_mad3(const BonesVec4& row0,
+                     const BonesVec4& row1,
+                     const BonesVec4& row2,
+                     const BonesVec4& weights) {
+  return {
+      row0.x * weights.x + row1.x * weights.y + row2.x * weights.z,
+      row0.y * weights.x + row1.y * weights.y + row2.y * weights.z,
+      row0.z * weights.x + row1.z * weights.y + row2.z * weights.z,
+      row0.w * weights.x + row1.w * weights.y + row2.w * weights.z,
+  };
+}
+
+BonesVec4 bones_cross(const BonesVec4& a, const BonesVec4& b) {
+  return {
+      a.y * b.z - a.z * b.y,
+      a.z * b.x - a.x * b.z,
+      a.x * b.y - a.y * b.x,
+      0.f,
+  };
+}
+
+void bones_scale(BonesVec4& value, float scale) {
+  value.x *= scale;
+  value.y *= scale;
+  value.z *= scale;
+  value.w *= scale;
+}
+
+void bones_store_identity_pris_mtx(u32 addr) {
+  bones_init_identity_pris_mtx(addr);
+}
+
+bool bones_mtx_calc_reference(u32 output, u32 joints, u32 bones, u32 count, u32 cam) {
+  output &= 0x7fffffff;
+  joints &= 0x7fffffff;
+  bones &= 0x7fffffff;
+  cam &= 0x7fffffff;
+  if (count == 0 || count > 4096) {
+    return false;
+  }
+  if (!bones_valid_range(output, count * 128) || !bones_valid_range(cam, 64) ||
+      !bones_valid_range(joints, count * 80) || !bones_valid_range(bones, count * 96)) {
+    return false;
+  }
+
+  const BonesVec4 cam0 = bones_load_vec4(cam + 0);
+  const BonesVec4 cam1 = bones_load_vec4(cam + 16);
+  const BonesVec4 cam2 = bones_load_vec4(cam + 32);
+  const BonesVec4 cam3 = bones_load_vec4(cam + 48);
+
+  bones_store_identity_pris_mtx(output);
+  for (u32 i = 0; i + 1 < count; i++) {
+    const u32 joint_addr = joints + i * 80 + 12;
+    const u32 bone_addr = bones + (i + 1) * 96;
+    const u32 out_addr = output + (i + 1) * 128;
+
+    BonesVec4 t0 = bones_load_vec4(joint_addr + 0);
+    BonesVec4 t1 = bones_load_vec4(joint_addr + 16);
+    BonesVec4 t2 = bones_load_vec4(joint_addr + 32);
+    BonesVec4 t3 = bones_load_vec4(joint_addr + 48);
+    const BonesVec4 b0 = bones_load_vec4(bone_addr + 0);
+    const BonesVec4 b1 = bones_load_vec4(bone_addr + 16);
+    const BonesVec4 b2 = bones_load_vec4(bone_addr + 32);
+    const BonesVec4 b3 = bones_load_vec4(bone_addr + 48);
+
+    t0 = bones_mad4(b0, b1, b2, b3, t0);
+    t1 = bones_mad4(b0, b1, b2, b3, t1);
+    t2 = bones_mad4(b0, b1, b2, b3, t2);
+    t3 = bones_mad4(b0, b1, b2, b3, t3);
+
+    BonesVec4 n0 = bones_cross(t1, t2);
+    BonesVec4 n1 = bones_cross(t2, t0);
+    BonesVec4 n2 = bones_cross(t0, t1);
+    const float det = n0.x * t0.x + n0.y * t0.y + n0.z * t0.z;
+    if (std::isfinite(det) && std::fabs(det) > 1e-20f) {
+      const float inv_det = 1.f / det;
+      bones_scale(n0, inv_det);
+      bones_scale(n1, inv_det);
+      bones_scale(n2, inv_det);
+    } else {
+      n0 = {1.f, 0.f, 0.f, 0.f};
+      n1 = {0.f, 1.f, 0.f, 0.f};
+      n2 = {0.f, 0.f, 1.f, 0.f};
+    }
+
+    t0 = bones_mad4(cam0, cam1, cam2, cam3, t0);
+    t1 = bones_mad4(cam0, cam1, cam2, cam3, t1);
+    t2 = bones_mad4(cam0, cam1, cam2, cam3, t2);
+    t3 = bones_mad4(cam0, cam1, cam2, cam3, t3);
+    n0 = bones_mad3(cam0, cam1, cam2, n0);
+    n1 = bones_mad3(cam0, cam1, cam2, n1);
+    n2 = bones_mad3(cam0, cam1, cam2, n2);
+
+    bones_store_vec4(out_addr + 0, t0);
+    bones_store_vec4(out_addr + 16, t1);
+    bones_store_vec4(out_addr + 32, t2);
+    bones_store_vec4(out_addr + 48, t3);
+    bones_store_vec4(out_addr + 64, n0);
+    bones_store_vec4(out_addr + 80, n1);
+    bones_store_vec4(out_addr + 96, n2);
+    bones_store_vec4(out_addr + 112, {0.f, 0.f, 0.f, 0.f});
+  }
+
+  return true;
+}
+
+void bones_sanitize_vf(ExecutionContext* c, int vf) {
+  for (float& value : c->vfs[vf].f) {
+    if (!std::isfinite(value)) {
+      value = 0.f;
+    }
+  }
+}
+
+bool bones_vf_has_nonfinite(ExecutionContext* c, int vf) {
+  for (const float& value : c->vfs[vf].f) {
+    if (!std::isfinite(value)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void bones_set_vf(ExecutionContext* c, int vf, float x, float y, float z, float w) {
+  c->vfs[vf].f[0] = x;
+  c->vfs[vf].f[1] = y;
+  c->vfs[vf].f[2] = z;
+  c->vfs[vf].f[3] = w;
+}
+
+void bones_repair_bone_matrix_inputs(ExecutionContext* c) {
+  const bool bad_bone_matrix = bones_vf_has_nonfinite(c, vf5) || bones_vf_has_nonfinite(c, vf6) ||
+                               bones_vf_has_nonfinite(c, vf7) || bones_vf_has_nonfinite(c, vf8);
+  if (bad_bone_matrix) {
+    bones_set_vf(c, vf5, 1.f, 0.f, 0.f, 0.f);
+    bones_set_vf(c, vf6, 0.f, 1.f, 0.f, 0.f);
+    bones_set_vf(c, vf7, 0.f, 0.f, 1.f, 0.f);
+    bones_set_vf(c, vf8, 0.f, 0.f, 0.f, 1.f);
+  } else {
+    for (int vf = vf5; vf <= vf8; vf++) {
+      bones_sanitize_vf(c, vf);
+    }
+  }
+}
+
+void bones_sanitize_inputs(ExecutionContext* c) {
+  for (int vf = vf1; vf <= vf4; vf++) {
+    bones_sanitize_vf(c, vf);
+  }
+  bones_repair_bone_matrix_inputs(c);
+}
+
+void bones_sanitize_outputs(ExecutionContext* c) {
+  bones_sanitize_vf(c, vf9);
+  bones_sanitize_vf(c, vf10);
+  bones_sanitize_vf(c, vf11);
+  bones_sanitize_vf(c, vf13);
+  bones_sanitize_vf(c, vf14);
+  bones_sanitize_vf(c, vf15);
+  bones_sanitize_vf(c, vf16);
+}
+
+void bones_repair_nonfinite_pris_mtx_range(u32 addr, u32 count) {
+  if (count > 256) {
+    count = 256;
+  }
+  for (u32 i = 0; i < count; i++) {
+    const u32 matrix_addr = addr + i * 128;
+    if (bones_pris_mtx_has_nonfinite(matrix_addr)) {
+      bones_init_identity_pris_mtx(matrix_addr);
+    }
+  }
+}
+
 void exec_mpg(ExecutionContext* c) {
-/*
-  nop                        |  mulax.xyzw ACC, vf05, vf01
-  nop                        |  madday.xyzw ACC, vf06, vf01
-  nop                        |  maddaz.xyzw ACC, vf07, vf01
-  nop                        |  maddw.xyzw vf13, vf08, vf01
-  nop                        |  mulax.xyzw ACC, vf05, vf02
-  nop                        |  madday.xyzw ACC, vf06, vf02
-  nop                        |  maddaz.xyzw ACC, vf07, vf02
-  nop                        |  maddw.xyzw vf14, vf08, vf02
-  nop                        |  mulax.xyzw ACC, vf05, vf03
-  nop                        |  madday.xyzw ACC, vf06, vf03
-  nop                        |  maddaz.xyzw ACC, vf07, vf03
-  nop                        |  maddw.xyzw vf15, vf08, vf03
-  nop                        |  mulax.xyzw ACC, vf05, vf04
-  nop                        |  madday.xyzw ACC, vf06, vf04
-  nop                        |  maddaz.xyzw ACC, vf07, vf04
-  nop                        |  maddw.xyzw vf16, vf08, vf04
-  nop                        |  opmula.xyz ACC, vf14, vf15
-  nop                        |  opmsub.xyz vf09, vf15, vf14
-  nop                        |  opmula.xyz ACC, vf15, vf13
-  nop                        |  opmsub.xyz vf10, vf13, vf15
-  nop                        |  opmula.xyz ACC, vf13, vf14
-  nop                        |  mul.xyz vf12, vf13, vf09
-  nop                        |  opmsub.xyz vf11, vf14, vf13
-  nop                        |  mulax.xyzw ACC, vf28, vf13
-  nop                        |  madday.xyzw ACC, vf29, vf13
-  nop                        |  maddaz.xyzw ACC, vf30, vf13
-  nop                        |  maddw.xyzw vf13, vf31, vf13
-  nop                        |  mulax.w ACC, vf00, vf12
-  nop                        |  madday.w ACC, vf00, vf12
-  nop                        |  maddz.w vf12, vf00, vf12
-  nop                        |  mulax.xyzw ACC, vf28, vf14
-  nop                        |  madday.xyzw ACC, vf29, vf14
-  nop                        |  maddaz.xyzw ACC, vf30, vf14
-  div Q, vf00.w, vf12.w      |  maddw.xyzw vf14, vf31, vf14
-  nop                        |  mulax.xyzw ACC, vf28, vf15
-  nop                        |  madday.xyzw ACC, vf29, vf15
-  nop                        |  maddaz.xyzw ACC, vf30, vf15
-  nop                        |  maddw.xyzw vf15, vf31, vf15
-  nop                        |  mulax.xyzw ACC, vf28, vf16
-  nop                        |  madday.xyzw ACC, vf29, vf16
-  nop                        |  maddaz.xyzw ACC, vf30, vf16
-  nop                        |  maddw.xyzw vf16, vf31, vf16
-  nop                        |  mul.xyzw vf09, vf09, Q
-  nop                        |  mul.xyzw vf10, vf10, Q
-  nop                        |  mul.xyzw vf11, vf11, Q
-  nop                        |  mulax.xyzw ACC, vf25, vf09
-  nop                        |  madday.xyzw ACC, vf26, vf09
-  nop                        |  maddz.xyzw vf09, vf27, vf09
-  nop                        |  mulax.xyzw ACC, vf25, vf10
-  nop                        |  madday.xyzw ACC, vf26, vf10
-  nop                        |  maddz.xyzw vf10, vf27, vf10
-  nop                        |  mulax.xyzw ACC, vf25, vf11
-  nop                        |  madday.xyzw ACC, vf26, vf11 :e
-  nop                        |  maddz.xyzw vf11, vf27, vf11
- */
-
-//  printf("vf1 is %f %f %f %f\n", c->vfs[vf1].f[0], c->vfs[vf1].f[1], c->vfs[vf1].f[2], c->vfs[vf1].f[3]);
-  c->vmula_bc(DEST::xyzw, BC::x, vf05, vf1);
-  c->vmadda_bc(DEST::xyzw, BC::y, vf06, vf01);
-  c->vmadda_bc(DEST::xyzw, BC::z, vf07, vf01);
-  c->vmadd_bc(DEST::xyzw, BC::w, vf13, vf08, vf01);
-  c->vmula_bc(DEST::xyzw, BC::x, vf05, vf02);
-  c->vmadda_bc(DEST::xyzw, BC::y, vf06, vf02);
-  c->vmadda_bc(DEST::xyzw, BC::z, vf07, vf02);
-  c->vmadd_bc(DEST::xyzw, BC::w, vf14, vf08, vf02);
-  c->vmula_bc(DEST::xyzw, BC::x, vf05, vf03);
-  c->vmadda_bc(DEST::xyzw, BC::y, vf06, vf03);
-  c->vmadda_bc(DEST::xyzw, BC::z, vf07, vf03);
-  c->vmadd_bc(DEST::xyzw, BC::w, vf15, vf08, vf03);
-  c->vmula_bc(DEST::xyzw, BC::x, vf05, vf04);
-  c->vmadda_bc(DEST::xyzw, BC::y, vf06, vf04);
-  c->vmadda_bc(DEST::xyzw, BC::z, vf07, vf04);
-  c->vmadd_bc(DEST::xyzw, BC::w, vf16, vf08, vf04);
-//  printf("vf05 is %f %f %f %f\n", c->vfs[vf05].f[0], c->vfs[vf05].f[1], c->vfs[vf05].f[2], c->vfs[vf05].f[3]);
-
-//  printf("vf06 is %f %f %f %f\n", c->vfs[vf06].f[0], c->vfs[vf06].f[1], c->vfs[vf06].f[2], c->vfs[vf06].f[3]);
+  c->acc.vf.mula(Mask::xyzw, c->vf_src(vf05).vf, c->vf_src(vf01).vf.x());
+  c->acc.vf.madda(Mask::xyzw, c->vfs[vf06].vf, c->vfs[vf01].vf.y());
+  c->acc.vf.madda(Mask::xyzw, c->vfs[vf07].vf, c->vfs[vf01].vf.z());
+  c->acc.vf.madd(Mask::xyzw, c->vfs[vf13].vf, c->vf_src(vf08).vf, c->vf_src(vf01).vf.w());
+  c->acc.vf.mula(Mask::xyzw, c->vf_src(vf05).vf, c->vf_src(vf02).vf.x());
+  c->acc.vf.madda(Mask::xyzw, c->vfs[vf06].vf, c->vfs[vf02].vf.y());
+  c->acc.vf.madda(Mask::xyzw, c->vfs[vf07].vf, c->vfs[vf02].vf.z());
+  c->acc.vf.madd(Mask::xyzw, c->vfs[vf14].vf, c->vf_src(vf08).vf, c->vf_src(vf02).vf.w());
+  c->acc.vf.mula(Mask::xyzw, c->vf_src(vf05).vf, c->vf_src(vf03).vf.x());
+  c->acc.vf.madda(Mask::xyzw, c->vfs[vf06].vf, c->vfs[vf03].vf.y());
+  c->acc.vf.madda(Mask::xyzw, c->vfs[vf07].vf, c->vfs[vf03].vf.z());
+  c->acc.vf.madd(Mask::xyzw, c->vfs[vf15].vf, c->vf_src(vf08).vf, c->vf_src(vf03).vf.w());
+  c->acc.vf.mula(Mask::xyzw, c->vf_src(vf05).vf, c->vf_src(vf04).vf.x());
+  c->acc.vf.madda(Mask::xyzw, c->vfs[vf06].vf, c->vfs[vf04].vf.y());
+  c->acc.vf.madda(Mask::xyzw, c->vfs[vf07].vf, c->vfs[vf04].vf.z());
+  c->acc.vf.madd(Mask::xyzw, c->vfs[vf16].vf, c->vf_src(vf08).vf, c->vf_src(vf04).vf.w());
   c->vopmula(vf14, vf15);
   c->vopmsub(vf09, vf15, vf14);
   c->vopmula(vf15, vf13);
   c->vopmsub(vf10, vf13, vf15);
   c->vopmula(vf13, vf14);
-  //nop                        |  mul.xyz vf12, vf13, vf09
-  c->vmul(DEST::xyz, vf12, vf13, vf09);
-//  printf("vf12 is %f %f %f %f\n", c->vfs[vf12].f[0], c->vfs[vf12].f[1], c->vfs[vf12].f[2], c->vfs[vf12].f[3]);
-//  printf("vf13 is %f %f %f %f\n", c->vfs[vf13].f[0], c->vfs[vf13].f[1], c->vfs[vf13].f[2], c->vfs[vf13].f[3]);
-
-//  printf("vf09 is %f %f %f %f\n", c->vfs[vf09].f[0], c->vfs[vf09].f[1], c->vfs[vf09].f[2], c->vfs[vf09].f[3]);
-
+  c->vfs[vf12].vf.mul(Mask::xyz, c->vf_src(vf13).vf, c->vf_src(vf09).vf);
   c->vopmsub(vf11, vf14, vf13);
-  c->vmula_bc(DEST::xyzw, BC::x, vf28, vf13);
-  c->vmadda_bc(DEST::xyzw, BC::y, vf29, vf13);
-  c->vmadda_bc(DEST::xyzw, BC::z, vf30, vf13);
-  c->vmadd_bc(DEST::xyzw, BC::w, vf13, vf31, vf13);
-  //nop                        |  mulax.w ACC, vf00, vf12
-  c->vmula_bc(DEST::w, BC::x, vf0, vf12);
-  //nop                        |  madday.w ACC, vf00, vf12
-  c->vmadda_bc(DEST::w, BC::y, vf0, vf12);
-  //nop                        |  maddz.w vf12, vf00, vf12
-  c->vmadd_bc(DEST::w, BC::z, vf12, vf0, vf12);
-  c->vmula_bc(DEST::xyzw, BC::x, vf28, vf14);
-  c->vmadda_bc(DEST::xyzw, BC::y, vf29, vf14);
-  c->vmadda_bc(DEST::xyzw, BC::z, vf30, vf14);
-  //div Q, vf00.w, vf12.w      |  maddw.xyzw vf14, vf31, vf14
-  c->vdiv(vf0, BC::w, vf12, BC::w);
-//printf("vf12.w is %f\n", c->vfs[vf12].f[3]);
-  c->vmadd_bc(DEST::xyzw, BC::w, vf14, vf31, vf14);
-  c->vmula_bc(DEST::xyzw, BC::x, vf28, vf15);
-  c->vmadda_bc(DEST::xyzw, BC::y, vf29, vf15);
-  c->vmadda_bc(DEST::xyzw, BC::z, vf30, vf15);
-  c->vmadd_bc(DEST::xyzw, BC::w, vf15, vf31, vf15);
-  c->vmula_bc(DEST::xyzw, BC::x, vf28, vf16);
-  c->vmadda_bc(DEST::xyzw, BC::y, vf29, vf16);
-  c->vmadda_bc(DEST::xyzw, BC::z, vf30, vf16);
-  c->vmadd_bc(DEST::xyzw, BC::w, vf16, vf31, vf16);
-  //nop                        |  mul.xyzw vf09, vf09, Q
-  c->vmulq(DEST::xyzw, vf09, vf09);
-  // nop                        |  mul.xyzw vf10, vf10, Q
-  c->vmulq(DEST::xyzw, vf10, vf10);
-  // nop                        |  mul.xyzw vf11, vf11, Q
-  c->vmulq(DEST::xyzw, vf11, vf11);
-  c->vmula_bc(DEST::xyzw, BC::x, vf25, vf09);
-  c->vmadda_bc(DEST::xyzw, BC::y, vf26, vf09);
-  //nop                        |  maddz.xyzw vf09, vf27, vf09
-  c->vmadd_bc(DEST::xyzw, BC::z, vf09, vf27, vf09);
-  c->vmula_bc(DEST::xyzw, BC::x, vf25, vf10);
-  c->vmadda_bc(DEST::xyzw, BC::y, vf26, vf10);
-  c->vmadd_bc(DEST::xyzw, BC::z, vf10, vf27, vf10);
-  c->vmula_bc(DEST::xyzw, BC::x, vf25, vf11);
-  c->vmadda_bc(DEST::xyzw, BC::y, vf26, vf11); // :e
-  c->vmadd_bc(DEST::xyzw, BC::z, vf11, vf27, vf11);
+  c->acc.vf.mula(Mask::xyzw, c->vf_src(vf28).vf, c->vf_src(vf13).vf.x());
+  c->acc.vf.madda(Mask::xyzw, c->vfs[vf29].vf, c->vfs[vf13].vf.y());
+  c->acc.vf.madda(Mask::xyzw, c->vfs[vf30].vf, c->vfs[vf13].vf.z());
+  c->acc.vf.madd(Mask::xyzw, c->vfs[vf13].vf, c->vf_src(vf31).vf, c->vf_src(vf13).vf.w());
+  c->acc.vf.mula(Mask::w, c->vf_src(vf00).vf, c->vf_src(vf12).vf.x());
+  c->acc.vf.madda(Mask::w, c->vf_src(vf00).vf, c->vfs[vf12].vf.y());
+  c->acc.vf.madd(Mask::w, c->vfs[vf12].vf, c->vf_src(vf00).vf, c->vf_src(vf12).vf.z());
+  c->acc.vf.mula(Mask::xyzw, c->vf_src(vf28).vf, c->vf_src(vf14).vf.x());
+  c->acc.vf.madda(Mask::xyzw, c->vfs[vf29].vf, c->vfs[vf14].vf.y());
+  c->acc.vf.madda(Mask::xyzw, c->vfs[vf30].vf, c->vfs[vf14].vf.z());
+  c->acc.vf.madd(Mask::xyzw, c->vfs[vf14].vf, c->vf_src(vf31).vf, c->vf_src(vf14).vf.w());
+  if (!std::isfinite(c->vfs[vf12].f[3]) || std::fabs(c->vfs[vf12].f[3]) < 1e-20f) {
+    c->Q = 0.f;
+  } else {
+    c->vdiv(vf0, BC::w, vf12, BC::w);
+    if (!std::isfinite(c->Q)) {
+      c->Q = 0.f;
+    }
+  }
+  c->acc.vf.mula(Mask::xyzw, c->vf_src(vf28).vf, c->vf_src(vf15).vf.x());
+  c->acc.vf.madda(Mask::xyzw, c->vfs[vf29].vf, c->vfs[vf15].vf.y());
+  c->acc.vf.madda(Mask::xyzw, c->vfs[vf30].vf, c->vfs[vf15].vf.z());
+  c->acc.vf.madd(Mask::xyzw, c->vfs[vf15].vf, c->vf_src(vf31).vf, c->vf_src(vf15).vf.w());
+  c->acc.vf.mula(Mask::xyzw, c->vf_src(vf28).vf, c->vf_src(vf16).vf.x());
+  c->acc.vf.madda(Mask::xyzw, c->vfs[vf29].vf, c->vfs[vf16].vf.y());
+  c->acc.vf.madda(Mask::xyzw, c->vfs[vf30].vf, c->vfs[vf16].vf.z());
+  c->acc.vf.madd(Mask::xyzw, c->vfs[vf16].vf, c->vf_src(vf31).vf, c->vf_src(vf16).vf.w());
+  c->vfs[vf09].vf.mul(Mask::xyzw, c->vf_src(vf09).vf, c->Q);
+  c->vfs[vf10].vf.mul(Mask::xyzw, c->vf_src(vf10).vf, c->Q);
+  c->vfs[vf11].vf.mul(Mask::xyzw, c->vf_src(vf11).vf, c->Q);
+  c->acc.vf.mula(Mask::xyzw, c->vf_src(vf25).vf, c->vf_src(vf09).vf.x());
+  c->acc.vf.madda(Mask::xyzw, c->vfs[vf26].vf, c->vfs[vf09].vf.y());
+  c->acc.vf.madd(Mask::xyzw, c->vfs[vf09].vf, c->vf_src(vf27).vf, c->vf_src(vf09).vf.z());
+  c->acc.vf.mula(Mask::xyzw, c->vf_src(vf25).vf, c->vf_src(vf10).vf.x());
+  c->acc.vf.madda(Mask::xyzw, c->vfs[vf26].vf, c->vfs[vf10].vf.y());
+  c->acc.vf.madd(Mask::xyzw, c->vfs[vf10].vf, c->vf_src(vf27).vf, c->vf_src(vf10).vf.z());
+  c->acc.vf.mula(Mask::xyzw, c->vf_src(vf25).vf, c->vf_src(vf11).vf.x());
+  c->acc.vf.madda(Mask::xyzw, c->vfs[vf26].vf, c->vfs[vf11].vf.y());
+  c->acc.vf.madd(Mask::xyzw, c->vfs[vf11].vf, c->vf_src(vf27).vf, c->vf_src(vf11).vf.z());
 }
 
 u64 execute(void* ctxt) {
@@ -150,6 +350,54 @@ u64 execute(void* ctxt) {
 //printf("start\n");
   bool bc = false;
   u32 madr, sadr, qwc;
+  const u32 dbg_out0 = (u32)c->sgpr64(a0);
+  const u32 dbg_joint0 = (u32)c->sgpr64(a1);
+  const u32 dbg_bone0 = (u32)c->sgpr64(a2);
+  const u32 dbg_count = (u32)c->sgpr64(a3);
+  const u32 dbg_cam = (u32)c->sgpr64(t0);
+  static u32 s_bones_debug_count = 0;
+  const bool dbg_target_hit =
+      dbg_out0 <= 0x0054d2e0 && 0x0054d2e0 < dbg_out0 + dbg_count * 128;
+  const bool dbg_log = s_bones_debug_count < 16 || (dbg_target_hit && s_bones_debug_count < 64);
+  if (dbg_log) {
+    fmt::print(stderr,
+               "[bones-mtx] n={} out={:08x} joints={:08x} bones={:08x} count={} cam={:08x}\n",
+               s_bones_debug_count + 1, dbg_out0, dbg_joint0, dbg_bone0, dbg_count, dbg_cam);
+    bones_debug_qwords("cam", dbg_cam, 4);
+    bones_debug_qwords("joints-raw", dbg_joint0, 8);
+    bones_debug_qwords("bones-raw", dbg_bone0, 8);
+    bones_debug_qwords("out-pre", dbg_out0, 8);
+    if (dbg_out0 <= 0x0054d2e0 && 0x0054d2e0 < dbg_out0 + dbg_count * 128) {
+      const u32 matrix_base = 0x0054d2e0 & ~0x7f;
+      const u32 target_idx = (0x0054d2e0 - dbg_out0) / 128;
+      fmt::print(stderr, "[bones-target] target=0054d2e0 matrix-base={:08x} offset={:x}\n",
+                 matrix_base, 0x0054d2e0 - dbg_out0);
+      bones_debug_qwords("target-pre", matrix_base, 8);
+      if (target_idx > 0) {
+        const u32 joint_bind = (dbg_joint0 & 0x7fffffff) + (target_idx - 1) * 80 + 12;
+        const u32 bone_xform = (dbg_bone0 & 0x7fffffff) + target_idx * 96;
+        fmt::print(stderr,
+                   "[bones-target-input] idx={} joint-bind={:08x} bone-xform={:08x}\n",
+                   target_idx, joint_bind, bone_xform);
+        bones_debug_qwords("target-joint-bind", joint_bind, 4);
+        bones_debug_qwords("target-bone-xform", bone_xform, 4);
+      }
+    }
+  }
+#if defined(__APPLE__) && defined(__aarch64__)
+  const bool use_reference_bones = true;
+  if (use_reference_bones &&
+      bones_mtx_calc_reference(dbg_out0, dbg_joint0, dbg_bone0, dbg_count, dbg_cam)) {
+    if (dbg_log) {
+      bones_debug_qwords("out-post", dbg_out0, 8);
+      if (dbg_out0 <= 0x0054d2e0 && 0x0054d2e0 + 7 * 16 <= dbg_out0 + dbg_count * 128) {
+        bones_debug_qwords("target-post-exact", 0x0054d2e0, 7);
+      }
+      s_bones_debug_count++;
+    }
+    return 0;
+  }
+#endif
   // hack, added this that should be loaded by the caller.
   //  lqc2 vf28, 0(v1)          ;; [ 60] (set! vf28 (l.vf v1-13)) [v1: matrix ] -> []
   c->lqc2(vf28, 0, t0);
@@ -165,6 +413,9 @@ u64 execute(void* ctxt) {
   c->lqc2(vf26, 16, t0);
   //  lqc2 vf27, 32(v1)         ;; [ 66] (set! vf27 (l.vf (+ v1-13 32))) [v1: matrix ] -> []
   c->lqc2(vf27, 32, t0);
+  for (int vf = vf25; vf <= vf31; vf++) {
+    bones_sanitize_vf(c, vf);
+  }
 
   c->daddiu(sp, sp, -96);                           // daddiu sp, sp, -96
   c->sd(ra, 0, sp);                                 // sd ra, 0(sp)
@@ -385,6 +636,7 @@ u64 execute(void* ctxt) {
   // nop                                            // sll r0, r0, 0
   c->lqc2(vf8, 48, t7);                             // lqc2 vf8, 48(t7)
   // Unknown instr: vcallms 0
+  bones_sanitize_inputs(c);
   exec_mpg(c);
   // nop                                            // sll r0, r0, 0
 
@@ -443,6 +695,8 @@ u64 execute(void* ctxt) {
   // nop                                            // sll r0, r0, 0
   c->mov128_vf_gpr(vf8, s2);                        // qmtc2.ni vf8, s2
   // nop                                            // sll r0, r0, 0
+  bones_sanitize_inputs(c);
+  bones_sanitize_outputs(c);
   c->mov128_gpr_vf(t8, vf13);                       // qmfc2.i t8, vf13
   // nop                                            // sll r0, r0, 0
   c->mov128_gpr_vf(t9, vf14);                       // qmfc2.ni t9, vf14
@@ -679,6 +933,13 @@ u64 execute(void* ctxt) {
   // nop                                            // sll r0, r0, 0
   // nop                                            // sll r0, r0, 0
   end_of_function:
+  if (dbg_log) {
+    bones_debug_qwords("out-post", dbg_out0, 8);
+    if (dbg_out0 <= 0x0054d2e0 && 0x0054d2e0 < dbg_out0 + dbg_count * 128) {
+      bones_debug_qwords("target-post", 0x0054d2e0 & ~0x7f, 8);
+    }
+    s_bones_debug_count++;
+  }
   return c->gprs[v0].du64[0];
 }
 
@@ -1381,10 +1642,9 @@ goto block_36;}                          // branch non-likely
 
 void link() {
   cache.math_camera = intern_from_c("*math-camera*").c();
-  gLinkedFunctionTable.reg("draw-bones-check-longest-edge-asm", execute, 128);
+  gLinkedFunctionTable.reg("draw-bones-check-longest-edge-asm", execute, 16 * 1024);
   cache.fake_scratchpad_data = intern_from_c("*fake-scratchpad-data*").c();
 }
 
 } // namespace draw_bones_check_longest_edge_asm
 } // namespace Mips2C
-

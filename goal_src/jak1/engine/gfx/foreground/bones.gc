@@ -464,7 +464,7 @@
         (.svf (&-> out n-mtx quad 2) nmat2))))
   (none))
 
-(define *use-new-bones* #t)
+(define *use-new-bones* #f)
 
 (defun bones-mtx-calc-execute ()
   "Do all pending bone calculations"

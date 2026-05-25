@@ -1,4 +1,6 @@
 //--------------------------MIPS2C---------------------
+#include <cmath>
+
 #include "game/kernel/jak1/kscheme.h"
 #include "game/mips2c/mips2c_private.h"
 using namespace jak1;
@@ -14,6 +16,87 @@ struct Cache {
   void* fake_scratchpad_data;  // *fake-scratchpad-data*
 
 } cache;
+
+bool joint_addr_valid(u32 addr, u32 bytes) {
+  return addr >= EE_MAIN_MEM_LOW_PROTECT && addr <= EE_MAIN_MEM_SIZE &&
+         bytes <= EE_MAIN_MEM_SIZE - addr;
+}
+
+bool joint_qwords_finite(u32 addr, u32 qwc) {
+  if (!joint_addr_valid(addr, qwc * 16)) {
+    return false;
+  }
+  for (u32 i = 0; i < qwc * 4; i++) {
+    float word;
+    memcpy(&word, g_ee_main_mem + addr + i * 4, sizeof(word));
+    if (!std::isfinite(word)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool joint_qword_finite(const float* words) {
+  for (int i = 0; i < 4; i++) {
+    if (!std::isfinite(words[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+float joint_quat_len2(const float* words) {
+  return words[0] * words[0] + words[1] * words[1] + words[2] * words[2] + words[3] * words[3];
+}
+
+void joint_write_repaired_transformq(u32 addr) {
+  if (!joint_addr_valid(addr, 48)) {
+    return;
+  }
+  static constexpr float kDefaultTransformq[12] = {
+      0.f, 0.f, 0.f, 1.f,
+      0.f, 0.f, 0.f, 1.f,
+      1.f, 1.f, 1.f, 1.f,
+  };
+  float original[12];
+  float repaired[12];
+  memcpy(original, g_ee_main_mem + addr, sizeof(original));
+  memcpy(repaired, kDefaultTransformq, sizeof(repaired));
+  if (joint_qword_finite(original)) {
+    memcpy(repaired, original, 16);
+  }
+  if (joint_qword_finite(original + 4) && joint_quat_len2(original + 4) > 1e-20f) {
+    memcpy(repaired + 4, original + 4, 16);
+  }
+  if (joint_qword_finite(original + 8)) {
+    memcpy(repaired + 8, original + 8, 16);
+  }
+  memcpy(g_ee_main_mem + addr, repaired, sizeof(repaired));
+}
+
+void joint_repair_transformq_if_needed(u32 addr) {
+  static u32 s_repair_log_count = 0;
+  if (joint_qwords_finite(addr, 3)) {
+    return;
+  }
+  if (s_repair_log_count < 64) {
+    u32 q0[4] = {};
+    u32 q1[4] = {};
+    u32 q2[4] = {};
+    if (joint_addr_valid(addr, 48)) {
+      memcpy(q0, g_ee_main_mem + addr, sizeof(q0));
+      memcpy(q1, g_ee_main_mem + addr + 16, sizeof(q1));
+      memcpy(q2, g_ee_main_mem + addr + 32, sizeof(q2));
+    }
+    fmt::print(stderr,
+               "[joint-transformq-repair] n={} addr={:08x} q0={:08x},{:08x},{:08x},{:08x} "
+               "q1={:08x},{:08x},{:08x},{:08x} q2={:08x},{:08x},{:08x},{:08x}\n",
+               s_repair_log_count + 1, addr, q0[0], q0[1], q0[2], q0[3], q1[0], q1[1],
+               q1[2], q1[3], q2[0], q2[1], q2[2], q2[3]);
+    s_repair_log_count++;
+  }
+  joint_write_repaired_transformq(addr);
+}
 }
 
 namespace Mips2C::jak1 {
@@ -2047,6 +2130,7 @@ u64 execute(void* ctxt) {
   c->daddiu(a0, a0, 128);                           // daddiu a0, a0, 128
 
   block_1:
+  joint_repair_transformq_if_needed((u32)c->sgpr64(a0));
   c->lqc2(vf4, 16, a0);                             // lqc2 vf4, 16(a0)
   c->lqc2(vf1, 0, a0);                              // lqc2 vf1, 0(a0)
   c->lqc2(vf7, 32, a0);                             // lqc2 vf7, 32(a0)
@@ -2403,6 +2487,7 @@ u64 execute(void* ctxt) {
   bool bc = false;
   // nop                                            // sll r0, r0, 0
   c->lw(a3, 0, a0);                                 // lw a3, 0(a0)
+  joint_repair_transformq_if_needed((u32)c->sgpr64(a1));
   c->lui(v1, 16256);                                // lui v1, 16256
   c->lqc2(vf5, 16, a1);                             // lqc2 vf5, 16(a1)
   c->mtc1(f0, v1);                                  // mtc1 f0, v1

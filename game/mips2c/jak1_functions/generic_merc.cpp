@@ -1,5 +1,8 @@
 #include "game/kernel/jak1/kscheme.h"
 #include "game/mips2c/mips2c_private.h"
+
+#include <cmath>
+
 using namespace jak1;
 
 namespace Mips2C::jak1 {
@@ -26,6 +29,32 @@ u64 execute(void* ctxt);
 //--------------------------MIPS2C---------------------
 // clang-format off
 namespace Mips2C::jak1 {
+namespace {
+void merc_debug_dma_copy(const char* tag, u32 madr, u32 sadr, u32 qwc, u32 new_basep) {
+  static u32 s_copy_log_count = 0;
+  u32 q[8] = {};
+  const u32 bytes = qwc * 16;
+  const bool valid = madr >= EE_MAIN_MEM_LOW_PROTECT && madr + bytes <= EE_MAIN_MEM_SIZE;
+  if (valid && bytes) {
+    const u32 dump_bytes = bytes < sizeof(q) ? bytes : sizeof(q);
+    memcpy(q, g_ee_main_mem + madr, dump_bytes);
+  }
+  bool all_zero = true;
+  for (u32 word : q) {
+    all_zero &= (word == 0);
+  }
+  if (s_copy_log_count < 80 || all_zero || !valid) {
+    fmt::print(stderr,
+               "[merc-dma-copy:{}] n={} madr={:08x} sadr={:04x} qwc={} bytes={} "
+               "new-basep={:08x} valid={} all-zero={} "
+               "q0={:08x},{:08x},{:08x},{:08x} q1={:08x},{:08x},{:08x},{:08x}\n",
+               tag, s_copy_log_count, madr, sadr, qwc, bytes, new_basep, valid, all_zero,
+               q[0], q[1], q[2], q[3], q[4], q[5], q[6], q[7]);
+  }
+  s_copy_log_count++;
+}
+}  // namespace
+
 namespace generic_merc_init_asm {
 struct Cache {
   void* fake_scratchpad_data; // *fake-scratchpad-data*
@@ -300,6 +329,14 @@ u64 execute(void* ctxt) {
   u32 call_addr = 0;
   u32 qwc = 0;
   u32 madr = 0;
+  u32 merc_meta_7300 = 0;
+  u32 merc_meta_7304 = 0;
+  u32 merc_meta_7308 = 0;
+  u32 merc_meta_7312 = 0;
+  u32 merc_meta_7316 = 0;
+  u32 merc_meta_7320 = 0;
+  u128 saved_s0, saved_s1, saved_s2, saved_s3, saved_s4, saved_s5;
+  u128 saved_s6, saved_s7, saved_gp, saved_sp, saved_fp, saved_ra;
   c->daddiu(sp, sp, -272);                          // daddiu sp, sp, -272
   c->sd(ra, 0, sp);                                 // sd ra, 0(sp)
   c->sd(fp, 8, sp);                                 // sd fp, 8(sp)
@@ -472,6 +509,11 @@ u64 execute(void* ctxt) {
   c->sw(s1, 300, a2);                               // sw s1, 300(a2)
   c->sw(a1, 304, a2);                               // sw a1, 304(a2)
   c->sw(s4, 312, a2);                               // sw s4, 312(a2)
+  merc_meta_7300 = (u32)c->sgpr64(v1);
+  merc_meta_7304 = (u32)c->sgpr64(a0);
+  merc_meta_7308 = (u32)c->sgpr64(s1);
+  merc_meta_7312 = (u32)c->sgpr64(a1);
+  merc_meta_7320 = (u32)c->sgpr64(s4);
   c->mov64(a1, s4);                                 // or a1, s4, r0
   c->lui(a1, 4096);                                 // lui a1, 4096
   c->ori(a1, a1, 54272);                            // ori a1, a1, 54272
@@ -702,14 +744,80 @@ u64 execute(void* ctxt) {
   c->daddu(a0, a0, a1);                             // daddu a0, a0, a1
   c->daddiu(v1, v1, 16);                            // daddiu v1, v1, 16
   c->sw(v1, 308, a0);                               // sw v1, 308(a0)
+  merc_meta_7316 = (u32)c->sgpr64(v1);
+  {
+    u32 spad_base = 0;
+    memcpy(&spad_base, cache.fake_scratchpad_data, 4);
+    memcpy(g_ee_main_mem + spad_base + 7300, &merc_meta_7300, 4);
+    memcpy(g_ee_main_mem + spad_base + 7304, &merc_meta_7304, 4);
+    memcpy(g_ee_main_mem + spad_base + 7308, &merc_meta_7308, 4);
+    memcpy(g_ee_main_mem + spad_base + 7312, &merc_meta_7312, 4);
+    memcpy(g_ee_main_mem + spad_base + 7316, &merc_meta_7316, 4);
+    memcpy(g_ee_main_mem + spad_base + 7320, &merc_meta_7320, 4);
+  }
   get_fake_spad_addr(v1, cache.fake_scratchpad_data, 0, c);// lui v1, 28672
   c->lwu(t9, 7328, v1);                             // lwu t9, 7328(v1)
   call_addr = c->gprs[t9].du32[0];                  // function call:
   c->sll(v0, ra, 0);                                // sll v0, ra, 0
   // c->jalr(call_addr);                               // jalr ra, t9
+  saved_s0 = c->gprs[s0];
+  saved_s1 = c->gprs[s1];
+  saved_s2 = c->gprs[s2];
+  saved_s3 = c->gprs[s3];
+  saved_s4 = c->gprs[s4];
+  saved_s5 = c->gprs[s5];
+  saved_s6 = c->gprs[s6];
+  saved_s7 = c->gprs[s7];
+  saved_gp = c->gprs[gp];
+  saved_sp = c->gprs[sp];
+  saved_fp = c->gprs[fp];
+  saved_ra = c->gprs[ra];
   mercneric_convert::execute(c);
+  c->gprs[s0] = saved_s0;
+  c->gprs[s1] = saved_s1;
+  c->gprs[s2] = saved_s2;
+  c->gprs[s3] = saved_s3;
+  c->gprs[s4] = saved_s4;
+  c->gprs[s5] = saved_s5;
+  c->gprs[s6] = saved_s6;
+  c->gprs[s7] = saved_s7;
+  c->gprs[gp] = saved_gp;
+  c->gprs[sp] = saved_sp;
+  c->gprs[fp] = saved_fp;
+  c->gprs[ra] = saved_ra;
 
   block_44:
+  {
+    u32 spad_base = 0;
+    memcpy(&spad_base, cache.fake_scratchpad_data, 4);
+    static u32 s_post_convert_calls = 0;
+    if (s_post_convert_calls < 8) {
+      u32 p6756 = 0, p6760 = 0, p6768 = 0;
+      memcpy(&p6756, g_ee_main_mem + spad_base + 6756, 4);
+      memcpy(&p6760, g_ee_main_mem + spad_base + 6760, 4);
+      memcpy(&p6768, g_ee_main_mem + spad_base + 6768, 4);
+      fmt::print(stderr, "[post-convert] call={} spad={:08x} 6756={:08x} 6760={:08x} 6768={:08x}\n",
+                 s_post_convert_calls, spad_base, p6756, p6760, p6768);
+      s_post_convert_calls++;
+    }
+    auto sanitize_optional_ptr = [&](u32 off) {
+      u32 ptr = 0;
+      memcpy(&ptr, g_ee_main_mem + spad_base + off, 4);
+      if (ptr != 0 && (ptr < EE_MAIN_MEM_LOW_PROTECT || ptr >= EE_MAIN_MEM_SIZE)) {
+        fmt::print(stderr, "[merc-sanitize] off={} stale-ptr={:08x} -> 0\n", off, ptr);
+        ptr = 0;
+        memcpy(g_ee_main_mem + spad_base + off, &ptr, 4);
+        return true;
+      }
+      return false;
+    };
+    sanitize_optional_ptr(6756);
+    if (sanitize_optional_ptr(6768)) {
+      u32 zero = 0;
+      memcpy(g_ee_main_mem + spad_base + 6764, &zero, 2);
+      memcpy(g_ee_main_mem + spad_base + 6766, &zero, 2);
+    }
+  }
   get_fake_spad_addr(v1, cache.fake_scratchpad_data, 0, c);// lui v1, 28672
   c->addiu(a0, r0, 1);                              // addiu a0, r0, 1
   c->lbu(a1, 6760, v1);                             // lbu a1, 6760(v1)
@@ -747,7 +855,33 @@ u64 execute(void* ctxt) {
   // nop                                            // sll r0, r0, 0
   call_addr = c->gprs[v1].du32[0];                  // function call:
   // nop                                            // sll r0, r0, 0
-  c->jalr(call_addr);                               // jalr ra, v1
+  // high-speed-reject is a mips2c function. Calling it through the GOAL trampoline on ARM64 can
+  // corrupt the native LR/FP path when it re-enters from generic-merc-execute-asm.
+  saved_s0 = c->gprs[s0];
+  saved_s1 = c->gprs[s1];
+  saved_s2 = c->gprs[s2];
+  saved_s3 = c->gprs[s3];
+  saved_s4 = c->gprs[s4];
+  saved_s5 = c->gprs[s5];
+  saved_s6 = c->gprs[s6];
+  saved_s7 = c->gprs[s7];
+  saved_gp = c->gprs[gp];
+  saved_sp = c->gprs[sp];
+  saved_fp = c->gprs[fp];
+  saved_ra = c->gprs[ra];
+  high_speed_reject::execute(c);
+  c->gprs[s0] = saved_s0;
+  c->gprs[s1] = saved_s1;
+  c->gprs[s2] = saved_s2;
+  c->gprs[s3] = saved_s3;
+  c->gprs[s4] = saved_s4;
+  c->gprs[s5] = saved_s5;
+  c->gprs[s6] = saved_s6;
+  c->gprs[s7] = saved_s7;
+  c->gprs[gp] = saved_gp;
+  c->gprs[sp] = saved_sp;
+  c->gprs[fp] = saved_fp;
+  c->gprs[ra] = saved_ra;
 
   block_50:
   get_fake_spad_addr(v1, cache.fake_scratchpad_data, 0, c);// lui v1, 28672
@@ -938,7 +1072,16 @@ u64 execute(void* ctxt) {
   c->lq(a2, 144, sp);                               // lq a2, 144(sp)
   call_addr = c->gprs[t9].du32[0];                  // function call:
   c->sll(v0, ra, 0);                                // sll v0, ra, 0
-  c->jalr(call_addr);                               // jalr ra, t9
+  if (call_addr) {
+    c->jalr(call_addr);                             // jalr ra, t9
+  } else {
+    static u32 s_missing_merc_death_spawn = 0;
+    if (s_missing_merc_death_spawn < 16) {
+      fmt::print(stderr, "[merc-death-spawn] unresolved, skip spawn arg0={:08x}\n",
+                 (u32)c->sgpr64(a0));
+    }
+    s_missing_merc_death_spawn++;
+  }
   c->lq(v1, 96, sp);                                // lq v1, 96(sp)
   c->daddu(s0, s0, v1);                             // daddu s0, s0, v1
 
@@ -1095,6 +1238,7 @@ u64 execute(void* ctxt) {
   c->daddu(a0, a1, t0);                             // daddu a0, a1, t0
   // c->sw(a3, 0, a2);                                 // sw a3, 0(a2)
   spad_from_dma_no_sadr_off(cache.fake_scratchpad_data, madr, sadr, qwc);
+  merc_debug_dma_copy("block80", madr, sadr, qwc, (u32)c->sgpr64(a0));
   // nop                                            // sll r0, r0, 0
   c->sw(a0, 76, at);                                // sw a0, 76(at)
   c->gprs[a0].du64[0] = 0;                          // or a0, r0, r0
@@ -1204,6 +1348,7 @@ u64 execute(void* ctxt) {
   c->daddu(a0, a1, t0);                             // daddu a0, a1, t0
   // c->sw(a3, 0, a2);                                 // sw a3, 0(a2)
   spad_from_dma_no_sadr_off(cache.fake_scratchpad_data, madr, sadr, qwc);
+  merc_debug_dma_copy("block90", madr, sadr, qwc, (u32)c->sgpr64(a0));
   // nop                                            // sll r0, r0, 0
   c->sw(a0, 76, at);                                // sw a0, 76(at)
   c->gprs[a0].du64[0] = 0;                          // or a0, r0, r0
@@ -1286,6 +1431,7 @@ u64 execute(void* ctxt) {
   c->daddu(a0, a1, t0);                             // daddu a0, a1, t0
   // c->sw(a3, 0, a2);                                 // sw a3, 0(a2)
   spad_from_dma_no_sadr_off(cache.fake_scratchpad_data, madr, sadr, qwc);
+  merc_debug_dma_copy("block97", madr, sadr, qwc, (u32)c->sgpr64(a0));
   // nop                                            // sll r0, r0, 0
   c->sw(a0, 76, at);                                // sw a0, 76(at)
   c->gprs[a0].du64[0] = 0;                          // or a0, r0, r0
@@ -1343,7 +1489,7 @@ void link() {
   cache.merc_globals = intern_from_c("*merc-globals*").c();
   cache.merc_death_spawn = intern_from_c("merc-death-spawn").c();
   cache.vector_matrix = intern_from_c("vector-matrix*!").c();
-  gLinkedFunctionTable.reg("generic-merc-execute-asm", execute, 1024);
+  gLinkedFunctionTable.reg("generic-merc-execute-asm", execute, 512);
 }
 
 } // namespace generic_merc_execute_asm
@@ -1359,31 +1505,286 @@ struct Cache {
 } cache;
 
 u8 vu0_data_mem[1024 * 4];
+u64 mercneric_execute_count = 0;
+
+constexpr u32 vu0_qw_mask = (sizeof(vu0_data_mem) / 16) - 1;
+
+u32 vu0_qw(u32 qw) {
+  return qw & vu0_qw_mask;
+}
+
+float merc_rsqrt_q(ExecutionContext* c) {
+  const float src = c->vf_src(vf16).vf.x();
+  const float numerator = c->vf_src(vf00).vf.w();
+  auto keep_previous_q = [&]() {
+    if (std::isfinite(c->Q) && c->Q != 0.f) {
+      return c->Q;
+    }
+    return 1.f;
+  };
+  if (!std::isfinite(src) || !std::isfinite(numerator)) {
+    return keep_previous_q();
+  }
+  const float denom = std::sqrt(std::abs(src));
+  if (denom == 0.f || !std::isfinite(denom)) {
+    return keep_previous_q();
+  }
+  const float q = numerator / denom;
+  return std::isfinite(q) ? q : keep_previous_q();
+}
+
+bool merc_debug_call(u64 call) {
+  return call <= 2;
+}
+
+bool merc_debug_meta_bad(u32 ptr) {
+  return ptr == 0 || ptr == 0x7fc00000 || ptr == 0x7fc04000 || ptr >= EE_MAIN_MEM_SIZE;
+}
+
+u32 merc_spad_word(u32 spad, u32 off) {
+  u32 val;
+  memcpy(&val, g_ee_main_mem + spad + off, 4);
+  return val;
+}
+
+u32 merc_mem_word(u32 addr) {
+  if (addr + 4 > EE_MAIN_MEM_SIZE) {
+    return 0xffffffff;
+  }
+  u32 val = 0;
+  memcpy(&val, g_ee_main_mem + addr, 4);
+  return val;
+}
+
+void merc_debug_qwords(const char* tag, u64 call, u32 addr, u32 qwc) {
+  static u32 s_qword_log_count = 0;
+  if (s_qword_log_count >= 96) {
+    return;
+  }
+  const bool valid = addr < EE_MAIN_MEM_SIZE && addr + qwc * 16 <= EE_MAIN_MEM_SIZE;
+  if (!merc_debug_call(call) && valid) {
+    return;
+  }
+  s_qword_log_count++;
+  fmt::print(stderr, "[merc-qw:{}] call={} addr={:08x} qwc={} valid={}\n", tag, call, addr, qwc,
+             valid);
+  for (u32 i = 0; i < qwc; i++) {
+    const u32 base = addr + i * 16;
+    fmt::print(stderr, "  +{:03x}: {:08x} {:08x} {:08x} {:08x}\n", i * 16,
+               merc_mem_word(base + 0), merc_mem_word(base + 4), merc_mem_word(base + 8),
+               merc_mem_word(base + 12));
+  }
+}
+
+bool merc_vf_finite(ExecutionContext* c, int vf) {
+  const auto& v = c->vfs[vf];
+  return std::isfinite(v.f[0]) && std::isfinite(v.f[1]) && std::isfinite(v.f[2]) &&
+         std::isfinite(v.f[3]);
+}
+
+bool merc_mem_qword_finite(u32 addr) {
+  if (addr < EE_MAIN_MEM_LOW_PROTECT || addr + 16 > EE_MAIN_MEM_SIZE) {
+    return false;
+  }
+  float values[4];
+  memcpy(values, g_ee_main_mem + addr, sizeof(values));
+  return std::isfinite(values[0]) && std::isfinite(values[1]) && std::isfinite(values[2]) &&
+         std::isfinite(values[3]);
+}
+
+bool merc_mem_qword_nonzero_xyz(u32 addr) {
+  if (addr < EE_MAIN_MEM_LOW_PROTECT || addr + 16 > EE_MAIN_MEM_SIZE) {
+    return false;
+  }
+  float values[4];
+  memcpy(values, g_ee_main_mem + addr, sizeof(values));
+  if (!std::isfinite(values[0]) || !std::isfinite(values[1]) || !std::isfinite(values[2])) {
+    return false;
+  }
+  return std::fabs(values[0]) + std::fabs(values[1]) + std::fabs(values[2]) > 1e-20f;
+}
+
+void merc_load_vf_from_mem(ExecutionContext* c, int vf, u32 addr) {
+  if (addr >= EE_MAIN_MEM_LOW_PROTECT && addr + 16 <= EE_MAIN_MEM_SIZE) {
+    memcpy(&c->vfs[vf], g_ee_main_mem + addr, 16);
+  }
+}
+
+void merc_set_vf(ExecutionContext* c, int vf, float x, float y, float z, float w) {
+  c->vfs[vf].f[0] = x;
+  c->vfs[vf].f[1] = y;
+  c->vfs[vf].f[2] = z;
+  c->vfs[vf].f[3] = w;
+}
+
+void merc_set_identity_table_vectors(ExecutionContext* c) {
+  merc_set_vf(c, vf20, 1.f, 0.f, 0.f, 0.f);
+  merc_set_vf(c, vf21, 0.f, 1.f, 0.f, 0.f);
+  merc_set_vf(c, vf22, 0.f, 0.f, 1.f, 0.f);
+  merc_set_vf(c, vf23, 0.f, 0.f, 0.f, 1.f);
+  merc_set_vf(c, vf24, 1.f, 0.f, 0.f, 0.f);
+  merc_set_vf(c, vf25, 0.f, 1.f, 0.f, 0.f);
+  merc_set_vf(c, vf26, 0.f, 0.f, 1.f, 0.f);
+}
+
+bool merc_read_ref_matrix_tag(u32 row_addr, u32* out_addr, u32* out_qwc) {
+  if (row_addr < EE_MAIN_MEM_LOW_PROTECT || row_addr + 8 > EE_MAIN_MEM_SIZE) {
+    return false;
+  }
+  u32 tag_lo = 0;
+  u32 tag_hi = 0;
+  memcpy(&tag_lo, g_ee_main_mem + row_addr, sizeof(tag_lo));
+  memcpy(&tag_hi, g_ee_main_mem + row_addr + 4, sizeof(tag_hi));
+  const u32 qwc = tag_lo & 0xffff;
+  const u32 kind = (tag_lo >> 28) & 0x7;
+  const u32 addr = tag_hi & 0x7fffffff;
+  if (kind != (u32)DmaTag::Kind::REF || qwc < 7 || addr < EE_MAIN_MEM_LOW_PROTECT ||
+      addr + 7 * 16 > EE_MAIN_MEM_SIZE) {
+    return false;
+  }
+  *out_addr = addr;
+  *out_qwc = qwc;
+  return true;
+}
+
+void merc_repair_table_vectors_if_needed(ExecutionContext* c, u64 call, u32 spad, u32 row_addr) {
+  static u32 s_repair_log_count = 0;
+
+  u32 ref_addr = 0;
+  u32 ref_qwc = 0;
+  bool force_fallback = false;
+  if (merc_read_ref_matrix_tag(row_addr, &ref_addr, &ref_qwc)) {
+    bool src_finite = true;
+    for (int i = 0; i < 7; i++) {
+      src_finite = src_finite && merc_mem_qword_finite(ref_addr + i * 16);
+    }
+    const bool src_has_basis = merc_mem_qword_nonzero_xyz(ref_addr);
+    if (src_finite && src_has_basis) {
+      for (int i = 0; i < 7; i++) {
+        merc_load_vf_from_mem(c, vf20 + i, ref_addr + i * 16);
+      }
+      if (s_repair_log_count < 64) {
+        s_repair_log_count++;
+        fmt::print(stderr,
+                   "[merc-table-ref-load] n={} call={} row={:08x} src={:08x} qwc={} "
+                   "vf20={:08x},{:08x},{:08x},{:08x} vf23={:08x},{:08x},{:08x},{:08x}\n",
+                   s_repair_log_count, call, row_addr, ref_addr, ref_qwc,
+                   c->vfs[vf20].du32[0], c->vfs[vf20].du32[1], c->vfs[vf20].du32[2],
+                   c->vfs[vf20].du32[3], c->vfs[vf23].du32[0], c->vfs[vf23].du32[1],
+                   c->vfs[vf23].du32[2], c->vfs[vf23].du32[3]);
+      }
+      return;
+    }
+    if (s_repair_log_count < 64) {
+      s_repair_log_count++;
+      fmt::print(stderr,
+                 "[merc-table-ref-bad-src] n={} call={} row={:08x} src={:08x} qwc={} "
+                 "src0-finite={} src3-finite={} src0-basis={}\n",
+                 s_repair_log_count, call, row_addr, ref_addr, ref_qwc,
+                 merc_mem_qword_finite(ref_addr), merc_mem_qword_finite(ref_addr + 3 * 16),
+                 src_has_basis);
+    }
+    force_fallback = true;
+  }
+
+  if (!force_fallback && merc_vf_finite(c, vf20) && merc_vf_finite(c, vf21) && merc_vf_finite(c, vf22) &&
+      merc_vf_finite(c, vf23) && merc_vf_finite(c, vf24) && merc_vf_finite(c, vf25) &&
+      merc_vf_finite(c, vf26)) {
+    return;
+  }
+
+  if (force_fallback) {
+    merc_set_identity_table_vectors(c);
+  } else {
+    for (int i = 0; i < 7; i++) {
+      merc_load_vf_from_mem(c, vf20 + i, spad + 11808 + i * 16);
+    }
+  }
+  if (s_repair_log_count < 64) {
+    s_repair_log_count++;
+    fmt::print(stderr,
+               "[merc-table-repair] n={} call={} row={:08x} spad={:08x} "
+               "vf20={:08x},{:08x},{:08x},{:08x} vf23={:08x},{:08x},{:08x},{:08x}\n",
+               s_repair_log_count, call, row_addr, spad, c->vfs[vf20].du32[0],
+               c->vfs[vf20].du32[1], c->vfs[vf20].du32[2], c->vfs[vf20].du32[3],
+               c->vfs[vf23].du32[0], c->vfs[vf23].du32[1], c->vfs[vf23].du32[2],
+               c->vfs[vf23].du32[3]);
+  }
+}
+
+void merc_debug_meta(const char* tag, ExecutionContext* c, u64 call, u32 spad, u32 v1_addr) {
+  const u32 m7308 = merc_spad_word(spad, 7308);
+  const u32 m7312 = merc_spad_word(spad, 7312);
+  const u32 m7316 = merc_spad_word(spad, 7316);
+  if (merc_debug_call(call) || merc_debug_meta_bad(m7316) || merc_debug_meta_bad(m7308)) {
+    fmt::print(stderr,
+               "[merc-meta:{}] call={} spad={:08x} v1={:08x} v1rel={:04x} "
+               "7308={:08x} 7312={:08x} 7316={:08x} "
+               "a0={:08x} a1={:08x} s5={:08x} s4={:08x} t5={:08x} Q={}\n",
+               tag, call, spad, v1_addr, v1_addr - spad, m7308, m7312, m7316,
+               (u32)c->sgpr64(a0), (u32)c->sgpr64(a1), (u32)c->sgpr64(s5),
+               (u32)c->sgpr64(s4), (u32)c->sgpr64(t5), c->Q);
+  }
+}
+
+void merc_debug_store(const char* tag, ExecutionContext* c, u64 call, u32 spad, u32 addr, u32 size) {
+  const u32 rel = addr - spad;
+  const bool hits_meta = addr >= spad && rel < 7352 && rel + size > 7300;
+  if (merc_debug_call(call) || hits_meta) {
+    fmt::print(stderr,
+               "[merc-store:{}] call={} addr={:08x} rel={:04x} size={} hits_meta={} "
+               "7308={:08x} 7312={:08x} 7316={:08x} a0={:08x} v1={:08x}\n",
+               tag, call, addr, rel, size, hits_meta, merc_spad_word(spad, 7308),
+               merc_spad_word(spad, 7312), merc_spad_word(spad, 7316),
+               (u32)c->sgpr64(a0), (u32)c->sgpr64(v1));
+  }
+  static u32 s_vf_store_debug_count = 0;
+  int vf = -1;
+  if (std::strstr(tag, "sq14")) {
+    vf = vf14;
+  } else if (std::strstr(tag, "sq15")) {
+    vf = vf15;
+  }
+  if (vf >= 0 && s_vf_store_debug_count < 96) {
+    const auto& v = c->vfs[vf];
+    const bool bad = !std::isfinite(v.f[0]) || !std::isfinite(v.f[1]) ||
+                     !std::isfinite(v.f[2]) || !std::isfinite(v.f[3]);
+    const bool zero = v.f[0] == 0.f && v.f[1] == 0.f && v.f[2] == 0.f && v.f[3] == 0.f;
+    if (merc_debug_call(call) || bad || zero) {
+      s_vf_store_debug_count++;
+      fmt::print(stderr,
+                 "[merc-vf:{}] call={} vf={} addr={:08x} bits={:08x},{:08x},{:08x},{:08x} "
+                 "f=({:.6g},{:.6g},{:.6g},{:.6g}) Q={} bad={} zero={}\n",
+                 tag, call, vf, addr, v.du32[0], v.du32[1], v.du32[2], v.du32[3],
+                 v.f[0], v.f[1], v.f[2], v.f[3], c->Q, bad, zero);
+    }
+  }
+}
 
 void sq_buffer(Mask mask, const Vf& data, u32 qw) {
-  ASSERT(qw * 16 < sizeof(vu0_data_mem));
+  u8* dst = vu0_data_mem + vu0_qw(qw) * 16;
   for (int i = 0; i < 4; i++) {
     if ((u64)mask & (1 << i)) {
-      memcpy(vu0_data_mem + qw * 16 + i * 4, data.data + i, 4);
+      memcpy(dst + i * 4, data.data + i, 4);
     }
   }
 }
 
 void sq_xyzw(const Vf& data, u32 qw) {
-  memcpy(vu0_data_mem + qw * 16, data.data, 16);
+  memcpy(vu0_data_mem + vu0_qw(qw) * 16, data.data, 16);
 }
 
 void lq_buffer(Mask mask, Vf& data, u32 qw) {
-  ASSERT(qw * 16 < sizeof(vu0_data_mem));
+  const u8* src = vu0_data_mem + vu0_qw(qw) * 16;
   for (int i = 0; i < 4; i++) {
     if ((u64)mask & (1 << i)) {
-      memcpy(data.data + i, vu0_data_mem + qw * 16 + i * 4, 4);
+      memcpy(data.data + i, src + i * 4, 4);
     }
   }
 }
 
 void lq_xyzw(Vf& data, u32 qw) {
-  memcpy(data.data, vu0_data_mem + qw * 16, 16);
+  memcpy(data.data, vu0_data_mem + vu0_qw(qw) * 16, 16);
 }
 
 void vcallms_280(ExecutionContext* c, u16* vis) {
@@ -1454,6 +1855,22 @@ void vcallms_280(ExecutionContext* c, u16* vis) {
 
 void vcallms_303(ExecutionContext* c, u16* vis) {
   // vf21.x coming into here is bad (should be < 1, I think)
+  static u32 s_vcall303_debug_count = 0;
+  const bool debug = s_vcall303_debug_count < 32;
+  if (debug) {
+    s_vcall303_debug_count++;
+    fmt::print(stderr,
+               "[merc-vu303:in] n={} vf19x={} vf19={:08x},{:08x},{:08x},{:08x} "
+               "vf20={:08x},{:08x},{:08x},{:08x} vf21={:08x},{:08x},{:08x},{:08x} "
+               "vf22={:08x},{:08x},{:08x},{:08x} vi14={}\n",
+               s_vcall303_debug_count, c->vf_src(vf19).vf.x(), c->vfs[vf19].du32[0],
+               c->vfs[vf19].du32[1], c->vfs[vf19].du32[2], c->vfs[vf19].du32[3],
+               c->vfs[vf20].du32[0], c->vfs[vf20].du32[1], c->vfs[vf20].du32[2],
+               c->vfs[vf20].du32[3], c->vfs[vf21].du32[0], c->vfs[vf21].du32[1],
+               c->vfs[vf21].du32[2], c->vfs[vf21].du32[3], c->vfs[vf22].du32[0],
+               c->vfs[vf22].du32[1], c->vfs[vf22].du32[2], c->vfs[vf22].du32[3],
+               vis[vi14]);
+  }
   // sq.xyzw vf23, 3(vi14)      |  mulx.xyzw vf11, vf20, vf19
   c->vfs[vf11].vf.mul_xyzw(c->vf_src(vf20).vf, c->vf_src(vf19).vf.x());   sq_xyzw(c->vf_src(vf23).vf, vis[vi14] + 3);
   // sq.xyzw vf24, 4(vi14)      |  mulx.xyzw vf12, vf21, vf19
@@ -1470,6 +1887,16 @@ void vcallms_303(ExecutionContext* c, u16* vis) {
   // sq.xyzw vf13, 2(vi14)      |  nop :e
   sq_xyzw(c->vf_src(vf13).vf, vis[vi14] + 2);
   // nop                        |  nop
+  if (debug) {
+    fmt::print(stderr,
+               "[merc-vu303:out] n={} vf11={:08x},{:08x},{:08x},{:08x} "
+               "vf12={:08x},{:08x},{:08x},{:08x} vf13={:08x},{:08x},{:08x},{:08x}\n",
+               s_vcall303_debug_count, c->vfs[vf11].du32[0], c->vfs[vf11].du32[1],
+               c->vfs[vf11].du32[2], c->vfs[vf11].du32[3], c->vfs[vf12].du32[0],
+               c->vfs[vf12].du32[1], c->vfs[vf12].du32[2], c->vfs[vf12].du32[3],
+               c->vfs[vf13].du32[0], c->vfs[vf13].du32[1], c->vfs[vf13].du32[2],
+               c->vfs[vf13].du32[3]);
+  }
 
 }
 
@@ -1482,7 +1909,7 @@ void vcallms_311_case_314_ref(ExecutionContext* c, u16* vis) {
   // sqi.xyzw vf04, vi08        |  mulaw.xyzw ACC, vf20, vf08
   c->acc.vf.mula_xyzw(c->vf_src(vf20).vf, c->vf_src(vf08).vf.w());   sq_xyzw(c->vf_src(vf04).vf, vis[vi08]++);
   // rsqrt Q, vf00.w, vf16.x    |  maddaw.xyzw ACC, vf21, vf09
-  c->acc.vf.madda_xyzw(c->vfs[vf21].vf, c->vfs[vf09].vf.w());   c->Q = c->vf_src(vf00).vf.w() / std::sqrt(c->vf_src(vf16).vf.x());
+  c->acc.vf.madda_xyzw(c->vfs[vf21].vf, c->vfs[vf09].vf.w());   c->Q = merc_rsqrt_q(c);
   // lq.xyzw vf24, -124(vi11)   |  maddaw.xyzw ACC, vf22, vf10
   c->acc.vf.madda_xyzw(c->vfs[vf22].vf, c->vfs[vf10].vf.w());   lq_xyzw(c->vfs[vf24].vf, vis[vi11] + -124);
   // lq.xyzw vf25, -123(vi11)   |  maddw.xyzw vf15, vf23, vf00
@@ -1542,7 +1969,7 @@ void vcallms_311_case_314(ExecutionContext* c, u16* vis) {
   vis[vi11] = c->vf_src(vf01).vf.x_as_u16();
   c->vfs[vf14].vf.mul_xyzw(c->vf_src(vf13).vf, c->Q);
   sq_xyzw(c->vf_src(vf04).vf, vis[vi08]++);
-  c->Q = 1.f / std::sqrt(c->vf_src(vf16).vf.x());
+  c->Q = merc_rsqrt_q(c);
 
 
 
@@ -1565,7 +1992,9 @@ void vcallms_311_case_314(ExecutionContext* c, u16* vis) {
   //  lq_xyzw(c->vfs[vf24].vf, vis[vi11] + -124);
   //  lq_xyzw(c->vfs[vf25].vf, vis[vi11] + -123);
   //  lq_xyzw(c->vfs[vf26].vf, vis[vi11] + -122);
-  memcpy(c->vfs[vf20].vf.data, vu0_data_mem + (vis[vi11] - 128) * 16, 7 * 16);
+  for (int i = 0; i < 7; i++) {
+    lq_xyzw(c->vfs[vf20 + i].vf, vis[vi11] - 128 + i);
+  }
 
 
   c->vfs[vf16].vf.mul_xyzw(c->vf_src(vf11).vf, c->vf_src(vf11).vf);
@@ -1596,7 +2025,7 @@ void vcallms_311_case_326(ExecutionContext* c, u16* vis) {
   // sqi.xyzw vf04, vi08        |  mulaw.xyzw ACC, vf20, vf08
   c->acc.vf.mula_xyzw(c->vf_src(vf20).vf, c->vf_src(vf08).vf.w());   sq_xyzw(c->vf_src(vf04).vf, vis[vi08]++);
 // rsqrt Q, vf00.w, vf16.x    |  maddaw.xyzw ACC, vf21, vf09
-  c->acc.vf.madda_xyzw(c->vfs[vf21].vf, c->vfs[vf09].vf.w());   c->Q = c->vf_src(vf00).vf.w() / std::sqrt(c->vf_src(vf16).vf.x());
+  c->acc.vf.madda_xyzw(c->vfs[vf21].vf, c->vfs[vf09].vf.w());   c->Q = merc_rsqrt_q(c);
   // mtir vi12, vf01.y          |  maddaw.xyzw ACC, vf22, vf10
   c->acc.vf.madda_xyzw(c->vfs[vf22].vf, c->vfs[vf10].vf.w());   vis[vi12] = c->vf_src(vf01).vf.y_as_u16();
   // iand vi11, vi11, vi09      |  maddw.xyzw vf15, vf23, vf00
@@ -1686,7 +2115,7 @@ void vcallms_311_case_353(ExecutionContext* c, u16* vis) {
   // sqi.xyzw vf04, vi08        |  mulaw.xyzw ACC, vf20, vf08
   c->acc.vf.mula_xyzw(c->vf_src(vf20).vf, c->vf_src(vf08).vf.w());   sq_xyzw(c->vf_src(vf04).vf, vis[vi08]++);
   // rsqrt Q, vf00.w, vf16.x    |  maddaw.xyzw ACC, vf21, vf09
-  c->acc.vf.madda_xyzw(c->vfs[vf21].vf, c->vfs[vf09].vf.w());   c->Q = c->vf_src(vf00).vf.w() / std::sqrt(c->vf_src(vf16).vf.x());
+  c->acc.vf.madda_xyzw(c->vfs[vf21].vf, c->vfs[vf09].vf.w());   c->Q = merc_rsqrt_q(c);
   // mtir vi12, vf01.y          |  maddaw.xyzw ACC, vf22, vf10
   c->acc.vf.madda_xyzw(c->vfs[vf22].vf, c->vfs[vf10].vf.w());   vis[vi12] = c->vf_src(vf01).vf.y_as_u16();
   // iand vi11, vi11, vi09      |  maddw.xyzw vf15, vf23, vf00
@@ -1776,7 +2205,7 @@ void vcallms_311_case_386(ExecutionContext* c, u16* vis) {
   // sqi.xyzw vf04, vi08        |  mulaw.xyzw ACC, vf20, vf08
   c->acc.vf.mula_xyzw(c->vf_src(vf20).vf, c->vf_src(vf08).vf.w());   sq_xyzw(c->vf_src(vf04).vf, vis[vi08]++);
   // rsqrt Q, vf00.w, vf16.x    |  maddaw.xyzw ACC, vf21, vf09
-  c->acc.vf.madda_xyzw(c->vfs[vf21].vf, c->vfs[vf09].vf.w());   c->Q = c->vf_src(vf00).vf.w() / std::sqrt(c->vf_src(vf16).vf.x());
+  c->acc.vf.madda_xyzw(c->vfs[vf21].vf, c->vfs[vf09].vf.w());   c->Q = merc_rsqrt_q(c);
   // mtir vi12, vf01.y          |  maddaw.xyzw ACC, vf22, vf10
   c->acc.vf.madda_xyzw(c->vfs[vf22].vf, c->vfs[vf10].vf.w());   vis[vi12] = c->vf_src(vf01).vf.y_as_u16();
   // iand vi11, vi11, vi09      |  maddw.xyzw vf15, vf23, vf00
@@ -1880,7 +2309,7 @@ void vcallms_311_case_427(ExecutionContext* c, u16* vis) {
   c->vfs[vf14].vf.mul_xyzw(c->vf_src(vf13).vf, c->Q);
   // sqi.xyzw vf04, vi08        |  mulaw.xyzw ACC, vf20, vf08
   c->acc.vf.mula_xyzw(c->vf_src(vf20).vf, c->vf_src(vf08).vf.w());   sq_xyzw(c->vf_src(vf04).vf, vis[vi08]++);
-  c->acc.vf.madda_xyzw(c->vfs[vf21].vf, c->vfs[vf09].vf.w());   c->Q = c->vf_src(vf00).vf.w() / std::sqrt(c->vf_src(vf16).vf.x());
+  c->acc.vf.madda_xyzw(c->vfs[vf21].vf, c->vfs[vf09].vf.w());   c->Q = merc_rsqrt_q(c);
   // nop                        |  maddaw.xyzw ACC, vf22, vf10
   c->acc.vf.madda_xyzw(c->vfs[vf22].vf, c->vfs[vf10].vf.w());
   // nop                        |  maddw.xyzw vf15, vf23, vf00
@@ -1902,28 +2331,6 @@ void vcallms_311_case_427(ExecutionContext* c, u16* vis) {
   // move.xyzw vf12, vf11       |  maddaz.xyzw ACC, vf25, vf09
   c->acc.vf.madda_xyzw(c->vfs[vf25].vf, c->vfs[vf09].vf.z());   c->vfs[vf12].vf.move(Mask::xyzw, c->vf_src(vf11).vf);
   return;
-}
-
-void vcallms_311(ExecutionContext* c, u16* vis) {
-  switch(vis[vi01]) {
-    case 314:
-      vcallms_311_case_314(c, vis);
-      break;
-    case 326:
-      vcallms_311_case_326(c, vis);
-      break;
-    case 353:
-      vcallms_311_case_353(c, vis);
-      break;
-    case 386:
-      vcallms_311_case_386(c, vis);
-      break;
-    case 427:
-      vcallms_311_case_427(c, vis);
-      break;
-    default:
-      ASSERT_MSG(false, fmt::format("BAD JUMP {}", vis[vi01]));
-  }
 }
 
 void vcallms_311_reference(ExecutionContext* c, u16* vis) {
@@ -1960,7 +2367,7 @@ void vcallms_311_reference(ExecutionContext* c, u16* vis) {
 
   JUMP_314:
   // rsqrt Q, vf00.w, vf16.x    |  maddaw.xyzw ACC, vf21, vf09
-  c->acc.vf.madda_xyzw(c->vfs[vf21].vf, c->vfs[vf09].vf.w());   c->Q = c->vf_src(vf00).vf.w() / std::sqrt(c->vf_src(vf16).vf.x());
+  c->acc.vf.madda_xyzw(c->vfs[vf21].vf, c->vfs[vf09].vf.w());   c->Q = merc_rsqrt_q(c);
   // lq.xyzw vf24, -124(vi11)   |  maddaw.xyzw ACC, vf22, vf10
   c->acc.vf.madda_xyzw(c->vfs[vf22].vf, c->vfs[vf10].vf.w());   lq_xyzw(c->vfs[vf24].vf, vis[vi11] + -124);
   // lq.xyzw vf25, -123(vi11)   |  maddw.xyzw vf15, vf23, vf00
@@ -1990,7 +2397,7 @@ void vcallms_311_reference(ExecutionContext* c, u16* vis) {
   return;
   JUMP_326:
   // rsqrt Q, vf00.w, vf16.x    |  maddaw.xyzw ACC, vf21, vf09
-  c->acc.vf.madda_xyzw(c->vfs[vf21].vf, c->vfs[vf09].vf.w());   c->Q = c->vf_src(vf00).vf.w() / std::sqrt(c->vf_src(vf16).vf.x());
+  c->acc.vf.madda_xyzw(c->vfs[vf21].vf, c->vfs[vf09].vf.w());   c->Q = merc_rsqrt_q(c);
   // mtir vi12, vf01.y          |  maddaw.xyzw ACC, vf22, vf10
   c->acc.vf.madda_xyzw(c->vfs[vf22].vf, c->vfs[vf10].vf.w());   vis[vi12] = c->vf_src(vf01).vf.y_as_u16();
   // iand vi11, vi11, vi09      |  maddw.xyzw vf15, vf23, vf00
@@ -2053,7 +2460,7 @@ void vcallms_311_reference(ExecutionContext* c, u16* vis) {
   return;
   JUMP_353:
   // rsqrt Q, vf00.w, vf16.x    |  maddaw.xyzw ACC, vf21, vf09
-  c->acc.vf.madda_xyzw(c->vfs[vf21].vf, c->vfs[vf09].vf.w());   c->Q = c->vf_src(vf00).vf.w() / std::sqrt(c->vf_src(vf16).vf.x());
+  c->acc.vf.madda_xyzw(c->vfs[vf21].vf, c->vfs[vf09].vf.w());   c->Q = merc_rsqrt_q(c);
   // mtir vi12, vf01.y          |  maddaw.xyzw ACC, vf22, vf10
   c->acc.vf.madda_xyzw(c->vfs[vf22].vf, c->vfs[vf10].vf.w());   vis[vi12] = c->vf_src(vf01).vf.y_as_u16();
   // iand vi11, vi11, vi09      |  maddw.xyzw vf15, vf23, vf00
@@ -2134,7 +2541,7 @@ void vcallms_311_reference(ExecutionContext* c, u16* vis) {
   return;
   JUMP_386:
   // rsqrt Q, vf00.w, vf16.x    |  maddaw.xyzw ACC, vf21, vf09
-  c->acc.vf.madda_xyzw(c->vfs[vf21].vf, c->vfs[vf09].vf.w());   c->Q = c->vf_src(vf00).vf.w() / std::sqrt(c->vf_src(vf16).vf.x());
+  c->acc.vf.madda_xyzw(c->vfs[vf21].vf, c->vfs[vf09].vf.w());   c->Q = merc_rsqrt_q(c);
   // mtir vi12, vf01.y          |  maddaw.xyzw ACC, vf22, vf10
   c->acc.vf.madda_xyzw(c->vfs[vf22].vf, c->vfs[vf10].vf.w());   vis[vi12] = c->vf_src(vf01).vf.y_as_u16();
   // iand vi11, vi11, vi09      |  maddw.xyzw vf15, vf23, vf00
@@ -2231,7 +2638,7 @@ void vcallms_311_reference(ExecutionContext* c, u16* vis) {
   return;
   JUMP_427:
   // rsqrt Q, vf00.w, vf16.x    |  maddaw.xyzw ACC, vf21, vf09
-  c->acc.vf.madda_xyzw(c->vfs[vf21].vf, c->vfs[vf09].vf.w());   c->Q = c->vf_src(vf00).vf.w() / std::sqrt(c->vf_src(vf16).vf.x());
+  c->acc.vf.madda_xyzw(c->vfs[vf21].vf, c->vfs[vf09].vf.w());   c->Q = merc_rsqrt_q(c);
   // nop                        |  maddaw.xyzw ACC, vf22, vf10
   c->acc.vf.madda_xyzw(c->vfs[vf22].vf, c->vfs[vf10].vf.w());
   // nop                        |  maddw.xyzw vf15, vf23, vf00
@@ -2494,8 +2901,48 @@ void vcallms_311_reference(ExecutionContext* c, u16* vis) {
 
 }
 
+void vcallms_311(ExecutionContext* c, u16* vis) {
+#if defined(__APPLE__) && defined(__aarch64__)
+  // Prefer scalar reference path on Apple Silicon while validating the native ARM64 port.
+  // The hand-optimized SSE path depends on sse2neon details and can poison Generic2 vertices.
+  vcallms_311_reference(c, vis);
+  return;
+#endif
+  switch(vis[vi01]) {
+    case 314:
+      vcallms_311_case_314(c, vis);
+      break;
+    case 326:
+      vcallms_311_case_326(c, vis);
+      break;
+    case 353:
+      vcallms_311_case_353(c, vis);
+      break;
+    case 386:
+      vcallms_311_case_386(c, vis);
+      break;
+    case 427:
+      vcallms_311_case_427(c, vis);
+      break;
+    default:
+      ASSERT_MSG(false, fmt::format("BAD JUMP {}", vis[vi01]));
+  }
+}
+
 u64 execute(void* ctxt) {
   auto* c = (ExecutionContext*)ctxt;
+  c->Q = 1.f;
+  c->I = 0.f;
+  memset(vu0_data_mem, 0, sizeof(vu0_data_mem));
+  const u64 merc_call = ++mercneric_execute_count;
+  u32 merc_spad = 0;
+  memcpy(&merc_spad, cache.fake_scratchpad_data, 4);
+  const u32 merc_meta_7300 = merc_spad_word(merc_spad, 7300);
+  const u32 merc_meta_7304 = merc_spad_word(merc_spad, 7304);
+  const u32 merc_meta_7308 = merc_spad_word(merc_spad, 7308);
+  const u32 merc_meta_7312 = merc_spad_word(merc_spad, 7312);
+  const u32 merc_meta_7316 = merc_spad_word(merc_spad, 7316);
+  const u32 merc_meta_7320 = merc_spad_word(merc_spad, 7320);
   bool bc = false;
   u16 vis[16];
 
@@ -2518,15 +2965,15 @@ u64 execute(void* ctxt) {
   c->addiu(a0, r0, 0);                              // addiu a0, r0, 0
   c->lbu(a1, 6827, t2);                             // lbu a1, 6827(t2)
   c->addiu(a2, r0, 4);                              // addiu a2, r0, 4
-  c->lw(t0, 7316, t2);                              // lw t0, 7316(t2)
+  c->gprs[t0].du64[0] = merc_meta_7316;             // lw t0, 7316(t2)
   // nop                                            // sll r0, r0, 0
-  c->lw(v1, 7320, t2);                              // lw v1, 7320(t2)
+  c->gprs[v1].du64[0] = merc_meta_7320;             // lw v1, 7320(t2)
   c->dsubu(t4, a1, r0);                             // dsubu t4, a1, r0
   c->lw(a1, 40, t2);                                // lw a1, 40(t2)
   c->movn(a0, a2, t4);                              // movn a0, a2, t4
   c->lbu(t3, 6772, t2);                             // lbu t3, 6772(t2)
   c->daddu(t1, a0, t2);                             // daddu t1, a0, t2
-  c->lw(a0, 7300, t2);                              // lw a0, 7300(t2)
+  c->gprs[a0].du64[0] = merc_meta_7300;             // lw a0, 7300(t2)
   c->daddiu(a2, a1, 128);                           // daddiu a2, a1, 128
   c->lbu(a3, 10, t0);                               // lbu a3, 10(t0)
   c->dsll(t5, t3, 1);                               // dsll t5, t3, 1
@@ -2536,11 +2983,11 @@ u64 execute(void* ctxt) {
   // nop                                            // sll r0, r0, 0
   c->lbu(t6, 11952, t1);                            // lbu t6, 11952(t1)
   // nop                                            // sll r0, r0, 0
-  c->lw(t1, 7304, t2);                              // lw t1, 7304(t2)
+  c->gprs[t1].du64[0] = merc_meta_7304;             // lw t1, 7304(t2)
   c->sll(t7, a3, 4);                                // sll t7, a3, 4
   c->daddu(t6, t6, t2);                             // daddu t6, t6, t2
   c->daddu(t8, t5, t2);                             // daddu t8, t5, t2
-  c->lw(a3, 7308, t2);                              // lw a3, 7308(t2)
+  c->gprs[a3].du64[0] = merc_meta_7308;             // lw a3, 7308(t2)
   c->daddu(t5, t7, t0);                             // daddu t5, t7, t0
   c->sw(t5, 7324, t2);                              // sw t5, 7324(t2)
   // nop                                            // sll r0, r0, 0
@@ -2914,7 +3361,15 @@ u64 execute(void* ctxt) {
   // nop                                            // sll r0, r0, 0
   c->lw(a1, 7324, v1);                              // lw a1, 7324(v1)
   // nop                                            // sll r0, r0, 0
-  c->lw(a0, 7308, v1);                              // lw a0, 7308(v1)
+  c->gprs[a0].du64[0] = merc_meta_7308;             // lw a0, 7308(v1)
+  if (merc_debug_call(merc_call) || c->sgpr64(a0) < 0x10000) {
+    fmt::print(stderr,
+               "[merc-block41:after-lw7308] call={} spad={:08x} a0={:08x} a1={:08x} "
+               "v1={:08x} 7308={:08x} 7312={:08x} 7316={:08x}\n",
+               merc_call, merc_spad, (u32)c->sgpr64(a0), (u32)c->sgpr64(a1),
+               (u32)c->sgpr64(v1), merc_spad_word(merc_spad, 7308),
+               merc_spad_word(merc_spad, 7312), merc_spad_word(merc_spad, 7316));
+  }
   // nop                                            // sll r0, r0, 0
   c->lbu(a2, 13, a1);                               // lbu a2, 13(a1)
   // nop                                            // sll r0, r0, 0
@@ -2971,6 +3426,14 @@ u64 execute(void* ctxt) {
   c->pextlb(t2, t1, r0);                            // pextlb t2, t1, r0
   c->lhu(t3, 0, a1);                                // lhu t3, 0(a1)
   c->pextub(t1, t1, r0);                            // pextub t1, t1, r0
+  if (merc_debug_call(merc_call) || c->sgpr64(a0) < 0x10000) {
+    fmt::print(stderr,
+               "[merc-block43:pre-sq] call={} a0={:08x} a1={:08x} a3={:08x} v1={:08x} "
+               "t1={:08x} t2={:08x} t3={:08x}\n",
+               merc_call, (u32)c->sgpr64(a0), (u32)c->sgpr64(a1), (u32)c->sgpr64(a3),
+               (u32)c->sgpr64(v1), (u32)c->sgpr64(t1), (u32)c->sgpr64(t2),
+               (u32)c->sgpr64(t3));
+  }
   c->sq(t2, 0, a0);                                 // sq t2, 0(a0)
   bc = c->sgpr64(a1) != c->sgpr64(a3);              // bne a1, a3, L97
   c->pextlb(t2, t3, t3);                            // pextlb t2, t3, t3
@@ -2980,9 +3443,10 @@ u64 execute(void* ctxt) {
   c->sq(t1, 16, a0);                                // sq t1, 16(a0)
   get_fake_spad_addr(s4, cache.fake_scratchpad_data, 0, c);// lui s4, 28672
   // nop                                            // sll r0, r0, 0
-  c->lw(a0, 7316, s4);                              // lw a0, 7316(s4)
+  c->gprs[a0].du64[0] = merc_meta_7316;             // lw a0, 7316(s4)
   // nop                                            // sll r0, r0, 0
-  c->lw(a1, 7308, s4);                              // lw a1, 7308(s4)
+  c->gprs[a1].du64[0] = merc_meta_7308;             // lw a1, 7308(s4)
+  merc_debug_meta("start", c, merc_call, merc_spad, (u32)c->sgpr64(v1));
   // nop                                            // sll r0, r0, 0
   c->lq(t8, 16, a0);                                // lq t8, 16(a0)
   c->daddiu(s6, a0, 48);                            // daddiu s6, a0, 48
@@ -3035,8 +3499,6 @@ u64 execute(void* ctxt) {
   c->sll(v0, v0, 2);                                // sll v0, v0, 2
   c->lq(t8, 32, a0);                                // lq t8, 32(a0)
   c->daddu(v0, v0, a0);                             // daddu v0, v0, a0
-  u32 val;
-  memcpy(&val, cache.fake_scratchpad_data, 4);
   c->lbu(t0, 13, a0);                               // lbu t0, 13(a0)
   c->daddu(at, at, a0);                             // daddu at, at, a0
   c->lbu(t2, 11, a0);                               // lbu t2, 11(a0)
@@ -3049,6 +3511,16 @@ u64 execute(void* ctxt) {
   c->daddiu(a3, a0, 14);                            // daddiu a3, a0, 14
   //beq r0, r0, L100                                // beq r0, r0, L100
   c->daddu(t2, t2, a0);                             // daddu t2, t2, a0
+  if (merc_debug_call(merc_call)) {
+    fmt::print(stderr,
+               "[merc-table-base] call={} a0={:08x} t2={:08x} t0={} a3={:08x} "
+               "hdr={:08x},{:08x},{:08x},{:08x}\n",
+               merc_call, (u32)c->sgpr64(a0), (u32)c->sgpr64(t2), (u32)c->sgpr64(t0),
+               (u32)c->sgpr64(a3), merc_mem_word((u32)c->sgpr64(a0) + 0),
+               merc_mem_word((u32)c->sgpr64(a0) + 4), merc_mem_word((u32)c->sgpr64(a0) + 8),
+               merc_mem_word((u32)c->sgpr64(a0) + 12));
+    merc_debug_qwords("table", merc_call, (u32)c->sgpr64(t2), 8);
+  }
   goto block_47;                                    // branch always
 
   block_46:
@@ -3059,6 +3531,11 @@ u64 execute(void* ctxt) {
   block_47:
   c->lbu(t1, 0, a3);                                // lbu t1, 0(a3)
   c->daddiu(a3, a3, 1);                             // daddiu a3, a3, 1
+  if (merc_debug_call(merc_call)) {
+    fmt::print(stderr, "[merc-table-row] call={} t2={:08x} t1={} t0={} vi14={}\n", merc_call,
+               (u32)c->sgpr64(t2), (u32)c->sgpr64(t1), (u32)c->sgpr64(t0), vis[vi14]);
+    merc_debug_qwords("row", merc_call, (u32)c->sgpr64(t2), 8);
+  }
   c->lqc2(vf23, 64, t2);                            // lqc2 vf23, 64(t2)
   // nop                                            // sll r0, r0, 0
   c->lqc2(vf24, 80, t2);                            // lqc2 vf24, 80(t2)
@@ -3072,6 +3549,7 @@ u64 execute(void* ctxt) {
   c->lqc2(vf21, 32, t2);                            // lqc2 vf21, 32(t2)
   // nop                                            // sll r0, r0, 0
   c->lqc2(vf22, 48, t2);                            // lqc2 vf22, 48(t2)
+  merc_repair_table_vectors_if_needed(c, merc_call, merc_spad, (u32)c->sgpr64(t2));
   c->daddiu(t2, t2, 128);                           // daddiu t2, t2, 128
   bc = c->sgpr64(t1) != 0;                          // bne t1, r0, L99
   vis[14] = c->gpr_src(t0).du16[0];                    // ctc2.ni vi14, t0
@@ -3161,7 +3639,9 @@ u64 execute(void* ctxt) {
   // nop                                            // sll r0, r0, 0
   c->daddiu(v1, v1, -64);                           // daddiu v1, v1, -64
   // nop                                            // sll r0, r0, 0
+  merc_debug_store("sq15-64a-pre", c, merc_call, merc_spad, (u32)c->sgpr64(v1) + 64, 16);
   c->sqc2(vf15, 64, v1);                            // sqc2 vf15, 64(v1)
+  merc_debug_meta("sq15-64a-post", c, merc_call, merc_spad, (u32)c->sgpr64(v1));
   // Unknown instr: vcallms 311
   vcallms_311(c, vis);
   // nop                                            // sll r0, r0, 0
@@ -3194,7 +3674,9 @@ u64 execute(void* ctxt) {
   // nop                                            // sll r0, r0, 0
   c->daddiu(s6, s6, 16);                            // daddiu s6, s6, 16
   // nop                                            // sll r0, r0, 0
+  merc_debug_store("sq15-96a-pre", c, merc_call, merc_spad, (u32)c->sgpr64(v1) + 96, 16);
   c->sqc2(vf15, 96, v1);                            // sqc2 vf15, 96(v1)
+  merc_debug_meta("sq15-96a-post", c, merc_call, merc_spad, (u32)c->sgpr64(v1));
   // Unknown instr: vcallms 311
   vcallms_311(c, vis);
   c->sw(s3, 76, v1);                                // sw s3, 76(v1)
@@ -3239,11 +3721,15 @@ u64 execute(void* ctxt) {
   c->pextlh(t1, a1, a2);                            // pextlh t1, a1, a2
   c->mov128_vf_gpr(vf3, t1);                        // qmtc2.ni vf3, t1
   c->pextuh(t9, r0, t9);                            // pextuh t9, r0, t9
+  merc_debug_store("sq14-80-pre", c, merc_call, merc_spad, (u32)c->sgpr64(v1) + 80, 16);
   c->sqc2(vf14, 80, v1);                            // sqc2 vf14, 80(v1)
+  merc_debug_meta("sq14-80-post", c, merc_call, merc_spad, (u32)c->sgpr64(v1));
 
   c->daddiu(at, at, 16);                            // daddiu at, at, 16
   c->addiu(s4, s4, 2);                              // addiu s4, s4, 2
+  merc_debug_store("sq15-128-pre", c, merc_call, merc_spad, (u32)c->sgpr64(v1) + 128, 16);
   c->sqc2(vf15, 128, v1);                           // sqc2 vf15, 128(v1)
+  merc_debug_meta("sq15-128-post", c, merc_call, merc_spad, (u32)c->sgpr64(v1));
   bc = c->sgpr64(t5) == c->sgpr64(s5);              // beq t5, s5, L104
   c->daddiu(t5, t5, 2);                             // daddiu t5, t5, 2
   if (bc) {goto block_56;}                          // branch non-likely
@@ -3277,10 +3763,14 @@ u64 execute(void* ctxt) {
   c->pextub(t9, r0, t8);                            // pextub t9, r0, t8
   c->mov128_vf_gpr(vf3, t0);                        // qmtc2.ni vf3, t0
   c->pextlh(gp, r0, t9);                            // pextlh gp, r0, t9
+  merc_debug_store("sq14-112-pre", c, merc_call, merc_spad, (u32)c->sgpr64(v1) + 112, 16);
   c->sqc2(vf14, 112, v1);                           // sqc2 vf14, 112(v1)
+  merc_debug_meta("sq14-112-post", c, merc_call, merc_spad, (u32)c->sgpr64(v1));
   c->daddiu(v0, v0, 48);                            // daddiu v0, v0, 48
   bc = c->sgpr64(s4) == c->sgpr64(s5);              // beq s4, s5, L105
+  merc_debug_store("sq15-160-pre", c, merc_call, merc_spad, (u32)c->sgpr64(v1) + 160, 16);
   c->sqc2(vf15, 160, v1);                           // sqc2 vf15, 160(v1)
+  merc_debug_meta("sq15-160-post", c, merc_call, merc_spad, (u32)c->sgpr64(v1));
   if (bc) {goto block_57;}                          // branch non-likely
 
   // Unknown instr: vcallms 311
@@ -3312,10 +3802,14 @@ u64 execute(void* ctxt) {
   c->pextlh(a2, a1, t1);                            // pextlh a2, a1, t1
   c->mov128_vf_gpr(vf3, a2);                        // qmtc2.ni vf3, a2
   c->pextuh(t9, r0, t9);                            // pextuh t9, r0, t9
+  merc_debug_store("sq14-144-pre", c, merc_call, merc_spad, (u32)c->sgpr64(v1) + 144, 16);
   c->sqc2(vf14, 144, v1);                           // sqc2 vf14, 144(v1)
+  merc_debug_meta("sq14-144-post", c, merc_call, merc_spad, (u32)c->sgpr64(v1));
   c->daddiu(v1, v1, 128);                           // daddiu v1, v1, 128
   c->addiu(s4, s4, 2);                              // addiu s4, s4, 2
+  merc_debug_store("sq15-64b-pre", c, merc_call, merc_spad, (u32)c->sgpr64(v1) + 64, 16);
   c->sqc2(vf15, 64, v1);                            // sqc2 vf15, 64(v1)
+  merc_debug_meta("sq15-64b-post", c, merc_call, merc_spad, (u32)c->sgpr64(v1));
   bc = c->sgpr64(t5) == c->sgpr64(s5);              // beq t5, s5, L106
   c->daddiu(t5, t5, 2);                             // daddiu t5, t5, 2
   if (bc) {goto block_58;}                          // branch non-likely
@@ -3349,11 +3843,15 @@ u64 execute(void* ctxt) {
   c->pextlb(t9, r0, t8);                            // pextlb t9, r0, t8
   c->mov128_vf_gpr(vf3, a3);                        // qmtc2.ni vf3, a3
   c->pextlh(gp, r0, t9);                            // pextlh gp, r0, t9
+  merc_debug_store("sq14-48-pre", c, merc_call, merc_spad, (u32)c->sgpr64(v1) + 48, 16);
   c->sqc2(vf14, 48, v1);                            // sqc2 vf14, 48(v1)
+  merc_debug_meta("sq14-48-post", c, merc_call, merc_spad, (u32)c->sgpr64(v1));
   c->daddiu(s6, s6, 16);                            // daddiu s6, s6, 16
   bc = c->sgpr64(s4) != c->sgpr64(s5);              // bne s4, s5, L102
   // HERE this one is storing garbage
+  merc_debug_store("sq15-96b-pre", c, merc_call, merc_spad, (u32)c->sgpr64(v1) + 96, 16);
   c->sqc2(vf15, 96, v1);                            // sqc2 vf15, 96(v1)
+  merc_debug_meta("sq15-96b-post", c, merc_call, merc_spad, (u32)c->sgpr64(v1));
   if (bc) {goto block_50;}                          // branch non-likely
 
   //beq r0, r0, L106                                // beq r0, r0, L106
@@ -3374,17 +3872,20 @@ u64 execute(void* ctxt) {
 
 
   block_58:
+  merc_debug_store("sw-a0-28-pre", c, merc_call, merc_spad, (u32)c->sgpr64(v1) + 28, 4);
   c->sw(a0, 28, v1);                                // sw a0, 28(v1)
+  merc_debug_meta("sw-a0-28-post", c, merc_call, merc_spad, (u32)c->sgpr64(v1));
   c->daddiu(v1, v1, 32);                            // daddiu v1, v1, 32
   c->daddiu(s5, s5, 1);                             // daddiu s5, s5, 1
   // nop                                            // sll r0, r0, 0
   get_fake_spad_addr(a3, cache.fake_scratchpad_data, 0, c);// lui a3, 28672
   // nop                                            // sll r0, r0, 0
-  c->lw(a0, 7316, a3);                              // lw a0, 7316(a3)
+  c->gprs[a0].du64[0] = merc_meta_7316;             // lw a0, 7316(a3)
   // nop                                            // sll r0, r0, 0
-  c->lw(a1, 7308, a3);                              // lw a1, 7308(a3)
+  c->gprs[a1].du64[0] = merc_meta_7308;             // lw a1, 7308(a3)
   // nop                                            // sll r0, r0, 0
-  c->lw(a3, 7312, a3);                              // lw a3, 7312(a3)
+  c->gprs[a3].du64[0] = merc_meta_7312;             // lw a3, 7312(a3)
+  merc_debug_meta("reload", c, merc_call, merc_spad, (u32)c->sgpr64(v1));
   // nop                                            // sll r0, r0, 0
   c->lbu(s0, 0, a0);                                // lbu s0, 0(a0)
   c->addiu(s4, r0, 0);                              // addiu s4, r0, 0
@@ -3500,6 +4001,15 @@ u64 execute(void* ctxt) {
   c->sq(gp, 16, v1);                                // sq gp, 16(v1)
 
   block_65:
+  if (merc_debug_call(merc_call) || c->sgpr64(a1) == 0x7fc04000 ||
+      c->sgpr64(s5) == 0x7fc00000) {
+    fmt::print(stderr,
+               "[merc-convert:final] call={} a1={:08x} s5={:08x} v1={:08x} s0={:08x} "
+               "s2={:08x} vi08={} vi10={} vi11={} vi12={} vi13={} Q={}\n",
+               merc_call, (u32)c->sgpr64(a1), (u32)c->sgpr64(s5), (u32)c->sgpr64(v1),
+               (u32)c->sgpr64(s0), (u32)c->sgpr64(s2), vis[vi08], vis[vi10], vis[vi11],
+               vis[vi12], vis[vi13], c->Q);
+  }
   c->sh(s5, 20, a1);                                // sh s5, 20(a1)
   get_fake_spad_addr(at, cache.fake_scratchpad_data, 0, c);// lui at, 28672
   c->lq(s0, 7392, at);                              // lq s0, 7392(at)
@@ -3826,6 +4336,3 @@ void link() {
 
 } // namespace high_speed_reject
 } // namespace Mips2C
-
-
-

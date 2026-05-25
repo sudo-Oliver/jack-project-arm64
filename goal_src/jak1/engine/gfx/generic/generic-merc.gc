@@ -85,7 +85,7 @@
         (set! *merc-globals* (-> *merc-global-array* globals s4-0))
         (let ((s3-0 (-> *merc-globals* sink)))
           (when (nonzero? (-> *merc-globals* first))
-            (let* ((s1-0 (-> *display* frames (-> *display* on-screen) frame global-buf))
+              (let* ((s1-0 (-> *display* frames (-> *display* on-screen) frame global-buf))
                    (s2-0 (-> s1-0 base)))
               (generic-work-init s3-0)
               (set! (-> (scratchpad-object terrain-context) work foreground generic-work saves basep) (the-as uint (-> s1-0 base)))

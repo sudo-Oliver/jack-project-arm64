@@ -284,36 +284,12 @@ It type checks the arguments for the entry function.
 (defmacro arm64-fix-main-thread-for-run ()
   `(#when ARM64_PORT
      (when (zero? (the-as uint (-> pp main-thread)))
-       (format 0
-               "ARM64 enter-state null main pp=~X name=~A status=~A main=~X top=~X~%"
-               (the uint pp)
-               (-> pp name)
-               (-> pp status)
-               (the uint (-> pp main-thread))
-               (the uint (-> pp top-thread)))
-       (format 0
-               "ARM64 enter-state ptrs ppointer=~X self=~X~%"
-               (the uint (-> pp ppointer))
-               (the uint (-> pp self)))
        (when (not (zero? (the-as uint (-> pp top-thread))))
          (set! (-> pp main-thread) (the cpu-thread (-> pp top-thread)))))))
 
 (defun enter-state (arg0 arg1 arg2 arg3 arg4 arg5)
   "Make the process stored in pp enter the state in pp next-state"
   (with-pp
-    (#when ARM64_PORT
-      (format 0
-              "ARM64 enter start pp=~X arg0=~X arg1=~X arg2=~X~%"
-              (the uint pp)
-              (the uint arg0)
-              (the uint arg1)
-              (the uint arg2))
-      (format 0
-              "ARM64 enter proc status=~A main=~X top=~X next=~X~%"
-              (-> pp status)
-              (the uint (-> pp main-thread))
-              (the uint (-> pp top-thread))
-              (the uint (-> pp next-state))))
     ;; unsleep us
     (process-mask-clear! (-> pp mask) sleep sleep-code)
     ;; mark as going
@@ -359,17 +335,6 @@ It type checks the arguments for the entry function.
        (process-mask-clear! (-> pp mask) going)
        ;; now, update the process:
        (let ((new-state (-> pp state)))
-         (#when ARM64_PORT
-           (format 0
-                   "ARM64 enter main pp=~X state=~X name=~A~%"
-                   (the uint pp)
-                   (the uint new-state)
-                   (-> new-state name))
-           (format 0
-                   "ARM64 enter funcs enter=~X trans=~X code=~X~%"
-                   (the uint (-> new-state enter))
-                   (the uint (-> new-state trans))
-                   (the uint (-> new-state code))))
          ;; event hook from the current state
          (set! (-> pp event-hook) (-> new-state event))
          ;; if we have an exit, push it onto the stack frame
@@ -379,27 +344,10 @@ It type checks the arguments for the entry function.
          (set! (-> pp trans-hook) (-> new-state trans))
          ;; start up the new state. First run the enter function
          (let ((enter-func (-> new-state enter)))
-           (#when ARM64_PORT
-             (when enter-func
-               (format 0
-                       "ARM64 enter call-enter pp=~X fn=~X~%"
-                       (the uint pp)
-                       (the uint enter-func))))
            (if enter-func ((the (function _varargs_ none) enter-func) arg0 arg1 arg2 arg3 arg4 arg5)))
          ;; run the trans function before the code.
          (let ((trans-func (-> new-state trans)))
-           (#when ARM64_PORT
-             (when trans-func
-               (format 0
-                       "ARM64 enter call-trans pp=~X fn=~X~%"
-                       (the uint pp)
-                       (the uint trans-func))))
            (if trans-func (trans-func)))
-         (#when ARM64_PORT
-           (format 0
-                   "ARM64 enter jump-code pp=~X code=~X~%"
-                   (the uint pp)
-                   (the uint (-> new-state code))))
          ;; now we run the code, but in a tricky way.
          ;; we need to:
          ;; - make sure that when this code returns, we do a deactivate

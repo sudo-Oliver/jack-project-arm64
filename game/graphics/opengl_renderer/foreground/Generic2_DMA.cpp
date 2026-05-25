@@ -1,6 +1,8 @@
 #include "Generic2.h"
 #include "game/graphics/opengl_renderer/AdgifHandler.h"
 
+#include <cmath>
+
 /*!
  * Advance through DMA data that has no effect on rendering (NOP codes) and see if this is the
  * end of the data.
@@ -109,6 +111,7 @@ void Generic2::reset_buffers() {
   m_next_free_adgif = 0;
   m_next_free_bucket = 0;
   m_next_free_idx = 0;
+  m_drawing_config = DrawingConfig();
 }
 
 bool is_nop_vif(const u8* data) {
@@ -124,9 +127,109 @@ bool is_nop_or_flushe_vif(const u8* data) {
   return k == VifCode::Kind::NOP || k == VifCode::Kind::FLUSHE;
 }
 
+namespace {
+u32 read_u32_unaligned(const u8* data) {
+  u32 value = 0;
+  memcpy(&value, data, sizeof(value));
+  return value;
+}
+
+bool plausible_generic_xyz(const u8* data) {
+  float xyz[3];
+  memcpy(xyz, data, sizeof(xyz));
+  return std::isfinite(xyz[0]) && std::isfinite(xyz[1]) && std::isfinite(xyz[2]) &&
+         std::fabs(xyz[0]) < 10000000.f && std::fabs(xyz[1]) < 10000000.f &&
+         std::fabs(xyz[2]) < 10000000.f && (xyz[0] != 0.f || xyz[1] != 0.f || xyz[2] != 0.f);
+}
+
+void debug_generic2_position_source(const char* where,
+                                    const u8* base,
+                                    u32 pos_off,
+                                    u32 first_unpack_bytes,
+                                    u32 end_of_vif,
+                                    int vtx_count,
+                                    bool loop) {
+  static u32 s_generic2_pos_src_debug_count = 0;
+  if (vtx_count <= 0 || pos_off + 12 > end_of_vif) {
+    return;
+  }
+
+  float xyz[3];
+  memcpy(xyz, base + pos_off, sizeof(xyz));
+  const bool bad0 =
+      !std::isfinite(xyz[0]) || !std::isfinite(xyz[1]) || !std::isfinite(xyz[2]);
+  if (!bad0 && s_generic2_pos_src_debug_count >= 16) {
+    return;
+  }
+  if (s_generic2_pos_src_debug_count >= 96) {
+    return;
+  }
+  s_generic2_pos_src_debug_count++;
+
+  u32 scan_hit = UINT32_MAX;
+  for (u32 scan = 0; scan + 12 <= end_of_vif; scan += 4) {
+    if (plausible_generic_xyz(base + scan)) {
+      scan_hit = scan;
+      break;
+    }
+  }
+
+  const u32 pre0 = pos_off >= 8 ? read_u32_unaligned(base + pos_off - 8) : 0;
+  const u32 pre1 = pos_off >= 4 ? read_u32_unaligned(base + pos_off - 4) : 0;
+  fmt::print("[Generic2:src] n={} where={} bad0={} loop={} first_unpack={} pos_off={} end={} "
+             "vtx={} pre={:08x},{:08x} src0={:08x},{:08x},{:08x} scan_hit={}\n",
+             s_generic2_pos_src_debug_count, where, bad0, loop, first_unpack_bytes, pos_off,
+             end_of_vif, vtx_count, pre0, pre1, read_u32_unaligned(base + pos_off),
+             read_u32_unaligned(base + pos_off + 4), read_u32_unaligned(base + pos_off + 8),
+             scan_hit);
+
+  const u32 dump_start = pos_off >= 32 ? pos_off - 32 : 0;
+  const u32 dump_words = ((end_of_vif - dump_start) / 4) < 24 ? ((end_of_vif - dump_start) / 4) : 24;
+  fmt::print("[Generic2:src-words] start={} ", dump_start);
+  for (u32 i = 0; i < dump_words; i++) {
+    fmt::print("{:08x}{}", read_u32_unaligned(base + dump_start + (i * 4)),
+               (i + 1 == dump_words) ? "\n" : " ");
+  }
+}
+}  // namespace
+
 u32 unpack_vtx_positions(Generic2::Vertex* vtx, const u8* data, int vtx_count) {
+  static u32 s_unpack_pos_calls = 0;
+  s_unpack_pos_calls++;
+  u32 finite_src = 0;
+  u32 repaired_src = 0;
   for (int i = 0; i < vtx_count; i++) {
-    memcpy(vtx[i].xyz.data(), data + (i * 12), 12);
+    float xyz[3];
+    memcpy(xyz, data + (i * 12), 12);
+    if (std::isfinite(xyz[0]) && std::isfinite(xyz[1]) && std::isfinite(xyz[2])) {
+      finite_src++;
+    }
+  }
+
+  for (int i = 0; i < vtx_count; i++) {
+    float xyz[3];
+    memcpy(xyz, data + (i * 12), 12);
+    for (float& value : xyz) {
+      if (!std::isfinite(value)) {
+        value = 0.f;
+        repaired_src++;
+      }
+    }
+    memcpy(vtx[i].xyz.data(), xyz, 12);
+  }
+
+  if ((s_unpack_pos_calls <= 80 || (s_unpack_pos_calls % 1000) == 0) && vtx_count > 0) {
+    u32 src0[3] = {};
+    u32 dst0[3] = {};
+    u32 src_last[3] = {};
+    memcpy(src0, data, sizeof(src0));
+    memcpy(dst0, vtx[0].xyz.data(), sizeof(dst0));
+    memcpy(src_last, data + ((vtx_count - 1) * 12), sizeof(src_last));
+    fmt::print("[Generic2:pos] call={} count={} finite-src={} repaired={} "
+               "src0={:08x},{:08x},{:08x} "
+               "dst0={:08x},{:08x},{:08x} srclast={:08x},{:08x},{:08x}\n",
+               s_unpack_pos_calls, vtx_count, finite_src, repaired_src, src0[0], src0[1],
+               src0[2], dst0[0], dst0[1], dst0[2], src_last[0], src_last[1], src_last[2]);
   }
   return vtx_count * 12;
 }
@@ -213,6 +316,8 @@ u32 Generic2::handle_fragments_after_unpack_v4_32(const u8* data,
     frag->vtx_count = vtx_pos_unpack_tag.num;
     alloc_vtx(frag->vtx_count);
 
+    debug_generic2_position_source("frag", data, off, first_unpack_bytes, end_of_vif,
+                                   frag->vtx_count, loop);
     off += unpack_vtx_positions(&m_verts[frag->vtx_idx], data + off, frag->vtx_count);
 
     ASSERT(off < end_of_vif);
@@ -331,6 +436,9 @@ void Generic2::process_dma_jak1(DmaFollower& dma, u32 next_bucket) {
       ASSERT(up.kind == VifCode::Kind::UNPACK_V3_32);
       ASSERT(continue_vif_transfer.size_bytes * 4 / 48 == up.num);
       ASSERT(up.num == continued_fragment->vtx_count);
+      debug_generic2_position_source("continue-jak1", continue_vif_transfer.data, 0, 0,
+                                     continue_vif_transfer.size_bytes,
+                                     continued_fragment->vtx_count, false);
       unpack_vtx_positions(&m_verts[continued_fragment->vtx_idx], continue_vif_transfer.data,
                            continued_fragment->vtx_count);
       continued_fragment = nullptr;
@@ -456,6 +564,9 @@ void Generic2::process_dma_jak2(DmaFollower& dma, u32 next_bucket) {
       ASSERT(up.kind == VifCode::Kind::UNPACK_V3_32);
       ASSERT(vif_transfer.size_bytes * 4 / 48 == up.num);
       ASSERT(up.num == continued_fragment->vtx_count);
+      debug_generic2_position_source("continue-jak2", vif_transfer.data, 0, 0,
+                                     vif_transfer.size_bytes, continued_fragment->vtx_count,
+                                     false);
       unpack_vtx_positions(&m_verts[continued_fragment->vtx_idx], vif_transfer.data,
                            continued_fragment->vtx_count);
       continued_fragment = nullptr;

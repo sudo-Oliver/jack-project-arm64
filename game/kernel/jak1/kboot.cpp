@@ -142,10 +142,16 @@ void KernelCheckAndDispatch() {
       if (dispatch_count == 1) {
         auto strb = intern_from_c("set-to-run-bootstrap");
         auto tres = intern_from_c("thread-resume");
+        auto rft = intern_from_c("return-from-thread");
+        auto rftd = intern_from_c("return-from-thread-dead");
+        auto str = intern_from_c("set-to-run");
+        auto deact = intern_from_c("deactivate");
         fprintf(stderr,
                 "[KERNEL-DBG] kernel-dispatcher=0x%08x set-to-run-bootstrap=0x%08x "
-                "thread-resume=0x%08x\n",
-                kernel_dispatcher->value, strb->value, tres->value);
+                "thread-resume=0x%08x return-from-thread=0x%08x "
+                "return-from-thread-dead=0x%08x set-to-run=0x%08x deactivate=0x%08x\n",
+                kernel_dispatcher->value, strb->value, tres->value, rft->value, rftd->value,
+                str->value, deact->value);
       }
       // use the GOAL kernel.
       call_goal_on_stack(Ptr<Function>(kernel_dispatcher->value), goal_stack, s7.offset,

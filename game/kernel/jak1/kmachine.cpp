@@ -626,7 +626,11 @@ void InitMachineScheme() {
   InitSoundScheme();
   intern_from_c("*stack-top*")->value = 0x07ffc000;
   intern_from_c("*stack-base*")->value = 0x07ffffff;
+#if defined(__APPLE__) && defined(__aarch64__)
+  intern_from_c("*stack-size*")->value = 0x8000;
+#else
   intern_from_c("*stack-size*")->value = 0x4000;
+#endif
 
   if (DiskBoot) {
     intern_from_c("*kernel-boot-message*")->value = intern_from_c(DebugBootMessage).offset;

@@ -7,6 +7,37 @@ using namespace jak1;
 // clang-format off
 
 namespace Mips2C::jak1 {
+
+static const u32* resolve_debug_ee_addr(u64 addr, u32 bytes) {
+  if (!addr || !g_ee_main_mem || addr + bytes > EE_MAIN_MEM_SIZE) {
+    return nullptr;
+  }
+  return (const u32*)(g_ee_main_mem + addr);
+}
+
+static u32 read_debug_ee_u32(u64 addr) {
+  const u32* data = resolve_debug_ee_addr(addr, 4);
+  return data ? *data : 0;
+}
+
+static void print_generic_qwords(const char* label, u64 addr, u32 count) {
+  if (!addr) {
+    fmt::print(stderr, "{} addr=0\n", label);
+    return;
+  }
+  const u32* data = resolve_debug_ee_addr(addr, count * 16);
+  fmt::print(stderr, "{} addr=0x{:x}", label, addr);
+  if (!data) {
+    fmt::print(stderr, " out-of-ee\n");
+    return;
+  }
+  for (u32 i = 0; i < count; i++) {
+    fmt::print(stderr, " q{}={:08x},{:08x},{:08x},{:08x}", i, data[i * 4 + 0],
+               data[i * 4 + 1], data[i * 4 + 2], data[i * 4 + 3]);
+  }
+  fmt::print(stderr, "\n");
+}
+
 namespace generic_prepare_dma_double {
 struct Cache {
   void* fake_scratchpad_data; // *fake-scratchpad-data*
@@ -15,6 +46,10 @@ struct Cache {
 u64 execute(void* ctxt) {
   auto* c = (ExecutionContext*)ctxt;
   bool bc = false;
+  u64 debug_prepare_double_out = 0;
+  u64 debug_prepare_double_dst = 0;
+  u32 debug_prepare_double_alt = 0;
+  u32 debug_prepare_double_call = 0;
   c->daddiu(sp, sp, -128);                          // daddiu sp, sp, -128
   c->sd(ra, 12432, at);                             // sd ra, 12432(at)
   c->sq(s0, 12448, at);                             // sq s0, 12448(at)
@@ -196,6 +231,29 @@ u64 execute(void* ctxt) {
   c->sw(t4, 36, at);                                // sw t4, 36(at)
   // nop                                            // sll r0, r0, 0
   c->lw(t0, 64, at);                                // lw t0, 64(at)
+  {
+    static u32 s_prepare_double_calls = 0;
+    s_prepare_double_calls++;
+    debug_prepare_double_call = s_prepare_double_calls;
+    debug_prepare_double_out = c->sgpr64(t7);
+    debug_prepare_double_dst = c->sgpr64(a1);
+    debug_prepare_double_alt = read_debug_ee_u32(c->sgpr64(at) + 68);
+    if (s_prepare_double_calls <= 40 || (s_prepare_double_calls % 5000) == 0) {
+      fmt::print(stderr,
+                 "[generic-prepare-double] call={} out=0x{:x} dst=0x{:x} desc=0x{:x} "
+                 "src=0x{:x} alt=0x{:x} at=0x{:x} base=0x{:x} mode={} count={} vtx={}\n",
+                 s_prepare_double_calls, c->sgpr64(t7), c->sgpr64(a1), c->sgpr64(a3),
+                 c->sgpr64(t0), debug_prepare_double_alt, c->sgpr64(at), c->sgpr64(a2),
+                 read_debug_ee_u32(c->sgpr64(at) + 72), c->sgpr64(v1), c->sgpr64(a0));
+      print_generic_qwords("[generic-prepare-double] src-pre", c->sgpr64(t0), 4);
+      print_generic_qwords("[generic-prepare-double] dst-pre", c->sgpr64(a1), 8);
+      print_generic_qwords("[generic-prepare-double] base-pre", c->sgpr64(a2), 8);
+      print_generic_qwords("[generic-prepare-double] alt-pre", debug_prepare_double_alt, 5);
+      print_generic_qwords("[generic-prepare-double] spad-11744", c->sgpr64(at) + 11744, 8);
+      print_generic_qwords("[generic-prepare-double] spad-11808", c->sgpr64(at) + 11808, 8);
+      print_generic_qwords("[generic-prepare-double] desc-pre", c->sgpr64(a3), 2);
+    }
+  }
   // nop                                            // sll r0, r0, 0
   c->lq(t1, 11808, at);                             // lq t1, 11808(at)
   bc = c->sgpr64(t0) == 0;                          // beq t0, r0, L63
@@ -414,6 +472,11 @@ u64 execute(void* ctxt) {
   c->sw(r0, 124, a1);                               // sw r0, 124(a1)
 
   block_13:
+  if (debug_prepare_double_call &&
+      (debug_prepare_double_call <= 40 || (debug_prepare_double_call % 5000) == 0)) {
+    print_generic_qwords("[generic-prepare-double] dst-post", debug_prepare_double_dst, 16);
+    print_generic_qwords("[generic-prepare-double] out-post", debug_prepare_double_out, 16);
+  }
   c->gprs[v0].du64[0] = 0;                          // or v0, r0, r0
   c->ld(ra, 12432, at);                             // ld ra, 12432(at)
   c->lq(gp, 12544, at);                             // lq gp, 12544(at)
@@ -1680,6 +1743,18 @@ u64 execute(void* ctxt) {
   c->lw(v1, 40, at);                                // lw v1, 40(at)
   // nop                                            // sll r0, r0, 0
   c->lw(t3, 72, at);                                // lw t3, 72(at)
+  {
+    static u32 s_prepare_single_calls = 0;
+    s_prepare_single_calls++;
+    if (s_prepare_single_calls <= 80 || (s_prepare_single_calls % 1000) == 0) {
+      fmt::print("[generic-prepare-single] call={} out=0x{:x} desc=0x{:x} src=0x{:x} "
+                 "alt=0x{:x} mode={} src-present={}\n",
+                 s_prepare_single_calls, c->sgpr64(v1), c->sgpr64(t1), c->sgpr64(t8),
+                 read_debug_ee_u32(c->sgpr64(at) + 68), c->sgpr64(t3), c->sgpr64(t8) != 0);
+      print_generic_qwords("[generic-prepare-single] src-pre", c->sgpr64(t8), 4);
+      print_generic_qwords("[generic-prepare-single] desc-pre", c->sgpr64(t1), 2);
+    }
+  }
   // nop                                            // sll r0, r0, 0
   c->lh(a1, 18, t1);                                // lh a1, 18(t1)
   c->mov64(a0, v1);                                 // or a0, v1, r0
@@ -1951,4 +2026,3 @@ void link() {
 
 } // namespace generic_prepare_dma_single
 } // namespace Mips2C
-
