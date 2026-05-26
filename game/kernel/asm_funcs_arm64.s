@@ -20,19 +20,8 @@
 .global _arg_call_arm64
 .align 4
 _arg_call_arm64:
-  ;; Keep GOAL FP/LR off the GOAL stack. Some GOAL/MIPS2C callees use the native stack as EE
-  ;; scratch and can overwrite a normal [sp] save slot with matrix/vector data.
-  ;; Use a small global nesting stack instead of registers so re-entrant GOAL->C->GOAL->C calls
-  ;; don't overwrite the outer return address.
-  adrp x9, L_goal_call_arm64_depth@PAGE
-  add  x9, x9, L_goal_call_arm64_depth@PAGEOFF
-  ldr  x10, [x9]
-  add  x11, x10, #1
-  str  x11, [x9]
-  adrp x12, L_goal_call_arm64_fp_lr_stack@PAGE
-  add  x12, x12, L_goal_call_arm64_fp_lr_stack@PAGEOFF
-  add  x12, x12, x10, lsl #4
-  stp  x29, x30, [x12]
+  ;; Standard prologue: save GOAL frame-pointer and link reg (= GOAL lr).
+  stp  x29, x30, [sp, #-16]!
   mov  x29, sp
 
   ;; Save GOAL reserved registers (pp=x20, st=x21, off=x22).
@@ -67,15 +56,7 @@ _arg_call_arm64:
   ldp x20, x21, [sp], #16
 
   ;; Restore frame pointer and GOAL return address, then return to GOAL code.
-  adrp x9, L_goal_call_arm64_depth@PAGE
-  add  x9, x9, L_goal_call_arm64_depth@PAGEOFF
-  ldr  x10, [x9]
-  sub  x10, x10, #1
-  str  x10, [x9]
-  adrp x12, L_goal_call_arm64_fp_lr_stack@PAGE
-  add  x12, x12, L_goal_call_arm64_fp_lr_stack@PAGEOFF
-  add  x12, x12, x10, lsl #4
-  ldp  x29, x30, [x12]
+  ldp  x29, x30, [sp], #16
   ret
 
 
@@ -91,16 +72,8 @@ _arg_call_arm64:
 .global _stack_call_arm64
 .align 4
 _stack_call_arm64:
-  ;; Keep GOAL FP/LR off the GOAL stack. See _arg_call_arm64.
-  adrp x9, L_goal_call_arm64_depth@PAGE
-  add  x9, x9, L_goal_call_arm64_depth@PAGEOFF
-  ldr  x10, [x9]
-  add  x11, x10, #1
-  str  x11, [x9]
-  adrp x12, L_goal_call_arm64_fp_lr_stack@PAGE
-  add  x12, x12, L_goal_call_arm64_fp_lr_stack@PAGEOFF
-  add  x12, x12, x10, lsl #4
-  stp  x29, x30, [x12]
+  ;; Standard prologue: save GOAL frame-pointer and GOAL lr.
+  stp  x29, x30, [sp, #-16]!
   mov  x29, sp
 
   ;; Save GOAL reserved registers (pp=x20, st=x21, off=x22) — same rationale as _arg_call_arm64.
@@ -141,28 +114,8 @@ _stack_call_arm64:
   ldp x20, x21, [sp], #16
 
   ;; Restore frame pointer and GOAL return address, then return to GOAL code.
-  adrp x9, L_goal_call_arm64_depth@PAGE
-  add  x9, x9, L_goal_call_arm64_depth@PAGEOFF
-  ldr  x10, [x9]
-  sub  x10, x10, #1
-  str  x10, [x9]
-  adrp x12, L_goal_call_arm64_fp_lr_stack@PAGE
-  add  x12, x12, L_goal_call_arm64_fp_lr_stack@PAGEOFF
-  add  x12, x12, x10, lsl #4
-  ldp  x29, x30, [x12]
+  ldp  x29, x30, [sp], #16
   ret
-
-.data
-.align 3
-L_goal_call_arm64_depth:
-  .quad 0
-.align 4
-L_goal_call_arm64_fp_lr_stack:
-  .space 4096
-.align 4
-L_mips2c_arm64_sp_stack:
-  .space 4096
-.text
 
 ;; Call c++ code through mips2c.
 ;; GOAL will call a dynamically generated trampoline.
@@ -170,27 +123,12 @@ L_mips2c_arm64_sp_stack:
 .global _mips2c_call_arm64
 .align 4
 _mips2c_call_arm64:
-  ;; Keep host FP/LR off this frame too. The fake GOAL stack below can overlap
-  ;; scratch buffers used by MIPS2C render code; if FP/LR live there, vector
-  ;; stores can turn the return address into matrix data (for example 0x3f800000).
-  adrp x9, L_goal_call_arm64_depth@PAGE
-  add  x9, x9, L_goal_call_arm64_depth@PAGEOFF
-  ldr  x10, [x9]
-  add  x11, x10, #1
-  str  x11, [x9]
-  adrp x12, L_goal_call_arm64_fp_lr_stack@PAGE
-  add  x12, x12, L_goal_call_arm64_fp_lr_stack@PAGEOFF
-  add  x12, x12, x10, lsl #4
-  stp  x29, x30, [x12]
+  stp	x29, x30, [sp, #-16]!
   mov	x29, sp
 
   ;; Keep the fake GOAL stack reservation ABI-aligned before calling C++.
   add x17, x17, #15
   and x17, x17, #0xfffffffffffffff0
-  ;; Keep native C++ frames below the emulated MIPS stack. The MIPS2C function may write up to
-  ;; stack_size bytes below its original SP while the host compiler also grows the native stack.
-  ;; Without this guard, exact/underestimated stack reservations can corrupt host LR/FP.
-  add x17, x17, #4096
 
   ;; first, save quadword registers
   stp q15, q14, [sp, #-32]!
@@ -203,14 +141,6 @@ _mips2c_call_arm64:
 
   ;; oof
   sub sp, sp, 1280
-  ;; ExecutionContext lives in raw stack memory. Clear it so unused MIPS/VU regs and Q/I don't
-  ;; inherit NaNs or stale matrix data from earlier render calls.
-  mov x14, sp
-  mov x15, #80
-L_mips2c_arm64_zero_context:
-  stp xzr, xzr, [x14], #16
-  subs x15, x15, #1
-  b.ne L_mips2c_arm64_zero_context
   str x0, [sp, #+64] ; arg 0 (RDI in x86) and 
   str x1, [sp, #+80] ; arg 1 (RSI in x86)
   str x2, [sp, #+96] ; arg 2 (RDX in x86) and arg 3 (RCX in x86)
@@ -228,30 +158,14 @@ L_mips2c_arm64_zero_context:
 
   mov x0, sp ;; move the stack pointer to the new position
 
-  ;; Save the context stack pointer outside the fake GOAL stack. Render MIPS2C code
-  ;; uses the native stack as EE scratch, so an in-stack restore word can be overwritten.
-  adrp x9, L_mips2c_arm64_sp_stack@PAGE
-  add  x9, x9, L_mips2c_arm64_sp_stack@PAGEOFF
-  add  x9, x9, x10, lsl #4
-  mov  x13, sp
-  str  x13, [x9]
-  str  x17, [x9, #8]
-
   sub sp, sp, x17 ;; allocate space on the stack for GOAL fake stack
+  str x17, [sp, #-16]! ;; and remember this so we can find our way back
 
   blr x16 ;; call!
 
-  ;; Restore directly to the saved context stack pointer. Do not trust the current
-  ;; stack pointer: nested GOAL/MIPS2C paths may have used it as scratch.
-  adrp x9, L_goal_call_arm64_depth@PAGE
-  add  x9, x9, L_goal_call_arm64_depth@PAGEOFF
-  ldr  x10, [x9]
-  sub  x10, x10, #1
-  adrp x12, L_mips2c_arm64_sp_stack@PAGE
-  add  x12, x12, L_mips2c_arm64_sp_stack@PAGEOFF
-  add  x12, x12, x10, lsl #4
-  ldr  x13, [x12]
-  mov  sp, x13
+  ;; unallocate
+  ldr x17, [sp], #16
+  add sp, sp, x17
 
   ldr x0, [sp, #+32]
 
@@ -262,15 +176,7 @@ L_mips2c_arm64_zero_context:
   ldp q12, q13, [sp], #32
   ldp q14, q15, [sp], #32
 
-  adrp x9, L_goal_call_arm64_depth@PAGE
-  add  x9, x9, L_goal_call_arm64_depth@PAGEOFF
-  ldr  x10, [x9]
-  sub  x10, x10, #1
-  str  x10, [x9]
-  adrp x12, L_goal_call_arm64_fp_lr_stack@PAGE
-  add  x12, x12, L_goal_call_arm64_fp_lr_stack@PAGEOFF
-  add  x12, x12, x10, lsl #4
-  ldp	x29, x30, [x12]
+  ldp	x29, x30, [sp], #16
   ret
 
 ;; The _call_goal_asm function is used to call a GOAL function from C.
@@ -288,17 +194,10 @@ L_mips2c_arm64_zero_context:
 _call_goal_asm_arm64:
   stp	x29, x30, [sp, #-16]!
   mov	x29, sp
-  ;; Preserve all ARM64 callee-saved registers. GOAL code is not a normal C
-  ;; callee, so protect the host C++ caller around the transition.
-  stp q15, q14, [sp, #-32]!
-  stp q13, q12, [sp, #-32]!
-  stp q11, q10, [sp, #-32]!
-  stp q9, q8, [sp, #-32]!
-  stp x27, x28, [sp, #-16]!
-  stp x25, x26, [sp, #-16]!
-  stp x23, x24, [sp, #-16]!
-  stp x21, x22, [sp, #-16]!
-  stp x19, x20, [sp, #-16]!
+  ;; saved registers we need to modify for GOAL should be preserved
+  ; ARM64 requires 16-byte stack pointer alignment
+  stp x20, x21, [sp, #-16]!
+  str x22, [sp, #-16]!
 
   ;; x0 - first arg
   ;; x1 - second arg
@@ -317,15 +216,8 @@ _call_goal_asm_arm64:
   blr x3
 
   ;; restore saved registers.
-  ldp x19, x20, [sp], #16
-  ldp x21, x22, [sp], #16
-  ldp x23, x24, [sp], #16
-  ldp x25, x26, [sp], #16
-  ldp x27, x28, [sp], #16
-  ldp q9, q8, [sp], #32
-  ldp q11, q10, [sp], #32
-  ldp q13, q12, [sp], #32
-  ldp q15, q14, [sp], #32
+  ldr x22, [sp], #16
+  ldp x20, x21, [sp], #16
   ldp	x29, x30, [sp], #16
   ret
 
@@ -334,17 +226,10 @@ _call_goal_asm_arm64:
 _call_goal8_asm_arm64:
   stp	x29, x30, [sp, #-16]!
   mov	x29, sp
-  ;; Preserve all ARM64 callee-saved registers. GOAL code is not a normal C
-  ;; callee, so protect the host C++ caller around the transition.
-  stp q15, q14, [sp, #-32]!
-  stp q13, q12, [sp, #-32]!
-  stp q11, q10, [sp, #-32]!
-  stp q9, q8, [sp, #-32]!
-  stp x27, x28, [sp, #-16]!
-  stp x25, x26, [sp, #-16]!
-  stp x23, x24, [sp, #-16]!
-  stp x21, x22, [sp, #-16]!
-  stp x19, x20, [sp, #-16]!
+  ;; saved registers we need to modify for GOAL should be preserved
+  ; ARM64 requires 16-byte stack pointer alignment
+  stp x20, x21, [sp, #-16]!
+  str x22, [sp, #-16]!
 
   ;; x0 - first arg (func)
   ;; x1 - second arg (arg array)
@@ -374,15 +259,8 @@ _call_goal8_asm_arm64:
   blr x8
 
   ;; retore registers.
-  ldp x19, x20, [sp], #16
-  ldp x21, x22, [sp], #16
-  ldp x23, x24, [sp], #16
-  ldp x25, x26, [sp], #16
-  ldp x27, x28, [sp], #16
-  ldp q9, q8, [sp], #32
-  ldp q11, q10, [sp], #32
-  ldp q13, q12, [sp], #32
-  ldp q15, q14, [sp], #32
+  ldr x22, [sp], #16
+  ldp x20, x21, [sp], #16
   ldp	x29, x30, [sp], #16
   ret
 
@@ -408,10 +286,6 @@ _call_goal_on_stack_asm_arm64:
   stp x24, x25, [sp, #-16]!
   stp x26, x27, [sp, #-16]!
   stp x19, x28, [sp, #-16]!
-  stp q15, q14, [sp, #-32]!
-  stp q13, q12, [sp, #-32]!
-  stp q11, q10, [sp, #-32]!
-  stp q9, q8, [sp, #-32]!
   ;; Save old host SP into x28. GOAL asm maps x23/x26 as saved registers, and throw-dispatch
   ;; can restore them from catch frames before this trampoline returns. x28 is kept outside
   ;; GOAL allocation and asm-register mapping, so it is safe as the host-SP scratch.
@@ -436,10 +310,6 @@ _call_goal_on_stack_asm_arm64:
   mov sp, x28
 
   ;; Restore callee-saved registers (reverse push order)
-  ldp q9, q8, [sp], #32
-  ldp q11, q10, [sp], #32
-  ldp q13, q12, [sp], #32
-  ldp q15, q14, [sp], #32
   ldp x19, x28, [sp], #16
   ldp x26, x27, [sp], #16
   ldp x24, x25, [sp], #16

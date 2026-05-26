@@ -263,10 +263,9 @@ void ee_runner(SystemThreadInterface& iface) {
 
   // On x86-64, make the first 512 kB PROT_NONE to catch null GOAL pointer dereferences.
   // On ARM64/macOS GOAL code may legitimately read EE[0] (null = #f, returns 0 like PS2),
-  // so keep only the first hardware page read-only. Larger protection collides with
-  // low GOAL stacks such as the fake scratchpad top at 0x80000.
+  // so we use PROT_READ to allow harmless reads while still catching writes.
 #if defined(__aarch64__) && defined(__APPLE__)
-  mprotect((void*)g_ee_main_mem, 16384, PROT_READ);
+  mprotect((void*)g_ee_main_mem, EE_MAIN_MEM_LOW_PROTECT, PROT_READ);
 #else
   mprotect((void*)g_ee_main_mem, EE_MAIN_MEM_LOW_PROTECT, PROT_NONE);
 #endif
@@ -726,30 +725,6 @@ static void sigbus_handler(int sig, siginfo_t* info, void* ctx) {
         // r==30 (LR) write-back not needed by any store pattern
       };
 
-      {
-        static _Atomic uint64_t s_sigbus_store_log_count = 0;
-        uint64_t dn = ++s_sigbus_store_log_count;
-        if (dn <= 64 || (dn % 100000) == 0) {
-          const bool aligned_pc = ((ss.__pc & 3u) == 0);
-          const uint32_t instr = aligned_pc ? *(const uint32_t*)ss.__pc : 0;
-          char dbuf[512];
-          int dlen = __builtin_snprintf(
-              dbuf, sizeof(dbuf),
-              "[SIGBUS-STORE] n=%llu sig=%d mod=%s pc=EE+0x%llx lr=EE+0x%llx "
-              "fault=EE+0x%llx instr=0x%08x x0=%llx x1=%llx x2=%llx x3=%llx "
-              "x20=%llx x21=%llx x22=%llx sp=%llx\n",
-              (unsigned long long)dn, sig, g_current_goal_module,
-              (unsigned long long)(ss.__pc - ee_base),
-              (unsigned long long)(ss.__lr - ee_base),
-              (unsigned long long)(fault_addr - ee_base), instr,
-              (unsigned long long)ss.__x[0], (unsigned long long)ss.__x[1],
-              (unsigned long long)ss.__x[2], (unsigned long long)ss.__x[3],
-              (unsigned long long)ss.__x[20], (unsigned long long)ss.__x[21],
-              (unsigned long long)ss.__x[22], (unsigned long long)ss.__sp);
-          write(2, dbuf, dlen);
-        }
-      }
-
       // Execute one store instruction (already in write mode).
       // Updates cur_pc by 4 on success; updates context registers for write-back forms.
       // Returns true if the instruction was a recognised store.
@@ -1073,28 +1048,13 @@ static void sigbus_handler(int sig, siginfo_t* info, void* ctx) {
       if (fault_addr == (uintptr_t)ss.__pc) {
         static std::atomic<uint64_t> fetch_fault_count{0};
         uint64_t fc = ++fetch_fault_count;
-        const bool aligned_pc = ((fault_addr & 3u) == 0);
-        const uint32_t instr = aligned_pc ? *(const uint32_t*)fault_addr : 0;
-        if (!aligned_pc) {
-          char fbuf[160];
-          int fn = __builtin_snprintf(fbuf, sizeof(fbuf),
-            "[EE-CRASH] invalid MAP_JIT fetch at unaligned EE+0x%llx\n",
-            (unsigned long long)(fault_addr - (uintptr_t)g_ee_main_mem));
-          write(2, fbuf, fn);
-          dump_arm64_crash_context(ss.__pc, ss.__lr, ss.__sp, ss.__x, ss.__fp, fault_addr);
-          struct sigaction sa_def{};
-          sa_def.sa_handler = SIG_DFL;
-          sigaction(SIGBUS, &sa_def, nullptr);
-          raise(SIGBUS);
-          return;
-        }
         if (fc <= 5 || (fc % 1000) == 0) {
           char fbuf[128];
           int fn = __builtin_snprintf(fbuf, sizeof(fbuf),
             "[EE-JIT] fetch-fault recovery #%llu at EE+0x%llx instr=0x%08x\n",
             (unsigned long long)fc,
             (unsigned long long)(fault_addr - (uintptr_t)g_ee_main_mem),
-            instr);
+            *(const uint32_t*)fault_addr);
           write(2, fbuf, fn);
         }
         return;
@@ -1143,19 +1103,11 @@ RuntimeExitStatus exec_runtime(GameLaunchOptions game_options, int argc, const c
       if (!ctx) { raise(SIGILL); return; }
       ucontext_t* uctx = (ucontext_t*)ctx;
       auto& ss = uctx->uc_mcontext->__ss;
-      uint32_t instr = 0;
-      if (g_ee_main_mem) {
-        uintptr_t ee_base = (uintptr_t)g_ee_main_mem;
-        uintptr_t pc = (uintptr_t)ss.__pc;
-        if (pc >= ee_base && pc + sizeof(uint32_t) <= ee_base + EE_MAIN_MEM_SIZE) {
-          instr = *(const uint32_t*)pc;
-        }
-      }
       {
         char buf[128];
         int n = __builtin_snprintf(buf, sizeof(buf),
           "[EE-CRASH] SIGILL at PC=0x%016llx instr=0x%08x\n",
-          (unsigned long long)ss.__pc, instr);
+          (unsigned long long)ss.__pc, *(const uint32_t*)ss.__pc);
         write(2, buf, n);
       }
       dump_arm64_crash_context(ss.__pc, ss.__lr, ss.__sp, ss.__x, ss.__fp,

@@ -133,31 +133,6 @@ u16 vis[16];
 
 u8 vu0_data_mem[1024 * 4];
 
-static const u32* resolve_debug_ee_addr(u64 addr, u32 bytes) {
-  if (!addr || !g_ee_main_mem || addr + bytes > EE_MAIN_MEM_SIZE) {
-    return nullptr;
-  }
-  return (const u32*)(g_ee_main_mem + addr);
-}
-
-static void print_qwords(const char* label, u64 addr, u32 count) {
-  if (!addr) {
-    fmt::print("{} addr=0\n", label);
-    return;
-  }
-  const u32* data = resolve_debug_ee_addr(addr, count * 16);
-  fmt::print("{} addr=0x{:x}", label, addr);
-  if (!data) {
-    fmt::print(" out-of-ee\n");
-    return;
-  }
-  for (u32 i = 0; i < count; i++) {
-    fmt::print(" q{}={:08x},{:08x},{:08x},{:08x}", i, data[i * 4 + 0], data[i * 4 + 1],
-               data[i * 4 + 2], data[i * 4 + 3]);
-  }
-  fmt::print("\n");
-}
-
 void sq_buffer(Mask mask, const Vf& data, u32 qw) {
   ASSERT(qw * 16 < sizeof(vu0_data_mem));
   for (int i = 0; i < 4; i++) {
@@ -2109,22 +2084,6 @@ u64 execute(void* ctxt) {
   c->sw(a1, 68, at);                                // sw a1, 68(at)
   c->sw(r0, 72, at);                                // sw r0, 72(at)
   c->lw(v1, 748, at);                               // lw v1, 748(at)
-  {
-    static u32 s_tie_prepare_calls = 0;
-    s_tie_prepare_calls++;
-    if (s_tie_prepare_calls <= 40 || (s_tie_prepare_calls % 1000) == 0) {
-      u64 spad = c->sgpr64(at);
-      u64 out = *(u32*)(spad + 40);
-      u64 desc = *(u32*)(spad + 60);
-      u64 src = *(u32*)(spad + 64);
-      fmt::print("[generic-tie] prepare-call={} fn=0x{:x} desc=0x{:x} src=0x{:x} "
-                 "vtx-count={} qwc={} out=0x{:x}\n",
-                 s_tie_prepare_calls, c->sgpr64(v1), desc, src, *(u8*)(desc + 16),
-                 *(s16*)(desc + 18), out);
-      print_qwords("[generic-tie] src-pre", src, 4);
-      print_qwords("[generic-tie] desc-pre", desc, 2);
-    }
-  }
   call_addr = c->gprs[v1].du32[0];                  // function call:
   // Unknown instr: sllv v0, ra, r0
   // c->jalr(call_addr);                               // jalr ra, v1
@@ -2233,3 +2192,4 @@ void link() {
 
 } // namespace generic_tie_convert
 } // namespace Mips2C
+

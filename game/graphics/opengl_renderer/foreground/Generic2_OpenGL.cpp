@@ -93,7 +93,7 @@ void Generic2::opengl_bind_and_setup_proj(SharedRenderState* render_state) {
               m_drawing_config.proj_scale[2], 0);
   glUniform1f(m_ogl.mat_23, m_drawing_config.proj_mat_23);
   glUniform1f(m_ogl.mat_32, m_drawing_config.proj_mat_32);
-  glUniform1f(m_ogl.mat_33, m_drawing_config.proj_mat_33);
+  glUniform1f(m_ogl.mat_33, 0);
   glUniform3f(m_ogl.fog_consts, m_drawing_config.pfog0, m_drawing_config.fog_min,
               m_drawing_config.fog_max);
   glUniform4f(m_ogl.hvdf_offset, m_drawing_config.hvdf_offset[0], m_drawing_config.hvdf_offset[1],
@@ -116,7 +116,7 @@ void Generic2::setup_opengl_for_draw_mode(const DrawMode& draw_mode,
       case DrawMode::AlphaTest::NEVER:
         break;
       default:
-        break;
+        ASSERT_MSG(false, fmt::format("unknown alpha test: {}", (int)draw_mode.get_alpha_test()));
     }
   }
 

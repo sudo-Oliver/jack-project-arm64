@@ -80,7 +80,7 @@ class Generic2 {
     float pfog0;             // scale factor for perspective divide
     float fog_min, fog_max;  // clamp for fog
     math::Vector3f proj_scale;
-    float proj_mat_23, proj_mat_32, proj_mat_33;
+    float proj_mat_23, proj_mat_32;
 
     math::Vector3f hud_scale;
     float hud_mat_23, hud_mat_32, hud_mat_33;

@@ -94,19 +94,6 @@ void emit_arm64_lr_relative_guard(ObjectGenerator& gen, IR_Record i_rec) {
   gen.add_instr(arm64_branch_hs_skip_one(), i_rec);
   gen.add_instr(IGen::add_gpr64_gpr64(gen, lr, gen.get_offset_reg()), i_rec);
 }
-
-bool arm64_saved_reg_is_gpr(Register reg) {
-  // ARM64 shares the numeric id space between GPRs and GOAL XMM/Q regs.
-  // Classify saved regs by the ARM64 allocation policy, not by Register::is_gpr(),
-  // because ids 25..30 would otherwise be misread as x25..x30 instead of q9..q14.
-  return reg == Register(ARM64_REG::X24);
-}
-
-bool arm64_saved_reg_is_xmm(Register reg) {
-  return reg == Register(XMM9) || reg == Register(XMM10) || reg == Register(XMM11) ||
-         reg == Register(XMM12) || reg == Register(XMM13) || reg == Register(XMM14) ||
-         reg == Register(XMM15);
-}
 }  // namespace
 
 /*!
@@ -426,7 +413,7 @@ void CodeGenerator::do_goal_function_arm64(FunctionEnv* env, int f_idx) {
   // Collect callee-saved SIMD (XMM/Q) registers, then save in pairs via STP.
   std::vector<emitter::Register> saved_xmm_regs;
   for (auto& saved_reg : allocs.used_saved_regs) {
-    if (arm64_saved_reg_is_xmm(saved_reg)) {
+    if (saved_reg.is_xmm(m_gen.instr_set())) {
       saved_xmm_regs.push_back(saved_reg);
     }
   }
@@ -446,7 +433,7 @@ void CodeGenerator::do_goal_function_arm64(FunctionEnv* env, int f_idx) {
 
   // Save callee-saved GPRs. push_gpr64 does STR Xn, [SP, #-16]! — always 16-byte aligned.
   for (auto& saved_reg : allocs.used_saved_regs) {
-    if (arm64_saved_reg_is_gpr(saved_reg)) {
+    if (saved_reg.is_gpr(m_gen.instr_set())) {
       m_gen.add_instr_no_ir(f_rec, IGen::push_gpr64(m_gen, saved_reg),
                             InstructionInfo::Kind::PROLOGUE);
       stack_offset += 16;  // each ARM64 push reserves 16 bytes, not 8
@@ -580,7 +567,7 @@ void CodeGenerator::do_goal_function_arm64(FunctionEnv* env, int f_idx) {
 
   for (int i = int(allocs.used_saved_regs.size()); i-- > 0;) {
     auto& saved_reg = allocs.used_saved_regs.at(i);
-    if (arm64_saved_reg_is_gpr(saved_reg)) {
+    if (saved_reg.is_gpr(m_gen.instr_set())) {
       m_gen.add_instr_no_ir(f_rec, IGen::pop_gpr64(m_gen, saved_reg),
                             InstructionInfo::Kind::EPILOGUE);
     }
@@ -693,14 +680,9 @@ void CodeGenerator::do_asm_function_arm64(FunctionEnv* env, int f_idx, bool allo
   bool arm64_has_early_pop = false;       // .pop before *kernel-sp* load — thread-suspend
   bool arm64_has_push_near_jr = false;    // .push immediately before .jr — reset-and-call
   bool arm64_has_push_before_jr = false;  // any .push before .jr — set-to-run-bootstrap
-  bool arm64_seen_function_call = false;
-  const bool arm64_manual_lr_ret = env->name().find("throw-dispatch") != std::string::npos;
 
   for (int i = 0; i < (int)env->code().size(); i++) {
     auto& cur_ir = env->code().at(i);
-    if (dynamic_cast<IR_FunctionCall*>(cur_ir.get())) {
-      arm64_seen_function_call = true;
-    }
     if (dynamic_cast<IR_JumpReg*>(cur_ir.get())) {
       arm64_has_jump_reg = true;
       // Check if there's a .push in the last few IR ops. reset-and-call pushes the
@@ -721,8 +703,7 @@ void CodeGenerator::do_asm_function_arm64(FunctionEnv* env, int f_idx, bool allo
         }
       }
     }
-    if (!arm64_has_kernel_sp_load && !arm64_seen_function_call &&
-        dynamic_cast<IR_AsmPop*>(cur_ir.get())) {
+    if (!arm64_has_kernel_sp_load && dynamic_cast<IR_AsmPop*>(cur_ir.get())) {
       arm64_has_early_pop = true;
     }
     if (dynamic_cast<IR_GetSymbolValueAsm*>(cur_ir.get())) {
@@ -748,8 +729,8 @@ void CodeGenerator::do_asm_function_arm64(FunctionEnv* env, int f_idx, bool allo
   //     on the stack with the catch handler's address before .ret, so BLR must push X30
   //     first for .pop to consume, then .push puts the catch handler, then BR X30 jumps there.
   const bool arm64_push_lr_at_start =
-      !arm64_manual_lr_ret &&
-      ((arm64_has_jump_reg && arm64_has_kernel_sp_store) || arm64_has_early_pop);
+      (arm64_has_jump_reg && arm64_has_kernel_sp_store) ||
+      arm64_has_early_pop;
   // Pop X30 just before .jr so the process function's eventual BR X30 jumps to the
   // return trampoline pushed onto the process stack. This must consume the stack slot:
   // x86 RET pops the return address, while ARM64 RET reads LR and leaves SP unchanged.
@@ -759,8 +740,7 @@ void CodeGenerator::do_asm_function_arm64(FunctionEnv* env, int f_idx, bool allo
   // Pop X30 before .ret in functions that restore the kernel stack so that
   // BR X30 (= .ret) jumps back to the original kernel call site.
   // Also applies to throw-dispatch which replaces the return address via .pop/.push.
-  const bool arm64_pop_lr_before_ret =
-      !arm64_manual_lr_ret && (arm64_has_kernel_sp_load || arm64_has_early_pop);
+  const bool arm64_pop_lr_before_ret = arm64_has_kernel_sp_load || arm64_has_early_pop;
 
   // Prologue: push X30 (ARM64-specific) before any auto-saved callee regs.
   if (arm64_push_lr_at_start) {

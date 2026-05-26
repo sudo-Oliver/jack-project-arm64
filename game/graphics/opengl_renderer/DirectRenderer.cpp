@@ -737,26 +737,6 @@ void DirectRenderer::render_gif(const u8* data,
       ASSERT(eop);
       // in IMAGE mode this is the amount of 2x64-bit (1 qword) we will transfer
       m_blit_buf_state.qwc = tag.nloop();
-    } else if (format == GifTag::Format::DISABLE) {
-      static u32 s_disable_gif_warn_count = 0;
-      const u32 skip_bytes = tag.nloop() * 16;
-      if (s_disable_gif_warn_count < 8) {
-        fmt::print(stderr,
-                   "[DirectRenderer] skip DISABLE gif tag renderer={} nloop={} eop={} off={} "
-                   "size={}\n",
-                   name_and_id(), tag.nloop(), eop, offset - 16, size);
-      }
-      s_disable_gif_warn_count++;
-
-      if (size != UINT32_MAX && offset + skip_bytes > size) {
-        fmt::print(stderr,
-                   "[DirectRenderer] DISABLE gif payload past packet renderer={} nloop={} off={} "
-                   "size={}\n",
-                   name_and_id(), tag.nloop(), offset, size);
-        offset = size;
-        break;
-      }
-      offset += skip_bytes;
     } else {
       ASSERT(false);  // format not packed or reglist or image
     }

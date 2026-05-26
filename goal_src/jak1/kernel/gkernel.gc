@@ -125,12 +125,11 @@
    ;; we'll create a fake scratchpad:
    ;; make sure the scratchpad is 64kb aligned, and make it 32 kB so we can big stacks on it.
    ;; some (partially buggy) code in generic tie relies on 64 kB alignment.
-   (let* ((mem (new 'global 'array 'uint8 (* 256 1024))))
+   (let* ((mem (new 'global 'array 'uint8 (* 128 1024))))
      (define *fake-scratchpad-data* (the pointer (align-n mem (* 64 1024)))))
-   ;; Keep the fake scratchpad data and scratchpad process stacks separate. The renderer/MIPS2C
-   ;; code uses the full low scratchpad range for VU/DMA work, while GOAL process stacks grow
-   ;; downward from fake-scratchpad-stack + 32 KiB.
-   (define *fake-scratchpad-stack* (&+ *fake-scratchpad-data* (* 64 1024)))
+   ;; use the same memory for the scratchpad stacks.
+   ;; defining it as a separate thing so we can split them for debugging stack corruption easily.
+   (define *fake-scratchpad-stack* *fake-scratchpad-data*)
    (defmacro scratchpad-start ()
      "Get the start of the scratchpad. At least 64kB aligned."
      '*fake-scratchpad-data*))
@@ -183,9 +182,6 @@
   "Set the backup stack size of a thread. This should only be done on the main-thread.
   This should be done immediately after allocating the main-thread.
    Users can do this if they want a larger or smaller backup stack than the default."
-  (#when ARM64_PORT
-    (when (< stack-size 512)
-      (set! stack-size 512)))
   (let ((proc (-> this process)))
     (cond
       ((neq? this (-> proc main-thread))
@@ -211,9 +207,6 @@
   The stack-top is for the execution stack.
   The stack-size is for the backup stack (applicable for main thread only)"
   ;; first, let's see if we're doing the main or temp thread
-  (#when ARM64_PORT
-    (when (and (not (-> parent-process top-thread)) (< stack-size 512))
-      (set! stack-size 512)))
   (let* ((this (cond
                  ((-> parent-process top-thread)
                   ;; we're allocating a temporary thread, the main thread already exists.
@@ -563,9 +556,6 @@
          (s2 :reg r10 :type uint)
          (s3 :reg r11 :type uint)
          (s4 :reg r12 :type uint)
-         ;; ARM64 allocator uses physical x24 as the only saved GPR.
-         ;; The register parser maps xmm8's numeric ID to x24 for GPR-typed rlets.
-         (s5 :reg xmm8 :type uint)
          (xmm8 :reg xmm8 :class fpr)
          (xmm9 :reg xmm9 :class fpr)
          (xmm10 :reg xmm10 :class fpr)
@@ -597,9 +587,6 @@
     (set! (-> this rreg 3) temp)
     (.mov :color #f temp s4)
     (set! (-> this rreg 4) temp)
-    (#when ARM64_PORT
-      (.mov :color #f temp s5)
-      (set! (-> this rreg 5) temp))
     ;; back up fprs
     (.mov :color #f temp xmm8)
     (set! (-> this freg 0) (the-as float temp))
@@ -665,8 +652,6 @@
          (s2 :reg r10 :type uint)
          (s3 :reg r11 :type uint)
          (s4 :reg r12 :type uint)
-         ;; ARM64 saved local register used by the allocator.
-         (s5 :reg xmm8 :type uint)
          (a4 :reg r8 :type uint)
          (a5 :reg r9 :type uint)
          (temp-float :reg xmm0 :class fpr)
@@ -715,9 +700,6 @@
     (.mov :color #f s3 temp)
     (set! temp (-> this rreg 4))
     (.mov :color #f s4 temp)
-    (#when ARM64_PORT
-      (set! temp (-> this rreg 5))
-      (.mov :color #f s5 temp))
     (set! temp-float (-> this freg 0))
     (.mov :color #f xmm8 temp-float)
     (set! temp-float (-> this freg 1))
@@ -994,9 +976,6 @@
 
 (defmethod get-process ((this dead-pool-heap) (type-to-make type) (stack-size int))
   "Allocate a process"
-  (#when ARM64_PORT
-    (when (< stack-size 512)
-      (set! stack-size 512)))
   ;; get a record for the new process
   (let ((rec (-> this dead-list next))
         ;; will eventually hold our new process
@@ -1396,9 +1375,39 @@
                                  (set! (-> this status) 'suspended)
                                  ;; not sleeping. call resume hook. This will return once the main thread suspends again.
                                  (begin
+                                   (#when ARM64_PORT
+                                     (format 0
+                                             "ARM64 dispatch proc=~X name=~A status=~A main=~X~%"
+                                             (the uint this)
+                                             (-> this name)
+                                             (-> this status)
+                                             (the uint (-> this main-thread)))
+                                     (format 0
+                                             "ARM64 dispatch hook=~X pc=~X sp=~X~%"
+                                             (the uint (-> this main-thread resume-hook))
+                                             (the uint (-> this main-thread pc))
+                                             (the uint (-> this main-thread sp)))
+                                     (format 0
+                                             "ARM64 dispatch r0=~X r1=~X r2=~X~%"
+                                             (the uint (-> this main-thread rreg 0))
+                                             (the uint (-> this main-thread rreg 1))
+                                             (the uint (-> this main-thread rreg 2)))
+                                     (format 0
+                                             "ARM64 dispatch r3=~X r4=~X r5=~X r6=~X~%"
+                                             (the uint (-> this main-thread rreg 3))
+                                             (the uint (-> this main-thread rreg 4))
+                                             (the uint (-> this main-thread rreg 5))
+                                             (the uint (-> this main-thread rreg 6))))
                                    ((-> this main-thread resume-hook) (-> this main-thread))
                                    (#when ARM64_PORT
-                                     (set! this (-> *kernel-context* current-process)))))
+                                     (set! this (-> *kernel-context* current-process)))
+                                   (#when ARM64_PORT
+                                     (format 0
+                                             "ARM64 dispatch returned proc=~X status=~A pc=~X sp=~X~%"
+                                             (the uint this)
+                                             (-> this status)
+                                             (the uint (-> this main-thread pc))
+                                             (the uint (-> this main-thread sp))))))
                                ;; check for deadness
                                (cond
                                  ((eq? (-> this status) 'dead)
@@ -1486,8 +1495,6 @@
          (s2 :reg r10 :type (pointer uint64))
          (s3 :reg r11 :type uint)
          (s4 :reg r12 :type uint)
-         ;; ARM64 allocator saved GPR. The parser maps xmm8's numeric ID to x24 for GPR rlets.
-         (s5 :reg xmm8 :type uint)
          (xmm8 :reg xmm8 :class fpr)
          (xmm9 :reg xmm9 :class fpr)
          (xmm10 :reg xmm10 :class fpr)
@@ -1514,6 +1521,10 @@
       ;; todo, do we need a stack offset here?
       ;; remember the stack pointer
       (set! temp sp)
+      ;; ARM64 asm-func codegen saves LR with a 16-byte push. A throw must restore
+      ;; the caller's SP, not the constructor's internal LR-save slot.
+      (#when ARM64_PORT
+        (+! temp 16))
       (.sub temp off)
       (set! (-> this sp) (the int temp))
       ;; back up registers we care about
@@ -1527,9 +1538,6 @@
       (set-u128-as-u64! (-> this rreg 3) temp)
       (.mov :color #f temp s4)
       (set-u128-as-u64! (-> this rreg 4) temp)
-      (#when ARM64_PORT
-        (.mov :color #f temp s5)
-        (set-u128-as-u64! (-> this rreg 5) temp))
       (.mov :color #f temp xmm8)
       (set! (-> this freg 0) (the-as float temp))
       (.mov :color #f temp xmm9)
@@ -1560,10 +1568,6 @@
         (.pop :color #f s2)
         (.pop :color #f s2)
         (.pop :color #f s3)
-        (#when ARM64_PORT
-          (set! temp (the uint (-> (the catch-frame (-> pp stack-frame-top)) ra)))
-          (.add :color #f temp off)
-          (.mov :color #f lr temp))
         (set! (-> pp stack-frame-top) (-> pp stack-frame-top next))
         (.ret)
         (the object ret)))))
@@ -1582,12 +1586,7 @@
          (s2 :reg r10 :type (pointer uint64))
          (s3 :reg r11 :type uint)
          (s4 :reg r12 :type uint)
-         ;; ARM64 allocator saved GPR. The parser maps xmm8's numeric ID to x24 for GPR rlets.
-         (s5 :reg xmm8 :type uint)
-         ;; ARM64 scratch x17. Keep longjmp SP out of stack-relative codegen.
-         ;; X16 is used internally by ARM64 codegen for large-offset helpers/guards.
-         (target-sp :reg xmm1 :type uint)
-         (temp-float :reg xmm2 :class fpr)
+         (temp-float :reg xmm0 :class fpr)
          (xmm8 :reg xmm8 :class fpr)
          (xmm9 :reg xmm9 :class fpr)
          (xmm10 :reg xmm10 :class fpr)
@@ -1598,7 +1597,6 @@
          (xmm15 :reg xmm15 :class fpr))
     ;; pop everything we threw past
     (set! (-> pp stack-frame-top) (-> this next))
-    ;; Restore saved regs before loading the final ARM64 longjmp target.
     ;; restore regs we care about.
     (set-u64-from-u128! temp (-> this rreg 0))
     (.mov :color #f s0 temp)
@@ -1610,9 +1608,6 @@
     (.mov :color #f s3 temp)
     (set-u64-from-u128! temp (-> this rreg 4))
     (.mov :color #f s4 temp)
-    (#when ARM64_PORT
-      (set-u64-from-u128! temp (-> this rreg 5))
-      (.mov :color #f s5 temp))
     (set! temp-float (-> this freg 0))
     (.mov :color #f xmm8 temp-float)
     (set! temp-float (-> this freg 1))
@@ -1629,20 +1624,16 @@
     (.mov :color #f xmm14 temp-float)
     (set! temp-float (-> this freg 7))
     (.mov :color #f xmm15 temp-float)
-    ;; Restore the final stack/jump target.
+    ;; set stack pointer
+    (set! sp (the uint (-> this sp)))
+    (.add sp off)
+    ;; overwrite our return address. x86 RET reads the stack; ARM64 RET reads LR.
     (#if ARM64_PORT
       (begin
-        (set! target-sp (the uint (-> this sp)))
-        (.add target-sp off)
         (set! temp (the uint (-> this ra)))
         (.add :color #f temp off)
-        (.mov :color #f sp target-sp)
         (.mov :color #f lr temp))
       (begin
-        ;; set stack pointer
-        (set! sp (the uint (-> this sp)))
-        (.add sp off)
-        ;; overwrite our return address. x86 RET reads the stack.
         (.pop temp)
         (set! temp (the uint (-> this ra)))
         (.add temp off)
@@ -1810,14 +1801,6 @@
   (#when PC_PORT
     (when (= stack-top *scratch-memory-top*)
       (set! stack-top (&+ *fake-scratchpad-stack* (* 32 1024)))))
-  (#when ARM64_PORT
-    (when (< (the uint stack-top) #x100000)
-      (format 0
-              "ARM64 activate low-stack this=~X name=~A stack-top=~X fake=~X~%"
-              (the uint this)
-              name
-              (the uint stack-top)
-              (the uint *fake-scratchpad-stack*))))
   ;; inherit mask (minus stuff like sleep)
   (set! (-> this mask) (logand (-> dest mask) PROCESS_CLEAR_MASK))
   (set! (-> this status) 'ready)
@@ -1949,20 +1932,6 @@
   Only for main threads.
   Once the function returns, the process deactivates."
   (let ((proc (-> thread process)))
-    (#when ARM64_PORT
-      (when (< (the uint (-> thread stack-top)) #x100000)
-        (format 0
-                "ARM64 set-to-run low-stack thread=~X proc=~X name=~A func=~X~%"
-                (the uint thread)
-                (the uint proc)
-                (-> proc name)
-                (the uint func))
-        (format 0
-                "ARM64 set-to-run low-stack stack-top=~X sp=~X a0=~X a1=~X~%"
-                (the uint (-> thread stack-top))
-                (the uint (-> thread sp))
-                (the uint a0)
-                (the uint a1))))
     (set! (-> proc status) 'waiting-to-run)
     ;; we store arguments and the function to call in saved registers
     (set! (-> thread rreg 0) (the uint func))
@@ -2050,10 +2019,8 @@
        ;; go straight to dead.
        (set! (-> this status) 'dead)
        ;; and return (with no deactivate)
-      ;; TODO: replace with abandon.
-      (#if ARM64_PORT
-        (let ((temp (the uint return-from-thread))) (rlet ((off :reg r15 :type uint)) (+! temp off) (.jr temp)))
-        (let ((temp (the uint return-from-thread))) (rlet ((off :reg r15 :type uint)) (+! temp off) (.push temp) (.ret)))))
+       ;; TODO: replace with abandon.
+       (let ((temp (the uint return-from-thread))) (rlet ((off :reg r15 :type uint)) (+! temp off) (.push temp) (.ret))))
       ;; second case - we deactivated while initializing.
       ((eq? (-> this status) 'initialize)
        (set! (-> this status) 'dead)
