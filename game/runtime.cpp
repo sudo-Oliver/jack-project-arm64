@@ -12,6 +12,7 @@
 #include <pthread.h>
 #include <dlfcn.h>
 #include <execinfo.h>
+#include <mach/mach.h>
 #endif
 #elif _WIN32
 #include <io.h>
@@ -165,6 +166,16 @@ void deci2_runner(SystemThreadInterface& iface) {
  * SystemThread Function for the EE (PS2 Main CPU)
  */
 void ee_runner(SystemThreadInterface& iface) {
+#if defined(__APPLE__) && defined(__aarch64__)
+  // Install a per-thread alternate signal stack so the SIGILL handler (SA_ONSTACK)
+  // can run even if the EE/GOAL thread stack pointer is corrupt at crash time.
+  static char s_ee_altstack[65536];
+  stack_t ee_ss{};
+  ee_ss.ss_sp = s_ee_altstack;
+  ee_ss.ss_size = sizeof(s_ee_altstack);
+  ee_ss.ss_flags = 0;
+  sigaltstack(&ee_ss, nullptr);
+#endif
   prof().root_event();
   // Allocate Main RAM (EE memory).
   //
@@ -262,10 +273,14 @@ void ee_runner(SystemThreadInterface& iface) {
   memset((void*)g_ee_main_mem, 0, EE_MAIN_MEM_SIZE);
 
   // On x86-64, make the first 512 kB PROT_NONE to catch null GOAL pointer dereferences.
-  // On ARM64/macOS GOAL code may legitimately read EE[0] (null = #f, returns 0 like PS2),
-  // so we use PROT_READ to allow harmless reads while still catching writes.
+  // On ARM64/macOS: skip the 512 KB PROT_READ zone. The native ARM64 stack (ARM64 SP) is set
+  // to EE top by call_goal_on_stack and grows DOWN through EE memory. GOAL process stacks are
+  // allocated from the heap at EE+0x13FD20, but the kernel ARM64 SP can drift into the low
+  // EE region during game boot. A 512 KB PROT_READ zone would block those stack writes with
+  // KERN_PROTECTION_FAILURE (the crash we saw). The null guard (16 KB before g_ee_main_mem)
+  // already handles null-read detection; the additional 512 KB write guard is not needed here.
 #if defined(__aarch64__) && defined(__APPLE__)
-  mprotect((void*)g_ee_main_mem, EE_MAIN_MEM_LOW_PROTECT, PROT_READ);
+  // No low-memory protection on ARM64 — null guard prefix handles null-pointer reads.
 #else
   mprotect((void*)g_ee_main_mem, EE_MAIN_MEM_LOW_PROTECT, PROT_NONE);
 #endif
@@ -1097,21 +1112,50 @@ RuntimeExitStatus exec_runtime(GameLaunchOptions game_options, int argc, const c
   // Install SIGILL handler to catch illegal-instruction crashes in GOAL code
 #if defined(__APPLE__) && defined(__aarch64__)
   {
+    // Use an alternate signal stack so the handler runs on a known-good stack
+    // even if the faulting thread's SP is corrupt or near its limit.
+    static char s_sigill_altstack[65536];
+    stack_t ss_alt{};
+    ss_alt.ss_sp = s_sigill_altstack;
+    ss_alt.ss_size = sizeof(s_sigill_altstack);
+    ss_alt.ss_flags = 0;
+    sigaltstack(&ss_alt, nullptr);
+
     struct sigaction sa_ill{};
-    sa_ill.sa_flags = SA_SIGINFO;
+    sa_ill.sa_flags = SA_SIGINFO | SA_ONSTACK;
     sa_ill.sa_sigaction = [](int, siginfo_t*, void* ctx) {
+      // Write a static sentinel so we know the handler was entered.
+      write(2, "[EE-SIGILL] handler entered\n", 28);
       if (!ctx) { raise(SIGILL); return; }
       ucontext_t* uctx = (ucontext_t*)ctx;
       auto& ss = uctx->uc_mcontext->__ss;
       {
-        char buf[128];
+        char buf[256];
         int n = __builtin_snprintf(buf, sizeof(buf),
-          "[EE-CRASH] SIGILL at PC=0x%016llx instr=0x%08x\n",
-          (unsigned long long)ss.__pc, *(const uint32_t*)ss.__pc);
+          "[EE-CRASH] SIGILL at PC=0x%016llx LR=0x%016llx\n",
+          (unsigned long long)ss.__pc, (unsigned long long)ss.__lr);
         write(2, buf, n);
+        char buf2[512];
+        int n2 = __builtin_snprintf(buf2, sizeof(buf2),
+          "  x0=%016llx x1=%016llx x2=%016llx x3=%016llx\n"
+          "  x4=%016llx x5=%016llx x6=%016llx x7=%016llx\n"
+          "  x22(EEbase)=%016llx x23(GOALsp)=%016llx fp=%016llx sp=%016llx\n",
+          ss.__x[0], ss.__x[1], ss.__x[2], ss.__x[3],
+          ss.__x[4], ss.__x[5], ss.__x[6], ss.__x[7],
+          ss.__x[22], ss.__x[23], ss.__fp, ss.__sp);
+        write(2, buf2, n2);
+        char buf3[512];
+        int n3 = __builtin_snprintf(buf3, sizeof(buf3),
+          "  x8=%016llx x9=%016llx x10=%016llx x11=%016llx\n"
+          "  x12=%016llx x13=%016llx x14=%016llx x15=%016llx\n"
+          "  x19=%016llx x20=%016llx x21=%016llx x24=%016llx\n"
+          "  x25=%016llx x26=%016llx x27=%016llx x28=%016llx\n",
+          ss.__x[8],  ss.__x[9],  ss.__x[10], ss.__x[11],
+          ss.__x[12], ss.__x[13], ss.__x[14], ss.__x[15],
+          ss.__x[19], ss.__x[20], ss.__x[21], ss.__x[24],
+          ss.__x[25], ss.__x[26], ss.__x[27], ss.__x[28]);
+        write(2, buf3, n3);
       }
-      dump_arm64_crash_context(ss.__pc, ss.__lr, ss.__sp, ss.__x, ss.__fp,
-                               ss.__pc);  // fault addr = pc for SIGILL
       struct sigaction sa{};
       sa.sa_handler = SIG_DFL;
       sigaction(SIGILL, &sa, nullptr);

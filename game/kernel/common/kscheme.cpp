@@ -148,7 +148,9 @@ u64 call_goal(Ptr<Function> f, u64 a, u64 b, u64 c, u64 st, void* offset) {
   }
   pthread_jit_write_protect_np(1);
   u64 result = _call_goal_asm_arm64(a, b, c, fptr, st_ptr, offset);
-  pthread_jit_write_protect_np(0);
+  // Do NOT set wp=0 here. Nested calls (call_method_of_type → call_goal from within
+  // running GOAL code) must return to the outer GOAL frame still in exec mode.
+  // Callers that need write mode afterwards (klink, jak1_finish) have explicit toggles.
   return result;
 #elif defined __APPLE__ && defined __x86_64__
   return _call_goal_asm_systemv(a, b, c, fptr, st_ptr, offset);
@@ -173,7 +175,7 @@ u64 call_goal_on_stack(Ptr<Function> f, u64 rsp, u64 st, void* offset) {
   }
   pthread_jit_write_protect_np(1);
   u64 result = _call_goal_on_stack_asm_arm64(rsp, 0, 0, fptr, st_ptr, offset);
-  pthread_jit_write_protect_np(0);
+  // Do NOT set wp=0 here — same rationale as call_goal above.
   return result;
 #elif defined __APPLE__ && defined __x86_64__
   return _call_goal_on_stack_asm_systemv(rsp, 0, 0, fptr, st_ptr, offset);

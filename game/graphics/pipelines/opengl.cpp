@@ -631,6 +631,17 @@ void GLDisplay::render() {
   // framebuffer size
   int fbuf_w, fbuf_h;
   SDL_GetWindowSizeInPixels(m_window, &fbuf_w, &fbuf_h);
+  {
+    int win_w, win_h;
+    SDL_GetWindowSize(m_window, &win_w, &win_h);
+    static bool once = true;
+    if (once) {
+      once = false;
+      printf("[GFX] Window: %dx%d  Framebuffer(pixels): %dx%d  Scale: %.2f\n",
+             win_w, win_h, fbuf_w, fbuf_h, (float)fbuf_w / win_w);
+      fflush(stdout);
+    }
+  }
 
   // render game!
   g_gfx_data->debug_gui.master_enable = is_imgui_visible();
@@ -691,6 +702,9 @@ void GLDisplay::render() {
 
   {
     auto p = scoped_prof("swap-buffers");
+    static int fc = 0;
+    if (++fc % 300 == 0)
+      printf("[SWAP] frame %d\n", fc), fflush(stdout);
     SDL_GL_SwapWindow(m_window);
   }
 
@@ -774,9 +788,31 @@ u32 gl_sync_path() {
 void gl_send_chain(const void* data, u32 offset) {
   if (g_gfx_data) {
     static bool first_chain = true;
+    static int chain_count = 0;
+    static uint64_t s_sp_initial = 0;
+    // ARM64 only: SP here is the GOAL process stack (called via _arg_call_arm64).
+    // If GOAL cooperative scheduler leaks stack per context-switch, this will drift.
+#if defined(__APPLE__) && defined(__aarch64__)
+    {
+      uint64_t sp_now;
+      asm volatile("mov %0, sp" : "=r"(sp_now));
+      if (s_sp_initial == 0) s_sp_initial = sp_now;
+      if (++chain_count % 60 == 0) {
+        printf("[SP-GOAL] frame %d: GOAL-SP=0x%lx drift=%ld bytes\n",
+               chain_count, sp_now, (long)(s_sp_initial - sp_now));
+        fflush(stdout);
+      }
+    }
+#else
+    ++chain_count;
+#endif
     if (first_chain) {
       lg::info("[GFX] First gl_send_chain call — GOAL is submitting frames");
       first_chain = false;
+    }
+    if (chain_count % 300 == 0) {
+      printf("[CHAIN] gl_send_chain call #%d (offset=0x%x)\n", chain_count, offset);
+      fflush(stdout);
     }
     std::unique_lock<std::mutex> lock(g_gfx_data->dma_mutex);
     if (g_gfx_data->has_data_to_render) {

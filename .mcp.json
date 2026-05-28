@@ -2,18 +2,19 @@
   "mcpServers": {
     "context7": {
       "command": "npx",
-      "args": ["-y", "@upstash/context7-mcp"],
+      "args": [
+        "-y",
+        "@upstash/context7-mcp"
+      ],
       "description": "Up-to-date docs: ARM NEON intrinsics, CMake, GoogleTest, fmt"
     },
     "sequential-thinking": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-sequential-thinking"
+      ],
       "description": "Structured step-by-step reasoning for complex encoding and codegen problems"
-    },
-    "lldb": {
-      "command": "sh",
-      "args": ["-c", "exec \"$HOME/.claude/mcp-servers/lldb-mcp/.venv/bin/python\" \"$HOME/.claude/mcp-servers/lldb-mcp/lldb_mcp.py\""],
-      "description": "Drive lldb sessions: attach to gk, set watchpoints (e.g. on x22), examine JIT-emitted ARM64 bytes, inspect registers/memory/threads. Install: git clone https://github.com/stass/lldb-mcp ~/.claude/mcp-servers/lldb-mcp && cd ~/.claude/mcp-servers/lldb-mcp && python3 -m venv .venv && .venv/bin/pip install -e ."
     }
   }
 }

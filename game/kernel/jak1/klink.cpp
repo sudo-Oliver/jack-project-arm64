@@ -196,9 +196,9 @@ uint32_t symlink_v3_arm64_movw(Ptr<uint8_t> link, Ptr<uint8_t> data) {
   uint32_t sym_addr = sym.cast<u32>().offset;
 
   if (strcmp(sym_name, "task-cstage") == 0 || strcmp(sym_name, "method-set!") == 0) {
-    fmt::print(stderr, "[LINK-DBG] {} arm64_movw: sym_addr=0x{:08x} s7=0x{:08x} offset={} (0x{:08x}) cur_val=0x{:08x}\n",
-               sym_name, sym_addr, s7.offset, sym_offset, (uint32_t)sym_offset,
-               *Ptr<uint32_t>(sym_addr));
+    fprintf(stderr, "[LINK-DBG] %s arm64_movw: sym_addr=0x%08x s7=0x%08x offset=%d (0x%08x)\n",
+            sym_name, sym_addr, s7.offset, sym_offset, (uint32_t)sym_offset);
+    fflush(stderr);
   }
 
   uint32_t entry_count = *(link + seek).cast<uint32_t>();

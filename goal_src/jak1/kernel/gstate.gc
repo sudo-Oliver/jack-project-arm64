@@ -315,20 +315,27 @@ It type checks the arguments for the entry function.
               (the uint (-> pp top-thread))
               (the uint (-> pp next-state))))
     ;; unsleep us
+    (#when ARM64_PORT (format 0 "ARM64 enter A: before mask-clear~%"))
     (process-mask-clear! (-> pp mask) sleep sleep-code)
     ;; mark as going
     (process-mask-set! (-> pp mask) going)
+    (#when ARM64_PORT (format 0 "ARM64 enter B: before cond status=~A~%" (-> pp status)))
     (cond
       ((= (-> pp status) 'initialize)
        ;; did a go during initialize.
        ;; remove the old trans hook, if there was one
+       (#when ARM64_PORT (format 0 "ARM64 enter C: initialize branch~%"))
        (set! (-> pp trans-hook) #f)
        ;; set us up to run enter-state again, the next time we're scheduled.
+       (#when ARM64_PORT (format 0 "ARM64 enter D: before arm64-fix-main-thread~%"))
        (arm64-fix-main-thread-for-run)
+       (#when ARM64_PORT (format 0 "ARM64 enter E: before set-to-run main=~X~%" (the uint (-> pp main-thread))))
        (set-to-run (-> pp main-thread) enter-state arg0 arg1 arg2 arg3 arg4 arg5)
        ;; tell the kernel that we did a go during init
+       (#when ARM64_PORT (format 0 "ARM64 enter F: before status=initialize-go~%"))
        (set! (-> pp status) 'initialize-go)
        ;; abandon this thread, go back to what initialized us!
+       (#when ARM64_PORT (format 0 "ARM64 enter G: before throw initialize~%"))
        (throw 'initialize #t)
        #t)
       ((!= (-> *kernel-context* current-process) pp)
@@ -408,6 +415,7 @@ It type checks the arguments for the entry function.
                 (func)
                 (sp :reg rsp :type uint)
                 (off :reg r15 :type uint)
+                (lr :reg lr :type uint)
                 (carg0 :reg rdi)
                 (carg1 :reg rsi)
                 (carg2 :reg rdx)
@@ -428,7 +436,10 @@ It type checks the arguments for the entry function.
            ;; push the return trampoline for when code returns.
            (.mov temp return-from-thread-dead) ;; will deactivate
            (.add temp off)
-           (.push temp)
+           ;; ARM64: set x30 = trampoline so func's ret lands there; x86: push to stack
+           (#if ARM64_PORT
+             (set! lr (the uint temp))
+             (.push temp))
            ;; and call!
            (.jr func)
            ;; stupid hack so the compiler doesn't throw away these registers.
@@ -453,8 +464,10 @@ It type checks the arguments for the entry function.
                 (off :reg r15 :type uint :reset-here #t))
            (.mov temp return-from-thread) ;; could probably just call this...
            (.add temp off)
-           (.push temp)
-           (.ret)
+           ;; ARM64: br directly; x86: push trampoline + ret
+           (#if ARM64_PORT
+             (.jr temp)
+             (begin (.push temp) (.ret)))
            #f ;; can't get here
            ))))))
 

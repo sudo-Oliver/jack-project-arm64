@@ -7,6 +7,9 @@
 #include "kboot.h"
 
 #include <chrono>
+#if defined(__APPLE__) && defined(__aarch64__)
+#include <pthread.h>
+#endif
 #include <cstring>
 #include <stdio.h>
 #include <stdlib.h>
@@ -147,6 +150,9 @@ void KernelCheckAndDispatch() {
                 "thread-resume=0x%08x\n",
                 kernel_dispatcher->value, strb->value, tres->value);
       }
+#if defined(__APPLE__) && defined(__aarch64__)
+      pthread_jit_write_protect_np(1);
+#endif
       // use the GOAL kernel.
       call_goal_on_stack(Ptr<Function>(kernel_dispatcher->value), goal_stack, s7.offset,
                          g_ee_main_mem);

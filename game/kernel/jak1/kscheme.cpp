@@ -5,6 +5,9 @@
 #if defined(__aarch64__)
 #include <libkern/OSCacheControl.h>
 #endif
+#if defined(__APPLE__) || defined(__linux__)
+#include <execinfo.h>
+#endif
 
 #include "common/common_types.h"
 #include "common/log/log.h"
@@ -60,8 +63,67 @@ u64 new_illegal(u32 allocation, u32 type) {
  * The pp argument is added.  It contains the current process.  If it is unknown, it is set to
  * UNKNOWN_PROCESS (UINT32_MAX).
  */
+// Dump type info + backtrace for impossible allocations (Step 3/4 diagnostics).
+static void dump_bad_alloc(u32 heapSymbol, u32 type, s32 size, u32 pp, const char* label) {
+  fprintf(stderr, "[ALLOC-TRAP] %s heap=0x%08x type=0x%08x size=%d(0x%08x) pp=0x%08x\n",
+          label, heapSymbol, type, size, (u32)size, pp);
+  // Validate and dump type pointer (Step 4: check valid heap range ~0x13fd20..0x3eb82e0)
+  constexpr u32 EE_SIZE = 128u * 1024 * 1024;
+  if (type && type < EE_SIZE) {
+    Ptr<Type> typ(type);
+    const char* type_name = "<no-symbol>";
+    if (typ->symbol.offset && typ->symbol.offset < EE_SIZE &&
+        info(typ->symbol)->str.offset && info(typ->symbol)->str.offset < EE_SIZE) {
+      type_name = info(typ->symbol)->str->data();
+    }
+    fprintf(stderr,
+            "[ALLOC-TRAP] type=%s(0x%08x) parent=0x%08x alloc_sz=%u padded_sz=%u "
+            "heap_base=%u n_methods=%u new=0x%08x\n",
+            type_name, type, typ->parent.offset, typ->allocated_size, typ->padded_size,
+            typ->heap_base, typ->num_methods, typ->new_method.offset);
+    // Step 5: flag if the raw 32-bit word at offset 8 differs from allocated_size
+    u32 raw32_at8 = *Ptr<u32>(type + 8);
+    if ((raw32_at8 & 0xFFFF) != typ->allocated_size) {
+      fprintf(stderr, "[ALLOC-TRAP] WARNING: raw32@type+8=0x%08x but allocated_size=%u — "
+                      "possible 32-bit load where 16-bit expected!\n",
+              raw32_at8, typ->allocated_size);
+    }
+  } else {
+    fprintf(stderr, "[ALLOC-TRAP] type pointer 0x%08x is OUTSIDE valid EE range [0, 0x%08x)\n",
+            type, EE_SIZE);
+  }
+  if (pp && pp != UNKNOWN_PP && pp < EE_SIZE) {
+    fprintf(stderr,
+            "[ALLOC-TRAP] pp type=0x%08x status=0x%08x heap_base=0x%08x heap_top=0x%08x "
+            "heap_cur=0x%08x\n",
+            *Ptr<u32>(pp - BASIC_OFFSET), *Ptr<u32>(pp + 0x24), *Ptr<u32>(pp + 0x4c),
+            *Ptr<u32>(pp + 0x50), *Ptr<u32>(pp + 0x54));
+  }
+  // Backtrace so we know the exact C++ call path
+#if defined(__APPLE__) || defined(__linux__)
+  void* bt[32];
+  int n = backtrace(bt, 32);
+  char** syms = backtrace_symbols(bt, n);
+  if (syms) {
+    fprintf(stderr, "[ALLOC-TRAP] backtrace (%d frames):\n", n);
+    for (int i = 0; i < n; ++i) {
+      fprintf(stderr, "  #%02d %s\n", i, syms[i]);
+    }
+    free(syms);
+  }
+#endif
+  fflush(stderr);
+}
+
 u64 alloc_from_heap(u32 heapSymbol, u32 type, s32 size, u32 pp) {
   using namespace jak1_symbols;
+  // Catch impossibly large sizes BEFORE the existing <=0 check (Step 3/4/5).
+  // Any single GOAL allocation > 4MB is certainly a bug; the entire EE heap is 128MB.
+  constexpr s32 ALLOC_SANITY_LIMIT = 64 * 1024 * 1024;  // 64 MB (DMA debug buf = 16MB, allow margin)
+  if (size > ALLOC_SANITY_LIMIT) {
+    dump_bad_alloc(heapSymbol, type, size, pp, "GIANT-SIZE");
+    ASSERT_MSG(false, "alloc_from_heap: size exceeds 4MB sanity limit — see [ALLOC-TRAP] above");
+  }
   if (size <= 0) {
     fprintf(stderr, "[ALLOC-DBG] bad alloc_from_heap heap=0x%08x type=0x%08x size=%d pp=0x%08x\n",
             heapSymbol, type, size, pp);

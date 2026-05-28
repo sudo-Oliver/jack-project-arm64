@@ -1244,7 +1244,7 @@ void OpenGLRenderer::setup_frame(const RenderOptions& settings) {
   if (m_version == GameVersion::Jak1) {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glViewport(0, 0, m_fbo_state.resources.window.width, m_fbo_state.resources.window.height);
-    glClearColor(0.0, 0.0, 0.0, 0.0);
+    glClearColor(1.0, 0.0, 1.0, 1.0);  // DIAG: magenta — remove after blackscreen debug
     glClearDepth(0.0);
     glDepthMask(GL_TRUE);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
@@ -1303,32 +1303,61 @@ void OpenGLRenderer::dispatch_buckets_jak1(DmaFollower dma,
 
   // Find the default regs buffer
   auto initial_call_tag = dma.current_tag();
+  printf("[DMA-DBG] initial tag: kind=%d addr=0x%x qwc=%d offset=0x%x\n",
+         (int)initial_call_tag.kind, initial_call_tag.addr, initial_call_tag.qwc,
+         dma.current_tag_offset());
+  fflush(stdout);
   ASSERT(initial_call_tag.kind == DmaTag::Kind::CALL);
   auto initial_call_default_regs = dma.read_and_advance();
+  printf("[DMA-DBG] after initial CALL: transferred_tag=0x%llx offset=0x%x\n",
+         (unsigned long long)initial_call_default_regs.transferred_tag, dma.current_tag_offset());
+  fflush(stdout);
   ASSERT(initial_call_default_regs.transferred_tag == 0);  // should be a nop.
   m_render_state.default_regs_buffer = dma.current_tag_offset();
   auto default_regs_tag = dma.current_tag();
+  printf("[DMA-DBG] default_regs tag: kind=%d qwc=%d\n", (int)default_regs_tag.kind, default_regs_tag.qwc);
+  fflush(stdout);
   ASSERT(default_regs_tag.kind == DmaTag::Kind::CNT);
   ASSERT(default_regs_tag.qwc == 10);
   // TODO verify data in here.
   auto default_data = dma.read_and_advance();
+  printf("[DMA-DBG] default_data: size_bytes=%d\n", default_data.size_bytes);
+  fflush(stdout);
   ASSERT(default_data.size_bytes > 148);
   memcpy(m_render_state.fog_color.data(), default_data.data + 144, 4);
   auto default_ret_tag = dma.current_tag();
+  printf("[DMA-DBG] ret tag: kind=%d qwc=%d\n", (int)default_ret_tag.kind, default_ret_tag.qwc);
+  fflush(stdout);
   ASSERT(default_ret_tag.qwc == 0);
   ASSERT(default_ret_tag.kind == DmaTag::Kind::RET);
   dma.read_and_advance();
 
   // now we should point to the first bucket!
+  printf("[DMA-DBG] after init: curr=0x%x next=0x%x match=%d\n",
+         dma.current_tag_offset(), m_render_state.next_bucket,
+         dma.current_tag_offset() == m_render_state.next_bucket);
+  fflush(stdout);
   ASSERT(dma.current_tag_offset() == m_render_state.next_bucket);
   m_render_state.next_bucket += 16;
 
   // loop over the buckets!
+  static int s_frame_ctr = 0;
+  static int s_non_empty_acc = 0;
+  int non_empty_this_frame = 0;
   for (size_t bucket_id = 0; bucket_id < m_bucket_renderers.size(); bucket_id++) {
     auto& renderer = m_bucket_renderers[bucket_id];
     auto bucket_prof = prof.make_scoped_child(renderer->name_and_id());
     g_current_renderer = renderer->name_and_id();
-    // lg::info("Render: {} start", g_current_renderer);
+    // Peek: after the NEXT header, if first content tag is CALL → empty bucket.
+    {
+      auto header = dma.current_tag();
+      if (header.kind == DmaTag::Kind::NEXT) {
+        auto content_tag = DmaTag(dma.read_val<u64>(header.addr));
+        if (content_tag.kind != DmaTag::Kind::CALL) {
+          non_empty_this_frame++;
+        }
+      }
+    }
     renderer->render(dma, &m_render_state, bucket_prof);
     if (sync_after_buckets) {
       auto pp = scoped_prof("finish");
@@ -1347,6 +1376,14 @@ void OpenGLRenderer::dispatch_buckets_jak1(DmaFollower dma,
       auto p = prof.make_scoped_child("collision-draw");
       m_collide_renderer.render(&m_render_state, p);
     }
+  }
+
+  s_non_empty_acc += non_empty_this_frame;
+  if (++s_frame_ctr % 300 == 0) {
+    printf("[BUCKET] frame %d: %d/%zu non-empty (last 300 frames total %d)\n",
+           s_frame_ctr, non_empty_this_frame, m_bucket_renderers.size(), s_non_empty_acc);
+    fflush(stdout);
+    s_non_empty_acc = 0;
   }
 
   // TODO ending data.

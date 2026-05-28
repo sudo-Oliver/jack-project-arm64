@@ -302,6 +302,15 @@
 (defmethod new process ((allocation symbol) (type-to-make type) (name basic) (stack-size int))
   "Allocate a new process.
   The process stack is initially set to the entire process memory."
+  (#when ARM64_PORT
+    (let* ((proc-sz (-> process size))
+           (total (+ proc-sz stack-size)))
+      (when (or (> proc-sz 65535) (< proc-sz 1) (> total #x100000))
+        (format 0 "ARM64 process::new SUSPICIOUS type=~A name=~A proc-sz=~D(0x~X)~%"
+                type-to-make name proc-sz proc-sz)
+        (format 0 "  stack=~D(0x~X) total=~D(0x~X) alloc=~A~%"
+                stack-size stack-size total total allocation)
+        (break))))
   (let ((this (if (eq? (-> allocation type) symbol)
                 (object-new allocation type-to-make (the int (+ (-> process size) stack-size))) ;; symbol, allocate on heap
                 (the process (&+ allocation *gtype-basic-offset*))))) ;; treat as address.
@@ -446,6 +455,7 @@
     (.pop :color #f s0)
     ;; return to the kernel function that called the user code
     ;; rax should still contain the return value.
+    ;; ARM64: the codegen emits a pop X30 before .ret via arm64_pop_lr_before_ret
     (.ret)))
 
 (defun return-from-thread-dead ()
@@ -475,7 +485,7 @@
     (.pop :color #f s2)
     (.pop :color #f s1)
     (.pop :color #f s0)
-    ;; return to the kernel function that called the user code
+    ;; ARM64: codegen emits pop X30 before .ret via arm64_pop_lr_before_ret
     (.ret)))
 
 (defmacro abandon-thread ()
@@ -489,8 +499,10 @@
          (off :reg r15 :type uint :reset-here #t))
     (.mov temp return-from-thread) ;; could probably just call this...
     (.add temp off)
-    (.push temp)
-    (.ret)))
+    ;; ARM64: br directly; x86: push trampoline + ret
+    (#if ARM64_PORT
+      (.jr temp)
+      (begin (.push temp) (.ret)))))
 
 (defun reset-and-call ((this thread) (func function))
   "Make the given thread the top thread, reset the stack, and call the function.
@@ -502,6 +514,7 @@
   (rlet ((pp :reg r13 :type process)
          (sp :reg rsp :type uint)
          (off :reg r15 :type uint)
+         (lr :reg lr :type uint)
          (s0 :reg rbx :type uint)
          (s1 :reg rbp :type uint)
          (s2 :reg r10 :type uint)
@@ -519,6 +532,7 @@
     (.push :color #f s2)
     (.push :color #f s3)
     (.push :color #f s4)
+    ;; ARM64: codegen emits push X30 here via arm64_push_lr_at_start (detects .jr + *kernel-sp* store)
     ;; make rsp a GOAL pointer
     (.sub sp off)
     ;; and store it
@@ -529,7 +543,10 @@
     ;; push the return trampoline to the stack for the user code to return to
     (set! temp (the uint return-from-thread))
     (.add temp off)
-    (.push temp) ;; stack now 16 + 8 aligned
+    ;; ARM64: set x30=trampoline so func's ret lands there; x86: push to stack
+    (#if ARM64_PORT
+      (.mov :color #f lr temp)
+      (.push temp))
     ;; and call the function!
     (.add func off)
     (.jr func)))
@@ -632,7 +649,7 @@
     (.pop :color #f s2)
     (.pop :color #f s1)
     (.pop :color #f s0)
-    ;; return to the kernel function that called the user code
+    ;; ARM64: codegen emits pop X30 before .ret via arm64_pop_lr_before_ret
     (.ret))
   (none))
 
@@ -669,6 +686,7 @@
     (.push :color #f s2)
     (.push :color #f s3)
     (.push :color #f s4)
+    ;; ARM64: codegen emits push X30 here via arm64_push_lr_at_start (detects .jr + *kernel-sp* store)
     ;; make rsp a GOAL pointer
     (.sub sp off)
     ;; and store it
@@ -1644,12 +1662,39 @@
 
 (defun throw ((name symbol) value)
   "Dynamic throw."
-  (rlet ((pp :reg r13 :type process))
+  (rlet ((pp :reg r13 :type process)
+         (off :reg r15 :type uint))
     (let ((cur (-> pp stack-frame-top)))
+      (#when ARM64_PORT
+        (format 0 "THROW-DBG: name=~A pp=~X top=~X~%" name (the uint pp) (the uint cur)))
       ;; use (!= 0) guard to avoid infinite loop when next field is integer 0 (not #f)
       (while (and cur (!= (the int cur) 0))
+        (#when ARM64_PORT
+          (format 0 "THROW-DBG: cur=~X type=~A name=~A~%" (the uint cur) (-> cur type) (-> cur name)))
         (when (and (eq? (-> cur name) name) (eq? (-> cur type) catch-frame))
           ;; match!
+          (#when ARM64_PORT
+            (let ((cf (the catch-frame cur)))
+              (let ((target (+ (the uint (-> cf ra)) off)))
+                (format 0 "THROW-DBG: MATCH frame=~X sp=~X ra=~X off=~X target=~X~%"
+                  (the uint cf)
+                  (the uint (-> cf sp))
+                  (the uint (-> cf ra))
+                  (the uint off)
+                  target)
+                (let ((ra-ptr (the (pointer uint32) (the uint (-> cf ra)))))
+                  (format 0 "THROW-DBG: CODE[0..3]=~X ~X ~X ~X~%"
+                    (-> ra-ptr 0)
+                    (-> ra-ptr 1)
+                    (-> ra-ptr 2)
+                    (-> ra-ptr 3))
+                  ;; Also print what's at the known crash address (GOAL addr 0x4001994)
+                  (let ((crash-ptr (the (pointer uint32) #x4001994)))
+                    (format 0 "THROW-DBG: CRASH-ADDR[0x4001994]=~X ~X ~X ~X~%"
+                      (-> crash-ptr 0)
+                      (-> crash-ptr 1)
+                      (-> crash-ptr 2)
+                      (-> crash-ptr 3)))))))
           (throw-dispatch (the catch-frame cur) value))
         (if (eq? (-> cur type) protect-frame)
           ;; call the cleanup function
@@ -1873,6 +1918,7 @@
                          (the object (new 'stack 'catch-frame 'initialize func param-array)))))
         ;; the function returned, either through a throw or through actually returning.
         ;; the status will give us a clue of what happened.
+        (#when ARM64_PORT (format 0 "ARM64 rfip: catch-site reached pp=~X old=~X status=~A~%" (the uint pp) (the uint old-pp-reg) (-> pp status)))
         (case (-> pp status)
           (('initialize)
            ;; we returned and didn't change status.
@@ -1883,12 +1929,17 @@
            ;; we returned with a (suspend) or (go) ? not sure
            ;; either way, we're ready for next time!
            (set! (-> pp status) 'waiting-to-run)
+           (#when ARM64_PORT (format 0 "ARM64 rfip: pool-type=~A pp=~X~%" (-> pp pool type) (the uint pp)))
            (when (eq? (-> pp pool type) dead-pool-heap)
              ;; we can shrink the heap now.
-             (shrink-heap (the dead-pool-heap (-> pp pool)) pp)))
+             (#when ARM64_PORT (format 0 "ARM64 rfip: before shrink-heap pp=~X~%" (the uint pp)))
+             (shrink-heap (the dead-pool-heap (-> pp pool)) pp)
+             (#when ARM64_PORT (format 0 "ARM64 rfip: after shrink-heap~%"))))
           (else (format 0 "GOT UNKNOWN INIT: ~A~%" (-> pp status))))
         ;; restore the old pp
+        (#when ARM64_PORT (format 0 "ARM64 rfip: before restore old-pp=~X~%" (the uint old-pp-reg)))
         (set! pp old-pp-reg)
+        (#when ARM64_PORT (format 0 "ARM64 rfip: done pp=~X~%" (the uint pp)))
         func-val))))
 
 (defun set-to-run-bootstrap ()
