@@ -55,7 +55,11 @@
 (defconstant PROCESS_STACK_SIZE (#if PC_PORT #x6000 #x1c00))
 
 ;; default size of stack to backup for a process
-(defconstant PROCESS_STACK_SAVE_SIZE 256)
+(defconstant PROCESS_STACK_SAVE_SIZE (#if ARM64_PORT 4096 256))
+
+;; On ARM64 the cpu-thread header (0x80) + PROCESS_STACK_SAVE_SIZE (0x1000) = 0x1080 bytes.
+;; A 4K pool heap (0x1000) cannot fit this, so ARM64 needs a larger process heap.
+(defconstant DEAD_POOL_4K_STACK_SIZE (#if ARM64_PORT #x1200 (* 4 1024)))
 
 ;; the size of the shared heap used by dynamically sized processes
 (#if PC_BIG_MEMORY

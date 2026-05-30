@@ -350,6 +350,10 @@
     ;; setup reference stuff.
     (set! (-> this self) this)
     (set! (-> this ppointer) (the (pointer process) (&-> this self)))
+    (#when ARM64_PORT
+      (when (zero? (the-as int (-> this self)))
+        (format 0 "ARM64 BUG: new-process ~A self=0 after (set! self this), this=~X~%" name (the uint this))
+        (set! (-> this self) this)))
     this))
 
 (defun inspect-process-heap ((this process))
@@ -1295,8 +1299,23 @@
        )
       (else
        (let ((brother (-> this child)))
+         (#when ARM64_PORT
+           (when (and brother (zero? (the-as int brother)))
+             (format 0 "ARM64 BUG: ~A child=0~%" (-> this name))
+             (set! brother #f)))
          (while brother
-           (let ((temp (-> (-> brother) brother))) (execute-process-tree (-> brother) func context) (set! brother temp))))))
+           (let ((derefed (-> brother))
+                 (temp (-> (-> brother) brother)))
+             (#when ARM64_PORT
+               (when (and temp (zero? (the-as int temp)))
+                 (format 0 "ARM64 BUG: ~A next-brother=0~%" (-> this name))
+                 (set! temp #f))
+               (when (zero? (the-as int derefed))
+                 (format 0 "ARM64 BUG: ~A pptr ~X deref=0 (self=0)~%" (-> this name) (the uint brother))
+                 (set! brother temp)
+                 (return ret)))
+             (execute-process-tree derefed func context)
+             (set! brother temp))))))
     ret))
 
 (defun search-process-tree ((this process-tree) (func (function process-tree object)))
@@ -1860,7 +1879,15 @@
   (set! (-> this heap-base) (set! (-> this heap-cur) (&+ (-> this stack) (-> this type heap-base))))
   (set! (-> this stack-frame-top) #f)
   ;; heaps should be 0 initialized.
-  (mem-set32! (-> this stack) (the int (/ (-> this type heap-base) 4)) 0)
+  (#when ARM64_PORT
+    (let ((hb (the int (-> this type heap-base)))
+          (alloc (-> this allocated-length)))
+      (format 0 "ARM64 activate-hb: ~A type=~A hb=~D alloc=~D~%" name (-> this type) hb alloc)
+      (when (> hb alloc)
+        (format 0 "ARM64 BUG: hb=~D>alloc=~D OVERFLOW-SKIP~%" hb alloc))
+      (mem-set32! (-> this stack) (the int (/ (min hb alloc) 4)) 0)))
+  (#when (not ARM64_PORT)
+    (mem-set32! (-> this stack) (the int (/ (-> this type heap-base) 4)) 0))
   (set! (-> this trans-hook) #f)
   (set! (-> this post-hook) #f)
   (set! (-> this event-hook) #f)
@@ -1889,6 +1916,13 @@
   (#when ARM64_PORT
     (when (zero? (the-as uint (-> this main-thread)))
       (set! (-> this main-thread) (the cpu-thread (-> this top-thread)))))
+  (#when ARM64_PORT
+    ;; Guard: if self=0 (ARM64 codegen bug in new-process constructor),
+    ;; repair it here before change-parent inserts this into the tree.
+    (when (zero? (the-as int (-> this self)))
+      (format 0 "ARM64 BUG: process ~A self=0 in activate, fixing~%" name)
+      (set! (-> this self) this)
+      (set! (-> this ppointer) (the (pointer process) (&-> this self)))))
   (change-parent this dest))
 
 (defun run-function-in-process ((this process) (func function) a0 a1 a2 a3 a4 a5)
@@ -2104,12 +2138,12 @@
 
 (define *8k-dead-pool* (new 'global 'dead-pool 1 (* 8 1024) '*8k-dead-pool*))
 
-(define *4k-dead-pool* (new 'global 'dead-pool 4 (* 4 1024) '*4k-dead-pool*))
+(define *4k-dead-pool* (new 'global 'dead-pool 4 DEAD_POOL_4K_STACK_SIZE '*4k-dead-pool*))
 
 ;; some very important process pools
 (define *target-dead-pool* (new 'global 'dead-pool 1 (* 48 1024) '*target-dead-pool*))
 
-(define *camera-dead-pool* (new 'global 'dead-pool 7 (* 4 1024) '*camera-dead-pool*))
+(define *camera-dead-pool* (new 'global 'dead-pool 7 DEAD_POOL_4K_STACK_SIZE '*camera-dead-pool*))
 
 (define *camera-master-dead-pool* (new 'global 'dead-pool 1 (* 8 1024) '*camera-master-dead-pool*))
 

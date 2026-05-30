@@ -9,6 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <sstream>
+#include <vector>
 
 #include "common/dma/dma_copy.h"
 #include "common/global_profiler/GlobalProfiler.h"
@@ -51,6 +52,8 @@ constexpr PerGameVersion<int> fr3_level_count(jak1::LEVEL_TOTAL,
                                               jak2::LEVEL_TOTAL,
                                               jak3::LEVEL_TOTAL,
                                               jakx::LEVEL_TOTAL);
+
+static bool s_first_chain_received = false;
 
 struct GraphicsData {
   // vsync
@@ -538,6 +541,7 @@ void render_game_frame(int game_width,
       options.msaa_samples = msaa_max;
     }
 
+    printf("[RENDER-START] calling ogl_renderer.render\n"); fflush(stdout);
     if constexpr (run_dma_copy) {
       auto& chain = g_gfx_data->dma_copier.get_last_result();
       g_gfx_data->ogl_renderer.render(DmaFollower(chain.data.data(), chain.start_offset), options);
@@ -547,6 +551,7 @@ void render_game_frame(int game_width,
                                                   g_gfx_data->dma_copier.get_last_input_offset()),
                                       options);
     }
+    printf("[RENDER-DONE] ogl_renderer.render completed\n"); fflush(stdout);
   }
 
   // before vsync, mark the chain as rendered.
@@ -557,6 +562,34 @@ void render_game_frame(int game_width,
     g_gfx_data->engine_timer.start();
     g_gfx_data->has_data_to_render = false;
     g_gfx_data->sync_cv.notify_all();
+  }
+
+  if (got_chain) {
+    static bool screenshot_done = false;
+    if (!screenshot_done) {
+      screenshot_done = true;
+      glBindFramebuffer(GL_FRAMEBUFFER, 0);
+      GLint vp[4];
+      glGetIntegerv(GL_VIEWPORT, vp);
+      int w = vp[2], h = vp[3];
+      printf("[SCREENSHOT2] viewport=%dx%d\n", w, h);
+      if (w > 0 && h > 0) {
+        std::vector<uint8_t> pixels(w * h * 4);
+        glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+        int nz = 0;
+        for (size_t i = 0; i < pixels.size(); i += 4)
+          if (pixels[i] || pixels[i + 1] || pixels[i + 2]) nz++;
+        auto px = [&](int x, int y) -> uint32_t {
+          int idx = (y * w + x) * 4;
+          return ((uint32_t)pixels[idx] << 24) | ((uint32_t)pixels[idx + 1] << 16) |
+                 ((uint32_t)pixels[idx + 2] << 8) | pixels[idx + 3];
+        };
+        printf("[SCREENSHOT2] nz=%d/%d (%.1f%%)\n", nz, w * h, (float)nz / (w * h) * 100.0f);
+        printf("[SCREENSHOT2] TL=%08X TR=%08X BL=%08X BR=%08X C=%08X\n", px(0, 0),
+               px(w - 1, 0), px(0, h - 1), px(w - 1, h - 1), px(w / 2, h / 2));
+      }
+      fflush(stdout);
+    }
   }
 }
 
@@ -699,12 +732,39 @@ void GLDisplay::render() {
         Gfx::g_global_settings.target_fps, Gfx::g_global_settings.experimental_accurate_lag,
         Gfx::g_global_settings.sleep_in_frame_limiter, g_gfx_data->last_engine_time);
   }
-
   {
     auto p = scoped_prof("swap-buffers");
     static int fc = 0;
-    if (++fc % 300 == 0)
+    ++fc;
+    if (fc % 300 == 0)
       printf("[SWAP] frame %d\n", fc), fflush(stdout);
+    {
+      static bool screenshot_done = false;
+      if (!screenshot_done && s_first_chain_received && fc >= 2) {
+        screenshot_done = true;
+        GLint vp[4];
+        glGetIntegerv(GL_VIEWPORT, vp);
+        int w = vp[2], h = vp[3];
+        printf("[SCREENSHOT] frame=%d viewport=%dx%d\n", fc, w, h);
+        if (w > 0 && h > 0) {
+          std::vector<uint8_t> pixels(w * h * 4);
+          glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+          int nz = 0;
+          for (size_t i = 0; i < pixels.size(); i += 4)
+            if (pixels[i] || pixels[i + 1] || pixels[i + 2]) nz++;
+          auto px = [&](int x, int y) -> uint32_t {
+            int idx = (y * w + x) * 4;
+            return ((uint32_t)pixels[idx] << 24) | ((uint32_t)pixels[idx + 1] << 16) |
+                   ((uint32_t)pixels[idx + 2] << 8) | pixels[idx + 3];
+          };
+          printf("[SCREENSHOT] nz=%d/%d (%.1f%%)\n", nz, w * h,
+                 (float)nz / (w * h) * 100.0f);
+          printf("[SCREENSHOT] TL=%08X TR=%08X BL=%08X BR=%08X C=%08X\n", px(0, 0),
+                 px(w - 1, 0), px(0, h - 1), px(w - 1, h - 1), px(w / 2, h / 2));
+        }
+        fflush(stdout);
+      }
+    }
     SDL_GL_SwapWindow(m_window);
   }
 
@@ -809,6 +869,7 @@ void gl_send_chain(const void* data, u32 offset) {
     if (first_chain) {
       lg::info("[GFX] First gl_send_chain call — GOAL is submitting frames");
       first_chain = false;
+      s_first_chain_received = true;
     }
     if (chain_count % 300 == 0) {
       printf("[CHAIN] gl_send_chain call #%d (offset=0x%x)\n", chain_count, offset);

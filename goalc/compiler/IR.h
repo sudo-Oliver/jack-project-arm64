@@ -501,6 +501,21 @@ class IR_AsmRet : public IR_Asm {
                         emitter::IR_Record irec) override;
 };
 
+class IR_AsmBrk : public IR_Asm {
+ public:
+  IR_AsmBrk(uint16_t imm16);
+  std::string print() override;
+  RegAllocInstr to_rai() override;
+  void do_codegen_x86(emitter::ObjectGenerator* gen,
+                      const AllocationResult& allocs,
+                      emitter::IR_Record irec) override;
+  void do_codegen_arm64(emitter::ObjectGenerator* gen,
+                        const AllocationResult& allocs,
+                        emitter::IR_Record irec) override;
+ private:
+  uint16_t m_imm16;
+};
+
 class IR_AsmPush : public IR_Asm {
  public:
   IR_AsmPush(bool use_coloring, const RegVal* src);

@@ -1846,6 +1846,40 @@ std::string IR_Asm::get_color_suffix_string() {
 // AsmRet
 ///////////////////////
 
+///////////////////////
+// AsmBrk
+///////////////////////
+
+IR_AsmBrk::IR_AsmBrk(uint16_t imm16) : IR_Asm(false), m_imm16(imm16) {}
+
+std::string IR_AsmBrk::print() {
+  return fmt::format(".brk {}", m_imm16);
+}
+
+RegAllocInstr IR_AsmBrk::to_rai() {
+  return {};
+}
+
+void IR_AsmBrk::do_codegen_x86(emitter::ObjectGenerator* gen,
+                                const AllocationResult& allocs,
+                                emitter::IR_Record irec) {
+  (void)allocs;
+  // .brk is ARM64-only (x86 uses /0 for SIGFPE via the break macro).
+  // Emit nop on x86 to avoid compile error — .brk should never be emitted on x86.
+  gen->add_instr(IGen::nop(*gen), irec);
+}
+
+void IR_AsmBrk::do_codegen_arm64(emitter::ObjectGenerator* gen,
+                                  const AllocationResult& allocs,
+                                  emitter::IR_Record irec) {
+  (void)allocs;
+  gen->add_instr(IGen::ARM64::brk(m_imm16), irec);
+}
+
+///////////////////////
+// AsmRet
+///////////////////////
+
 IR_AsmRet::IR_AsmRet(bool use_coloring) : IR_Asm(use_coloring) {}
 
 std::string IR_AsmRet::print() {

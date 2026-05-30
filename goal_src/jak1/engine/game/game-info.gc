@@ -276,6 +276,7 @@
              (load-game! *game-info* arg3)
              (set! arg2 (get-or-create-continue! *game-info*)))
            (suspend)
+           (#when ARM64_PORT (format 0 "ARM64 game-info after-suspend: about to start arg0=~A arg2=~X~%" arg0 (the uint arg2)))
            (start arg0 arg2)
            (none))
          (-> this mode)

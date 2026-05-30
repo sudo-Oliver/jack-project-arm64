@@ -1122,18 +1122,198 @@ RuntimeExitStatus exec_runtime(GameLaunchOptions game_options, int argc, const c
     sigaltstack(&ss_alt, nullptr);
 
     struct sigaction sa_ill{};
-    sa_ill.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sa_ill.sa_flags = SA_SIGINFO;
     sa_ill.sa_sigaction = [](int, siginfo_t*, void* ctx) {
-      // Write a static sentinel so we know the handler was entered.
-      write(2, "[EE-SIGILL] handler entered\n", 28);
-      if (!ctx) { raise(SIGILL); return; }
+      // Write to fd 1 (stdout), fd 2 (stderr), AND a dedicated crash file.
+      const char* header = "[EE-SIGILL] handler entered\n";
+      write(1, header, 28);
+      write(2, header, 28);
+      int fd = open("/tmp/gk_sigill_crash.txt",
+                    O_WRONLY | O_CREAT | O_TRUNC, 0644);
+      if (fd >= 0) write(fd, header, 28);
+      if (!ctx) {
+        const char* noct = "[EE-SIGILL] no ctx\n";
+        write(2, noct, 19); if (fd >= 0) write(fd, noct, 19);
+        if (fd >= 0) close(fd);
+        raise(SIGILL); return;
+      }
+      ucontext_t* uctx = (ucontext_t*)ctx;
+      auto& ss = uctx->uc_mcontext->__ss;
+      char buf[256];
+      int n = __builtin_snprintf(buf, sizeof(buf),
+        "[EE-CRASH] SIGILL at PC=0x%016llx LR=0x%016llx\n",
+        (unsigned long long)ss.__pc, (unsigned long long)ss.__lr);
+      write(2, buf, n); if (fd >= 0) write(fd, buf, n);
+      char buf2[512];
+      int n2 = __builtin_snprintf(buf2, sizeof(buf2),
+        "  x0=%016llx x1=%016llx x2=%016llx x3=%016llx\n"
+        "  x4=%016llx x5=%016llx x6=%016llx x7=%016llx\n"
+        "  x22(EEbase)=%016llx x23(GOALsp)=%016llx fp=%016llx sp=%016llx\n",
+        ss.__x[0], ss.__x[1], ss.__x[2], ss.__x[3],
+        ss.__x[4], ss.__x[5], ss.__x[6], ss.__x[7],
+        ss.__x[22], ss.__x[23], ss.__fp, ss.__sp);
+      write(2, buf2, n2); if (fd >= 0) write(fd, buf2, n2);
+      char buf3[512];
+      int n3 = __builtin_snprintf(buf3, sizeof(buf3),
+        "  x8=%016llx x9=%016llx x10=%016llx x11=%016llx\n"
+        "  x12=%016llx x13=%016llx x14=%016llx x15=%016llx\n"
+        "  x19=%016llx x20=%016llx x21=%016llx x24=%016llx\n"
+        "  x25=%016llx x26=%016llx x27=%016llx x28=%016llx\n",
+        ss.__x[8],  ss.__x[9],  ss.__x[10], ss.__x[11],
+        ss.__x[12], ss.__x[13], ss.__x[14], ss.__x[15],
+        ss.__x[19], ss.__x[20], ss.__x[21], ss.__x[24],
+        ss.__x[25], ss.__x[26], ss.__x[27], ss.__x[28]);
+      write(2, buf3, n3); if (fd >= 0) write(fd, buf3, n3);
+      if (fd >= 0) { fsync(fd); close(fd); }
+      struct sigaction sa{};
+      sa.sa_handler = SIG_DFL;
+      sigaction(SIGILL, &sa, nullptr);
+      raise(SIGILL);
+    };
+    sigaction(SIGILL, &sa_ill, nullptr);
+  }
+
+  // Install Mach exception handler for EXC_BAD_INSTRUCTION so we can catch SIGILL
+  // from MAP_JIT code (which bypasses POSIX signal handlers on Darwin 25).
+  {
+    mach_port_t exc_port = MACH_PORT_NULL;
+    kern_return_t kr_alloc = mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &exc_port);
+    kern_return_t kr_right = (kr_alloc == KERN_SUCCESS) ?
+        mach_port_insert_right(mach_task_self(), exc_port, exc_port, MACH_MSG_TYPE_MAKE_SEND) :
+        KERN_FAILURE;
+    if (kr_right == KERN_SUCCESS) {
+      kern_return_t kr = task_set_exception_ports(
+          mach_task_self(),
+          EXC_MASK_BAD_INSTRUCTION | EXC_MASK_BREAKPOINT,
+          exc_port,
+          static_cast<exception_behavior_t>(EXCEPTION_DEFAULT | MACH_EXCEPTION_CODES),
+          THREAD_STATE_NONE);
+      fprintf(stderr, "[MACH-SETUP] task_set_exception_ports kr=%d exc_port=%u\n", kr, exc_port);
+      fflush(stderr);
+      if (kr == KERN_SUCCESS) {
+        static mach_port_t s_exc_port = exc_port;
+        pthread_t exc_thread;
+        pthread_create(&exc_thread, nullptr, [](void*) -> void* {
+          alignas(8) char msgbuf[8192]{};
+          auto* hdr = reinterpret_cast<mach_msg_header_t*>(msgbuf);
+          // Write immediate marker so we know handler thread is alive
+          {
+            const char* alive = "[MACH-EXC] thread waiting\n";
+            write(2, alive, 26);
+          }
+          kern_return_t kr = mach_msg(hdr, MACH_RCV_MSG, 0, sizeof(msgbuf),
+                       s_exc_port, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
+          {
+            char tmp[64];
+            int tn = __builtin_snprintf(tmp, sizeof(tmp), "[MACH-EXC] mach_msg returned kr=%d msz=%u\n",
+                                        (int)kr, (unsigned)hdr->msgh_size);
+            write(2, tmp, tn);
+          }
+          if (kr != MACH_MSG_SUCCESS) {
+            _exit(132);
+            return nullptr;
+          }
+          // Print raw message header for diagnosis
+          {
+            char tmp[256];
+            int tn = __builtin_snprintf(tmp, sizeof(tmp),
+              "[MACH-EXC] bits=0x%x size=%u remote=0x%x local=0x%x id=%d\n",
+              (unsigned)hdr->msgh_bits, (unsigned)hdr->msgh_size,
+              (unsigned)hdr->msgh_remote_port, (unsigned)hdr->msgh_local_port,
+              (int)hdr->msgh_id);
+            write(2, tmp, tn);
+          }
+          // Try to get faulting thread via body/ports
+          auto* body = reinterpret_cast<mach_msg_body_t*>(msgbuf + sizeof(mach_msg_header_t));
+          auto* ports = reinterpret_cast<mach_msg_port_descriptor_t*>(body + 1);
+          mach_port_t thread_port = ports[1].name;
+          {
+            char tmp[64];
+            int tn = __builtin_snprintf(tmp, sizeof(tmp),
+              "[MACH-EXC] thread_port=0x%x\n", (unsigned)thread_port);
+            write(2, tmp, tn);
+          }
+          arm_thread_state64_t state{};
+          mach_msg_type_number_t cnt = ARM_THREAD_STATE64_COUNT;
+          kern_return_t gsr = thread_get_state(thread_port, ARM_THREAD_STATE64,
+                           reinterpret_cast<thread_state_t>(&state), &cnt);
+          uint64_t pc = state.__pc;
+          uint64_t lr = state.__lr;
+          uint64_t sp = state.__sp;
+          // Read instruction safely (pc might be garbage if thread_get_state failed)
+          uint32_t instr = 0;
+          if (gsr == KERN_SUCCESS && pc >= 0x1000 && (pc & 3) == 0) {
+            // Use vm_read_overwrite instead of direct deref to avoid crashing
+            vm_size_t out_sz = 0;
+            vm_read_overwrite(mach_task_self(), (vm_address_t)pc, sizeof(uint32_t),
+                              (vm_address_t)&instr, &out_sz);
+          }
+          char buf[1024];
+          int n = __builtin_snprintf(buf, sizeof(buf),
+            "[MACH-SIGILL] EXC_BAD_INSTRUCTION at PC=0x%016llx LR=0x%016llx SP=0x%016llx\n"
+            "  gsr=%d instr=0x%08x\n"
+            "  x0 =0x%016llx x1 =0x%016llx x2 =0x%016llx x3 =0x%016llx\n"
+            "  x4 =0x%016llx x5 =0x%016llx x6 =0x%016llx x7 =0x%016llx\n"
+            "  x8 =0x%016llx x9 =0x%016llx x10=0x%016llx x11=0x%016llx\n"
+            "  x16=0x%016llx x17=0x%016llx x19=0x%016llx x20=0x%016llx\n"
+            "  x21=0x%016llx x22=0x%016llx x23=0x%016llx x29=0x%016llx\n",
+            (unsigned long long)pc, (unsigned long long)lr, (unsigned long long)sp,
+            (int)gsr, (unsigned)instr,
+            (unsigned long long)state.__x[0],  (unsigned long long)state.__x[1],
+            (unsigned long long)state.__x[2],  (unsigned long long)state.__x[3],
+            (unsigned long long)state.__x[4],  (unsigned long long)state.__x[5],
+            (unsigned long long)state.__x[6],  (unsigned long long)state.__x[7],
+            (unsigned long long)state.__x[8],  (unsigned long long)state.__x[9],
+            (unsigned long long)state.__x[10], (unsigned long long)state.__x[11],
+            (unsigned long long)state.__x[16], (unsigned long long)state.__x[17],
+            (unsigned long long)state.__x[19], (unsigned long long)state.__x[20],
+            (unsigned long long)state.__x[21], (unsigned long long)state.__x[22],
+            (unsigned long long)state.__x[23], (unsigned long long)state.__fp);
+          write(2, buf, n);
+          int fd = open("/tmp/gk_mach_sigill.txt", O_WRONLY|O_CREAT|O_TRUNC, 0644);
+          if (fd >= 0) { write(fd, buf, n); fsync(fd); close(fd); }
+          _exit(132);
+          return nullptr;
+        }, nullptr);
+        pthread_detach(exc_thread);
+      }
+    }
+  }
+#endif
+  // Install SIGBUS handler to diagnose MAP_JIT protection faults
+  {
+    struct sigaction sa{};
+    sa.sa_sigaction = sigbus_handler;
+    sa.sa_flags = SA_SIGINFO;
+    sigaction(SIGBUS, &sa, nullptr);
+  }
+#if defined(__APPLE__) && defined(__aarch64__)
+  // Install SIGSEGV handler: dumps PC/LR/registers for any segfault not handled by
+  // sigbus_handler (e.g. null-deref in OpenGL renderer on the main thread).
+  // This overwrites the sigbus_handler SIGSEGV registration above intentionally —
+  // CGO loading is complete by the time we reach the game loop, so MAP_JIT writes
+  // from C++ code to the code heap are no longer expected.
+  {
+    static char s_sigsegv_altstack[65536];
+    stack_t ss_segv{};
+    ss_segv.ss_sp = s_sigsegv_altstack;
+    ss_segv.ss_size = sizeof(s_sigsegv_altstack);
+    ss_segv.ss_flags = 0;
+    sigaltstack(&ss_segv, nullptr);
+
+    struct sigaction sa_segv{};
+    sa_segv.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sa_segv.sa_sigaction = [](int, siginfo_t* info, void* ctx) {
+      write(2, "[EE-SIGSEGV] handler entered\n", 29);
+      if (!ctx) { raise(SIGSEGV); return; }
       ucontext_t* uctx = (ucontext_t*)ctx;
       auto& ss = uctx->uc_mcontext->__ss;
       {
         char buf[256];
         int n = __builtin_snprintf(buf, sizeof(buf),
-          "[EE-CRASH] SIGILL at PC=0x%016llx LR=0x%016llx\n",
-          (unsigned long long)ss.__pc, (unsigned long long)ss.__lr);
+          "[EE-CRASH] SIGSEGV at PC=0x%016llx LR=0x%016llx fault=0x%016llx\n",
+          (unsigned long long)ss.__pc, (unsigned long long)ss.__lr,
+          (unsigned long long)(uintptr_t)(info ? info->si_addr : nullptr));
         write(2, buf, n);
         char buf2[512];
         int n2 = __builtin_snprintf(buf2, sizeof(buf2),
@@ -1158,26 +1338,50 @@ RuntimeExitStatus exec_runtime(GameLaunchOptions game_options, int argc, const c
       }
       struct sigaction sa{};
       sa.sa_handler = SIG_DFL;
-      sigaction(SIGILL, &sa, nullptr);
-      raise(SIGILL);
+      sigaction(SIGSEGV, &sa, nullptr);
+      raise(SIGSEGV);
     };
-    sigaction(SIGILL, &sa_ill, nullptr);
+    sigaction(SIGSEGV, &sa_segv, nullptr);
   }
-#endif
-  // Install SIGBUS handler to diagnose MAP_JIT protection faults
+  // SIGABRT: catches assert()/abort() calls.  Same register-dump pattern.
   {
-    struct sigaction sa{};
-    sa.sa_sigaction = sigbus_handler;
-    sa.sa_flags = SA_SIGINFO;
-    sigaction(SIGBUS, &sa, nullptr);
-#if defined(__APPLE__) && defined(__aarch64__)
-    // Writes to MAP_JIT pages from non-JIT code (e.g. C kernel calling kstrncat into
-    // a string allocated in kcodeheap) are reported as SIGSEGV (EXC_BAD_ACCESS code=2),
-    // not SIGBUS. Use the same handler — it gates on fault_addr being inside the
-    // kcodeheap region and falls through to default if the instruction can't be decoded.
-    sigaction(SIGSEGV, &sa, nullptr);
-#endif
+    static char s_sigabrt_altstack[65536];
+    stack_t ss_abrt{};
+    ss_abrt.ss_sp = s_sigabrt_altstack;
+    ss_abrt.ss_size = sizeof(s_sigabrt_altstack);
+    ss_abrt.ss_flags = 0;
+    sigaltstack(&ss_abrt, nullptr);
+
+    struct sigaction sa_abrt{};
+    sa_abrt.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sa_abrt.sa_sigaction = [](int, siginfo_t*, void* ctx) {
+      write(2, "[EE-SIGABRT] handler entered\n", 29);
+      if (ctx) {
+        ucontext_t* uctx = (ucontext_t*)ctx;
+        auto& ss = uctx->uc_mcontext->__ss;
+        char buf[256];
+        int n = __builtin_snprintf(buf, sizeof(buf),
+          "[EE-CRASH] SIGABRT at PC=0x%016llx LR=0x%016llx\n",
+          (unsigned long long)ss.__pc, (unsigned long long)ss.__lr);
+        write(2, buf, n);
+        char buf2[512];
+        int n2 = __builtin_snprintf(buf2, sizeof(buf2),
+          "  x0=%016llx x1=%016llx x2=%016llx x3=%016llx\n"
+          "  x22(EEbase)=%016llx x23(GOALsp)=%016llx fp=%016llx sp=%016llx\n",
+          ss.__x[0], ss.__x[1], ss.__x[2], ss.__x[3],
+          ss.__x[22], ss.__x[23], ss.__fp, ss.__sp);
+        write(2, buf2, n2);
+      }
+      struct sigaction sa{};
+      sa.sa_handler = SIG_DFL;
+      sigaction(SIGABRT, &sa, nullptr);
+      raise(SIGABRT);
+    };
+    sigaction(SIGABRT, &sa_abrt, nullptr);
   }
+  // SIGPIPE: ignore — tee/pipe breakage should not kill gk.
+  signal(SIGPIPE, SIG_IGN);
+#endif
   prof().root_event();
   g_argc = argc;
   g_argv = argv;

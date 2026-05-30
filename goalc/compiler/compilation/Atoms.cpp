@@ -20,6 +20,7 @@ const std::unordered_map<std::string, GoalCompilerForm> g_goal_forms = {
     {".pop", {.form_function = &Compiler::compile_asm_pop}},
     {"rlet", {.form_function = &Compiler::compile_rlet}},
     {".jr", {.form_function = &Compiler::compile_asm_jr}},
+    {".brk", {.form_function = &Compiler::compile_asm_brk}},
     {".sub", {.form_function = &Compiler::compile_asm_sub}},
     {".add", {.form_function = &Compiler::compile_asm_add}},
     {".load-sym", {.form_function = &Compiler::compile_asm_load_sym}},

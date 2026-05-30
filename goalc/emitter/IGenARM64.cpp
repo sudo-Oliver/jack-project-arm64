@@ -1316,6 +1316,13 @@ InstructionARM64 nop() {
   return InstructionARM64(0xD503201Fu);
 }
 
+InstructionARM64 brk(uint16_t imm16) {
+  // ARM64 BRK — 0xD4200000 | (imm16 << 5)
+  // Causes EXC_BREAKPOINT → SIGTRAP. Terminates process without debugger.
+  // Used as debug trap (replaces x86 /0 division which is silent on ARM64).
+  return InstructionARM64(0xD4200000u | (static_cast<uint32_t>(imm16) << 5));
+}
+
 // TODO - rsqrt / abs / sqrt
 
 //;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

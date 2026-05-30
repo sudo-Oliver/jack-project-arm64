@@ -1,5 +1,7 @@
 #include "OpenGLRenderer.h"
 
+#include <vector>
+
 #include "common/goal_constants.h"
 #include "common/log/log.h"
 #include "common/util/FileUtil.h"
@@ -987,6 +989,7 @@ void OpenGLRenderer::render(DmaFollower dma, const RenderOptions& settings) {
   m_render_state.ee_main_memory = g_ee_main_mem;
   m_render_state.offset_of_s7 = offset_of_s7();
 
+  printf("[OGL-RENDER] A:frame-setup\n"); fflush(stdout);
   {
     g_current_renderer = "frame-setup";
     auto prof = m_profiler.root()->make_scoped_child("frame-setup");
@@ -996,6 +999,7 @@ void OpenGLRenderer::render(DmaFollower dma, const RenderOptions& settings) {
     }
   }
 
+  printf("[OGL-RENDER] B:loader\n"); fflush(stdout);
   {
     g_current_renderer = "loader";
     auto prof = m_profiler.root()->make_scoped_child("loader");
@@ -1009,6 +1013,7 @@ void OpenGLRenderer::render(DmaFollower dma, const RenderOptions& settings) {
   }
 
   // render the buckets!
+  printf("[OGL-RENDER] C:dispatch-buckets\n"); fflush(stdout);
   {
     auto prof = m_profiler.root()->make_scoped_child("buckets");
     dispatch_buckets(dma, prof, settings.gpu_sync);
@@ -1020,6 +1025,7 @@ void OpenGLRenderer::render(DmaFollower dma, const RenderOptions& settings) {
   }
 
   // blit framebuffer so that it can be used as a texture by the game later
+  printf("[OGL-RENDER] D:blit-display\n"); fflush(stdout);
   {
     g_current_renderer = "blit-display";
     auto prof = m_profiler.root()->make_scoped_child("blit-display");
@@ -1028,6 +1034,7 @@ void OpenGLRenderer::render(DmaFollower dma, const RenderOptions& settings) {
 
   // apply effects done with PCRTC registers, as well as blit the framebuffer to the window and
   // apply brightness/contrast
+  printf("[OGL-RENDER] E:pcrtc\n"); fflush(stdout);
   {
     g_current_renderer = "pcrtc";
     auto prof = m_profiler.root()->make_scoped_child("pcrtc");
@@ -1249,6 +1256,28 @@ void OpenGLRenderer::setup_frame(const RenderOptions& settings) {
     glDepthMask(GL_TRUE);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
     glDisable(GL_BLEND);
+
+    {
+      static bool sshot = false;
+      if (!sshot) {
+        sshot = true;
+        GLint vp[4];
+        glGetIntegerv(GL_VIEWPORT, vp);
+        int w = vp[2], h = vp[3];
+        printf("[SCR3] viewport=%dx%d (after magenta clear, before render)\n", w, h);
+        if (w > 0 && h > 0) {
+          uint8_t px4[4] = {};
+          glReadPixels(w / 2, h / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px4);
+          uint32_t center = ((uint32_t)px4[0] << 24) | ((uint32_t)px4[1] << 16) |
+                            ((uint32_t)px4[2] << 8) | px4[3];
+          glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px4);
+          uint32_t tl = ((uint32_t)px4[0] << 24) | ((uint32_t)px4[1] << 16) |
+                        ((uint32_t)px4[2] << 8) | px4[3];
+          printf("[SCR3] center=%08X TL=%08X\n", center, tl);
+        }
+        fflush(stdout);
+      }
+    }
 
     glBindFramebuffer(GL_FRAMEBUFFER, m_fbo_state.render_fbo->fbo_id);
     glClearColor(0.0, 0.0, 0.0, 0.0);

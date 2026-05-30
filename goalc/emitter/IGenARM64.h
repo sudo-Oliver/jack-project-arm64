@@ -667,6 +667,7 @@ InstructionARM64 int32_to_float(Register dst, Register src);
 InstructionARM64 float_to_int32(Register dst, Register src);
 
 InstructionARM64 nop();
+InstructionARM64 brk(uint16_t imm16 = 0);
 
 // TODO - rsqrt / abs / sqrt
 

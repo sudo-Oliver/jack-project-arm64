@@ -301,6 +301,17 @@ Val* Compiler::compile_asm_jr(const goos::Object& form, const goos::Object& rest
   return get_none();
 }
 
+Val* Compiler::compile_asm_brk(const goos::Object& form, const goos::Object& rest, Env* env) {
+  auto args = get_va(form, rest);
+  va_check(form, args, {{}}, {});
+  uint16_t imm = 0;
+  if (!args.unnamed.empty()) {
+    imm = static_cast<uint16_t>(args.unnamed.at(0).as_int());
+  }
+  env->emit_ir<IR_AsmBrk>(form, imm);
+  return get_none();
+}
+
 Val* Compiler::compile_asm_mov(const goos::Object& form, const goos::Object& rest, Env* env) {
   auto args = get_va(form, rest);
   va_check(form, args, {{}, {}}, {{"color", {false, goos::ObjectType::SYMBOL}}});

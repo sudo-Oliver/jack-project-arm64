@@ -124,11 +124,26 @@ void KernelCheckAndDispatch() {
   int dispatch_count = 0;
   lg::info("[EE] KernelCheckAndDispatch starting, stack at 0x{:016x}", goal_stack);
 
+  // ARM64: watch address 0x1f405c for self=0 corruption
+  static uint32_t prev_self_1f405c = 0;
   while (MasterExit == RuntimeExitStatus::RUNNING) {
     dispatch_count++;
     if (dispatch_count <= 3 || (dispatch_count % 100) == 0) {
       lg::info("[EE] Kernel dispatch #{}", dispatch_count);
     }
+#if defined(__aarch64__) && defined(__APPLE__)
+    if (g_ee_main_mem) {
+      auto* watch_ptr = reinterpret_cast<volatile uint32_t*>(
+          reinterpret_cast<uint8_t*>(g_ee_main_mem) + 0x1f405c);
+      uint32_t cur = *watch_ptr;
+      if (cur != prev_self_1f405c) {
+        fprintf(stderr, "[SELF-WATCH] 0x1f405c changed: 0x%08x → 0x%08x at dispatch #%d\n",
+                prev_self_1f405c, cur, dispatch_count);
+        fflush(stderr);
+        prev_self_1f405c = cur;
+      }
+    }
+#endif
     // try to get a message from the listener, and process it if needed
     Ptr<char> new_message = WaitForMessageAndAck();
     if (new_message.offset) {
@@ -156,6 +171,13 @@ void KernelCheckAndDispatch() {
       // use the GOAL kernel.
       call_goal_on_stack(Ptr<Function>(kernel_dispatcher->value), goal_stack, s7.offset,
                          g_ee_main_mem);
+      fprintf(stderr, "[KCD-RETURNED] dispatch #%d MasterExit=%d\n", dispatch_count, (int)MasterExit);
+      fflush(stderr);
+      if (MasterExit != RuntimeExitStatus::RUNNING) {
+        fprintf(stderr, "[KCD-EXIT] MasterExit=%d after dispatch #%d\n",
+                (int)MasterExit, dispatch_count);
+        fflush(stderr);
+      }
     } else {
       // use a hack to just run the listener function if there's no GOAL kernel.
       if (ListenerFunction->value != s7.offset) {
