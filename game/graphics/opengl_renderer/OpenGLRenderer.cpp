@@ -1249,36 +1249,12 @@ void OpenGLRenderer::setup_frame(const RenderOptions& settings) {
   ASSERT_MSG(!m_fbo_state.render_fbo->is_window, "window fbo");
 
   if (m_version == GameVersion::Jak1) {
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glViewport(0, 0, m_fbo_state.resources.window.width, m_fbo_state.resources.window.height);
-    glClearColor(1.0, 0.0, 1.0, 1.0);  // DIAG: magenta — remove after blackscreen debug
-    glClearDepth(0.0);
-    glDepthMask(GL_TRUE);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
-    glDisable(GL_BLEND);
-
-    {
-      static bool sshot = false;
-      if (!sshot) {
-        sshot = true;
-        GLint vp[4];
-        glGetIntegerv(GL_VIEWPORT, vp);
-        int w = vp[2], h = vp[3];
-        printf("[SCR3] viewport=%dx%d (after magenta clear, before render)\n", w, h);
-        if (w > 0 && h > 0) {
-          uint8_t px4[4] = {};
-          glReadPixels(w / 2, h / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px4);
-          uint32_t center = ((uint32_t)px4[0] << 24) | ((uint32_t)px4[1] << 16) |
-                            ((uint32_t)px4[2] << 8) | px4[3];
-          glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px4);
-          uint32_t tl = ((uint32_t)px4[0] << 24) | ((uint32_t)px4[1] << 16) |
-                        ((uint32_t)px4[2] << 8) | px4[3];
-          printf("[SCR3] center=%08X TL=%08X\n", center, tl);
-        }
-        fflush(stdout);
-      }
-    }
-
+    // ARM64/macOS: do NOT clear FBO 0 (window drawable) here.
+    // Metal allows only ONE render pass to the drawable per frame.
+    // Clearing FBO 0 in setup_frame commits the drawable; a subsequent
+    // draw or blit to FBO 0 in do_pcrtc_effects then fails with
+    // EXC_BAD_INSTRUCTION (no drawable). Instead, pcrtc is the sole
+    // writer to FBO 0 each frame. The letterbox border is cleared there.
     glBindFramebuffer(GL_FRAMEBUFFER, m_fbo_state.render_fbo->fbo_id);
     glClearColor(0.0, 0.0, 0.0, 0.0);
     glClearDepth(0.0);
@@ -1687,64 +1663,79 @@ void OpenGLRenderer::do_pcrtc_effects(float alp,
                                       ScopedProfilerNode& prof) {
   Fbo* window_blit_src = nullptr;
   if (m_fbo_state.resources.resolve_buffer.valid) {
+    printf("[P1] blit path\n"); fflush(stdout);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, m_fbo_state.render_fbo->fbo_id);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_fbo_state.resources.resolve_buffer.fbo_id);
-    glBlitFramebuffer(0,                                            // srcX0
-                      0,                                            // srcY0
-                      m_fbo_state.render_fbo->width,                // srcX1
-                      m_fbo_state.render_fbo->height,               // srcY1
-                      0,                                            // dstX0
-                      0,                                            // dstY0
-                      m_fbo_state.resources.resolve_buffer.width,   // dstX1
-                      m_fbo_state.resources.resolve_buffer.height,  // dstY1
-                      GL_COLOR_BUFFER_BIT,                          // mask
-                      GL_LINEAR                                     // filter
-    );
+    glBlitFramebuffer(0, 0,
+                      m_fbo_state.render_fbo->width, m_fbo_state.render_fbo->height,
+                      0, 0,
+                      m_fbo_state.resources.resolve_buffer.width,
+                      m_fbo_state.resources.resolve_buffer.height,
+                      GL_COLOR_BUFFER_BIT, GL_LINEAR);
     window_blit_src = &m_fbo_state.resources.resolve_buffer;
   } else {
     window_blit_src = &m_fbo_state.resources.render_buffer;
   }
+  printf("[P2] src tex_id=%d vp=(%d,%d,%d,%d)\n",
+         (int)(window_blit_src->tex_id.has_value() ? *window_blit_src->tex_id : -1),
+         render_state->draw_offset_x, render_state->draw_offset_y,
+         render_state->draw_region_w, render_state->draw_region_h); fflush(stdout);
 
   glDisable(GL_DEPTH_TEST);
   glDisable(GL_BLEND);
   glViewport(render_state->draw_offset_x, render_state->draw_offset_y, render_state->draw_region_w,
              render_state->draw_region_h);
-  glBindTexture(GL_TEXTURE_2D, *window_blit_src->tex_id);
+  // Bind window FBO BEFORE binding the texture to avoid feedback loop:
+  // the render_buffer texture is still attached to the render FBO; binding it
+  // while that FBO is current triggers Metal texture-feedback validation.
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
+  printf("[P3] after BindFBO\n"); fflush(stdout);
+  glActiveTexture(GL_TEXTURE0);
+  GLuint tex_id = window_blit_src->tex_id.has_value() ? *window_blit_src->tex_id : 0;
+  glBindTexture(GL_TEXTURE_2D, tex_id);
+  printf("[P4] after BindTexture\n"); fflush(stdout);
   glBindVertexArray(screen_vao);
   glBindBuffer(GL_ARRAY_BUFFER, screen_vbo);
+  printf("[P5] vao=%u vbo=%u\n", screen_vao, screen_vbo); fflush(stdout);
 
-  float color = (float)brightness_contrast_color / 128.0f;
-  float alpha = (float)brightness_contrast_alpha / 128.0f;
-  auto& shader = render_state->shaders[ShaderId::POST_PROCESSING];
-  shader.activate();
-  glUniform1i(glGetUniformLocation(shader.id(), "tex_T0"), 0);
-  if (brightness_contrast_color < 0) {
-    // subtractive blend - note that color is already negative
-    float color_neg = color * alpha;
-    glUniform4f(glGetUniformLocation(shader.id(), "color_mult"), 1.0f, 1.0f, 1.0f, alpha);
-    glUniform4f(glGetUniformLocation(shader.id(), "color_add"), color_neg, color_neg, color_neg,
-                0.0f);
-  } else {
-    // additive blend
-    glUniform4f(glGetUniformLocation(shader.id(), "color_mult"), 1.0f, 1.0f, 1.0f, alpha);
-    glUniform4f(glGetUniformLocation(shader.id(), "color_add"), color, color, color, 0.0f);
-  }
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
   glActiveTexture(GL_TEXTURE0);
-  glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+  // Unbind texture from all units before using render_fbo as read framebuffer.
+  // Metal flags feedback hazard if a texture is bound to a sampler unit AND
+  // simultaneously used as a framebuffer read source.
+  for (int u = 0; u < 8; ++u) {
+    glActiveTexture(GL_TEXTURE0 + u);
+    glBindTexture(GL_TEXTURE_2D, 0);
+  }
+  glActiveTexture(GL_TEXTURE0);
+  printf("[PCRTC-BLIT-A] textures unbound\n"); fflush(stdout);
 
-  glBindBuffer(GL_ARRAY_BUFFER, 0);
+  int src_w = m_fbo_state.render_fbo->width;
+  int src_h = m_fbo_state.render_fbo->height;
+  int dst_x0 = render_state->draw_offset_x;
+  int dst_y0 = render_state->draw_offset_y;
+  int dst_x1 = dst_x0 + render_state->draw_region_w;
+  int dst_y1 = dst_y0 + render_state->draw_region_h;
+  // Test: can we do ANYTHING on FBO 0 in pcrtc (after render_fbo usage)?
+  printf("[B1] glBindFramebuffer(0)\n"); fflush(stdout);
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  printf("[B2] glClearColor\n"); fflush(stdout);
+  glClearColor(0.0f, 0.5f, 0.0f, 1.0f);
+  printf("[B3] glClear\n"); fflush(stdout);
+  glClear(GL_COLOR_BUFFER_BIT);
+  GLenum cerr = glGetError();
+  printf("[B4-CLEAR-DONE] err=0x%x\n", cerr); fflush(stdout);
+
   glBindVertexArray(0);
+  glBindBuffer(GL_ARRAY_BUFFER, 0);
 
   glEnable(GL_BLEND);
   if (alp < 1) {
     glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ZERO);
     glBlendEquation(GL_FUNC_ADD);
-
     m_blackout_renderer.draw(Vector4f(0, 0, 0, 1.f - alp), render_state, prof);
   }
+  glDisable(GL_DEPTH_TEST);
   glEnable(GL_DEPTH_TEST);
 }

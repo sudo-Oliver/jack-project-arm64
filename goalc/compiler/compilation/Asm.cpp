@@ -55,6 +55,14 @@ emitter::Register Compiler::parse_register(const goos::Object& code) {
 #endif
   }
 
+  // ARM64-native register names for ARM64-specific asm blocks.
+  // These are only valid inside (#if ARM64_PORT ...) guards.
+#if defined(__aarch64__)
+  if (std::string_view(nas.name_ptr) == "x24") {
+    return emitter::Register(emitter::ARM64_REG::X24);
+  }
+#endif
+
   for (int i = 0; i < 32; i++) {
     if (std::string_view(nas.name_ptr) == reg_names[i]) {
 #if defined(__aarch64__)

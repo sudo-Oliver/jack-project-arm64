@@ -1284,9 +1284,13 @@
   0)
 
 (defun start ((arg0 symbol) (arg1 continue-point))
+  (#when ARM64_PORT (format 0 "ARM64 start: entered arg0=~A arg1=~X~%" arg0 (the uint arg1)))
   (set! (-> *level* border?) #f)
   (set! (-> *setting-control* default border-mode) #f)
+  (#when ARM64_PORT (format 0 "ARM64 start: calling stop~%"))
   (stop arg0)
+  (#when ARM64_PORT (format 0 "ARM64 start: calling process-spawn~%"))
   (let ((v1-3 (process-spawn target :init init-target arg1 :from *target-dead-pool* :to *target-pool* :stack *kernel-dram-stack*)))
+    (#when ARM64_PORT (format 0 "ARM64 start: spawn done target=~X~%" (the uint *target*)))
     (if v1-3 (set! *target* (the-as target (-> v1-3 0 self))) (set! *target* #f)))
   *target*)

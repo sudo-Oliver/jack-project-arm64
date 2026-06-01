@@ -81,7 +81,7 @@ struct GfxGlobalSettings {
   int lod_tie = 0;
 
   // vsync enable
-  bool vsync = true;
+  bool vsync = false;  // ARM64-DEBUG: disabled to test SwapWindow vs GOAL crash timing
   bool old_vsync = false;
   // target frame rate
   float target_fps = 60;

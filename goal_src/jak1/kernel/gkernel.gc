@@ -608,6 +608,14 @@
     (set! (-> this rreg 3) temp)
     (.mov :color #f temp s4)
     (set! (-> this rreg 4) temp)
+    ;; ARM64: also save X24, the GOAL allocator's callee-saved GPR.
+    ;; On x86, the allocator uses RBX/RBP/R10-R12 which are already in s0-s4.
+    ;; On ARM64, X24 is the primary callee-saved GPR for cross-call values.
+    ;; Repurpose rreg[5] (used only for bootstrap arg on first resume).
+    (#when ARM64_PORT
+      (rlet ((x24-save :reg x24 :type uint))
+        (.mov :color #f temp x24-save)
+        (set! (-> this rreg 5) temp)))
     ;; back up fprs
     (.mov :color #f temp xmm8)
     (set! (-> this freg 0) (the-as float temp))
@@ -747,6 +755,14 @@
     ;; so we load the a4/a5 argument registers with rreg 5 and rreg 6
     ;; In the case where we are doing a normal resume, the
     ;; compiler should assume that these registers are overwritten anyway.
+    ;; ARM64: restore X24 from rreg[5] BEFORE loading it into a4.
+    ;; After a real suspend, rreg[5] contains X24's saved value.
+    ;; On first resume (bootstrap), rreg[5] = 5th arg, but the resumed code
+    ;; re-initializes X24 from its arguments, so the transient wrong value is harmless.
+    (#when ARM64_PORT
+      (rlet ((x24-restore :reg x24 :type uint))
+        (set! temp (-> this rreg 5))
+        (.mov :color #f x24-restore temp)))
     (set! temp (-> this rreg 5))
     (.mov a4 temp)
     (set! temp (-> this rreg 6))

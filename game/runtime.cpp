@@ -1226,7 +1226,7 @@ RuntimeExitStatus exec_runtime(GameLaunchOptions game_options, int argc, const c
           // Try to get faulting thread via body/ports
           auto* body = reinterpret_cast<mach_msg_body_t*>(msgbuf + sizeof(mach_msg_header_t));
           auto* ports = reinterpret_cast<mach_msg_port_descriptor_t*>(body + 1);
-          mach_port_t thread_port = ports[1].name;
+          mach_port_t thread_port = ports[0].name;  // ports[0]=thread, ports[1]=task
           {
             char tmp[64];
             int tn = __builtin_snprintf(tmp, sizeof(tmp),
