@@ -1363,7 +1363,11 @@ void OpenGLRenderer::dispatch_buckets_jak1(DmaFollower dma,
         }
       }
     }
+    printf("[BKT] %zu %s\n", bucket_id, renderer->name_and_id().c_str());
+    fflush(stdout);
     renderer->render(dma, &m_render_state, bucket_prof);
+    // Force sync to catch async Metal/CoreML crashes synchronously
+    glFinish();
     if (sync_after_buckets) {
       auto pp = scoped_prof("finish");
       glFinish();

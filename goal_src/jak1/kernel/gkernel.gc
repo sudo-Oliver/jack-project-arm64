@@ -1723,9 +1723,9 @@
                     (-> ra-ptr 1)
                     (-> ra-ptr 2)
                     (-> ra-ptr 3))
-                  ;; Also print what's at the known crash address (GOAL addr 0x4001994)
-                  (let ((crash-ptr (the (pointer uint32) #x4001994)))
-                    (format 0 "THROW-DBG: CRASH-ADDR[0x4001994]=~X ~X ~X ~X~%"
+                  ;; Print code at the known crash PC (GOAL addr 0x40ff278 in game-info)
+                  (let ((crash-ptr (the (pointer uint32) #x40ff278)))
+                    (format 0 "THROW-DBG: CRASH-ADDR[0x40ff278]=~X ~X ~X ~X~%"
                       (-> crash-ptr 0)
                       (-> crash-ptr 1)
                       (-> crash-ptr 2)
@@ -2121,7 +2121,13 @@
        (set! (-> this status) 'dead)
        ;; and return (with no deactivate)
        ;; TODO: replace with abandon.
-       (let ((temp (the uint return-from-thread))) (rlet ((off :reg r15 :type uint)) (+! temp off) (.push temp) (.ret))))
+       ;; ARM64: .jr branches directly (x86 push+ret idiom doesn't work: ret uses LR not stack)
+       (let ((temp (the uint return-from-thread)))
+         (rlet ((off :reg r15 :type uint))
+           (+! temp off)
+           (#if ARM64_PORT
+             (.jr temp)
+             (begin (.push temp) (.ret))))))
       ;; second case - we deactivated while initializing.
       ((eq? (-> this status) 'initialize)
        (set! (-> this status) 'dead)

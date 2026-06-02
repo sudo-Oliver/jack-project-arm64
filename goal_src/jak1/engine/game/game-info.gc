@@ -277,8 +277,9 @@
              (set! arg2 (get-or-create-continue! *game-info*)))
            (#when ARM64_PORT (format 0 "ARM64 game-info: PRE-SUSPEND arg0-ptr=~X arg2=~X~%" (the uint arg0) (the uint arg2)))
            (suspend)
-           (#when ARM64_PORT (format 0 "ARM64 game-info: POST-SUSPEND arg0-ptr=~X arg2=~X~%" (the uint arg0) (the uint arg2)))
+           (format 0 "GI-UNCONDITIONAL-POST-SUSPEND arg0=~X~%" (the uint arg0))
            (start arg0 arg2)
+           (format 0 "GI-UNCONDITIONAL-START-RETURNED~%")
            (none))
          (-> this mode)
          cause
@@ -736,3 +737,4 @@
 
 (defmethod get-health-percent-lost ((this game-info) (arg0 symbol))
   (* 0.25 (the float (get-death-count this #f))))
+

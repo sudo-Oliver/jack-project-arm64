@@ -743,6 +743,27 @@ static void sigbus_handler(int sig, siginfo_t* info, void* ctx) {
       // Execute one store instruction (already in write mode).
       // Updates cur_pc by 4 on success; updates context registers for write-back forms.
       // Returns true if the instruction was a recognised store.
+      //
+      // NOTE: addr must be validated to be within EE memory before writing.
+      // Writing to an address outside EE memory would generate a recursive SIGBUS
+      // (SIGBUS is blocked during the signal handler), which kills the process silently.
+      auto check_addr = [&](uint64_t addr, int bytes, uint64_t pc, uint32_t instr_word) -> bool {
+        uintptr_t base = (uintptr_t)g_ee_main_mem;
+        if (addr < base || addr + (uint64_t)bytes > base + EE_MAIN_MEM_SIZE) {
+          char bad[256];
+          int bn = __builtin_snprintf(bad, sizeof(bad),
+            "[EE-CRASH] exec_one: store addr 0x%llx outside EE [0x%llx,0x%llx) "
+            "instr=0x%08x pc=0x%llx\n",
+            (unsigned long long)addr, (unsigned long long)base,
+            (unsigned long long)(base + EE_MAIN_MEM_SIZE),
+            (unsigned)instr_word, (unsigned long long)pc);
+          write(2, bad, bn);
+          int bfd = open("/tmp/gk_bad_store.txt", O_WRONLY|O_CREAT|O_TRUNC, 0644);
+          if (bfd >= 0) { write(bfd, bad, bn); fsync(bfd); close(bfd); }
+          return false;
+        }
+        return true;
+      };
       auto exec_one = [&](uint64_t& cur_pc) -> bool {
         uint32_t instr = *(const uint32_t*)cur_pc;
 
@@ -771,6 +792,7 @@ static void sigbus_handler(int sig, siginfo_t* info, void* ctx) {
             }
             if (S) offset <<= (bytes == 8 ? 3 : bytes == 4 ? 2 : bytes == 2 ? 1 : 0);
             uint64_t addr = gpr_base(Rn) + offset;
+            if (!check_addr(addr, bytes, cur_pc, instr)) return false;
             uint64_t val  = gpr(Rt);
             switch (bytes) {
               case 1: *(uint8_t* )addr = (uint8_t )val; break;
@@ -792,6 +814,7 @@ static void sigbus_handler(int sig, siginfo_t* info, void* ctx) {
           if (bytes) {
             int Rm = (instr >> 16) & 0x1F, Rn = (instr >> 5) & 0x1F, Rt = instr & 0x1F;
             uint64_t addr = gpr_base(Rn) + gpr(Rm);
+            if (!check_addr(addr, bytes, cur_pc, instr)) return false;
             if (bytes == 16) {
               __uint128_t val = ns.__v[Rt];
               __builtin_memcpy((void*)addr, &val, 16);
@@ -824,6 +847,7 @@ static void sigbus_handler(int sig, siginfo_t* info, void* ctx) {
             bool is_post = (mode == 0x400u), is_pre = (mode == 0xC00u);
             uint64_t base = gpr_base(Rn);
             uint64_t addr = is_post ? base : base + (int64_t)imm9;
+            if (!check_addr(addr, bytes, cur_pc, instr)) return false;
             if (bytes == 16) {
               __uint128_t val = ns.__v[Rt];
               __builtin_memcpy((void*)addr, &val, 16);
@@ -853,6 +877,7 @@ static void sigbus_handler(int sig, siginfo_t* info, void* ctx) {
             int Rn = (instr >> 5) & 0x1F;
             int Rt = instr & 0x1F;
             uint64_t addr = gpr_base(Rn) + (uint64_t)imm12 * (uint32_t)bytes;
+            if (!check_addr(addr, bytes, cur_pc, instr)) return false;
             if (bytes == 16) {
               __uint128_t val = ns.__v[Rt];
               __builtin_memcpy((void*)addr, &val, 16);
@@ -876,6 +901,7 @@ static void sigbus_handler(int sig, siginfo_t* info, void* ctx) {
             uint32_t imm12 = (instr >> 10) & 0xFFF;
             int Rn = (instr >> 5) & 0x1F, Rt = instr & 0x1F;
             uint64_t addr = gpr_base(Rn) + ((uint64_t)imm12 << scale);
+            if (!check_addr(addr, 1 << scale, cur_pc, instr)) return false;
             uint64_t val  = gpr(Rt);
             switch (1 << scale) {
               case 1: *(uint8_t* )addr = (uint8_t )val; break;
@@ -897,6 +923,7 @@ static void sigbus_handler(int sig, siginfo_t* info, void* ctx) {
             if (imm9 & 0x100) imm9 |= ~(int32_t)0x1FF;
             int Rn = (instr >> 5) & 0x1F, Rt = instr & 0x1F;
             uint64_t addr = gpr_base(Rn) + (int64_t)imm9;
+            if (!check_addr(addr, 1 << scale, cur_pc, instr)) return false;
             uint64_t val  = gpr(Rt);
             switch (1 << scale) {
               case 1: *(uint8_t* )addr = (uint8_t )val; break;
@@ -918,6 +945,7 @@ static void sigbus_handler(int sig, siginfo_t* info, void* ctx) {
             if (imm9 & 0x100) imm9 |= ~(int32_t)0x1FF;
             int Rn = (instr >> 5) & 0x1F, Rt = instr & 0x1F;
             uint64_t base = gpr_base(Rn);
+            if (!check_addr(base, 1 << scale, cur_pc, instr)) return false;
             uint64_t val  = gpr(Rt);
             switch (1 << scale) {
               case 1: *(uint8_t* )base = (uint8_t )val; break;
@@ -940,6 +968,7 @@ static void sigbus_handler(int sig, siginfo_t* info, void* ctx) {
             if (imm9 & 0x100) imm9 |= ~(int32_t)0x1FF;
             int Rn = (instr >> 5) & 0x1F, Rt = instr & 0x1F;
             uint64_t addr = gpr_base(Rn) + (int64_t)imm9;
+            if (!check_addr(addr, 1 << scale, cur_pc, instr)) return false;
             uint64_t val  = gpr(Rt);
             switch (1 << scale) {
               case 1: *(uint8_t* )addr = (uint8_t )val; break;
@@ -962,6 +991,7 @@ static void sigbus_handler(int sig, siginfo_t* info, void* ctx) {
             int Rt2 = (instr >> 10) & 0x1F, Rn = (instr >> 5) & 0x1F, Rt = instr & 0x1F;
             uint64_t base = gpr_base(Rn);
             uint64_t addr = (top10 == 0xA8800000u) ? base : base + (int64_t)imm7 * 8;
+            if (!check_addr(addr, 16, cur_pc, instr)) return false;
             *(uint64_t*)addr       = gpr(Rt);
             *(uint64_t*)(addr + 8) = gpr(Rt2);
             if (top10 == 0xA8800000u || top10 == 0xA9800000u)
@@ -980,6 +1010,7 @@ static void sigbus_handler(int sig, siginfo_t* info, void* ctx) {
             int Rt2 = (instr >> 10) & 0x1F, Rn = (instr >> 5) & 0x1F, Rt = instr & 0x1F;
             uint64_t base = gpr_base(Rn);
             uint64_t addr = (top10 == 0x28800000u) ? base : base + (int64_t)imm7 * 4;
+            if (!check_addr(addr, 8, cur_pc, instr)) return false;
             *(uint32_t*)addr       = (uint32_t)gpr(Rt);
             *(uint32_t*)(addr + 4) = (uint32_t)gpr(Rt2);
             if (top10 == 0x28800000u || top10 == 0x29800000u)
@@ -996,6 +1027,7 @@ static void sigbus_handler(int sig, siginfo_t* info, void* ctx) {
             if (imm7 & 0x40) imm7 |= ~(int32_t)0x7F;
             int Rt2 = (instr >> 10) & 0x1F, Rn = (instr >> 5) & 0x1F, Rt = instr & 0x1F;
             uint64_t addr = gpr_base(Rn) + (int64_t)imm7 * 16;
+            if (!check_addr(addr, 32, cur_pc, instr)) return false;
             __uint128_t v1 = ns.__v[Rt], v2 = ns.__v[Rt2];
             __builtin_memcpy((void*)addr,        &v1, 16);
             __builtin_memcpy((void*)(addr + 16), &v2, 16);
@@ -1011,6 +1043,7 @@ static void sigbus_handler(int sig, siginfo_t* info, void* ctx) {
             if (imm7 & 0x40) imm7 |= ~(int32_t)0x7F;
             int Rt2 = (instr >> 10) & 0x1F, Rn = (instr >> 5) & 0x1F, Rt = instr & 0x1F;
             uint64_t addr = gpr_base(Rn) + (int64_t)imm7 * 8;
+            if (!check_addr(addr, 16, cur_pc, instr)) return false;
             uint64_t v1, v2;
             __builtin_memcpy(&v1, &ns.__v[Rt],  8);
             __builtin_memcpy(&v2, &ns.__v[Rt2], 8);
@@ -1028,6 +1061,7 @@ static void sigbus_handler(int sig, siginfo_t* info, void* ctx) {
             if (imm7 & 0x40) imm7 |= ~(int32_t)0x7F;
             int Rt2 = (instr >> 10) & 0x1F, Rn = (instr >> 5) & 0x1F, Rt = instr & 0x1F;
             uint64_t addr = gpr_base(Rn) + (int64_t)imm7 * 4;
+            if (!check_addr(addr, 8, cur_pc, instr)) return false;
             uint32_t v1, v2;
             __builtin_memcpy(&v1, &ns.__v[Rt],  4);
             __builtin_memcpy(&v2, &ns.__v[Rt2], 4);
@@ -1122,7 +1156,7 @@ RuntimeExitStatus exec_runtime(GameLaunchOptions game_options, int argc, const c
     sigaltstack(&ss_alt, nullptr);
 
     struct sigaction sa_ill{};
-    sa_ill.sa_flags = SA_SIGINFO;
+    sa_ill.sa_flags = SA_SIGINFO | SA_ONSTACK;
     sa_ill.sa_sigaction = [](int, siginfo_t*, void* ctx) {
       // Write to fd 1 (stdout), fd 2 (stderr), AND a dedicated crash file.
       const char* header = "[EE-SIGILL] handler entered\n";
@@ -1182,7 +1216,11 @@ RuntimeExitStatus exec_runtime(GameLaunchOptions game_options, int argc, const c
         mach_port_insert_right(mach_task_self(), exc_port, exc_port, MACH_MSG_TYPE_MAKE_SEND) :
         KERN_FAILURE;
     if (kr_right == KERN_SUCCESS) {
-      kern_return_t kr = task_set_exception_ports(
+      // Skip registering our own port if running under a debugger (lldb takes priority).
+      // The debugger's exception handling gives us better backtraces.
+      const char* is_debug = getenv("GK_MACH_HANDLER_DISABLE");
+      kern_return_t kr = is_debug ? KERN_FAILURE :
+          task_set_exception_ports(
           mach_task_self(),
           EXC_MASK_BAD_INSTRUCTION | EXC_MASK_BREAKPOINT,
           exc_port,
@@ -1203,6 +1241,17 @@ RuntimeExitStatus exec_runtime(GameLaunchOptions game_options, int argc, const c
           }
           kern_return_t kr = mach_msg(hdr, MACH_RCV_MSG, 0, sizeof(msgbuf),
                        s_exc_port, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
+          // Write to a dedicated file first (bypasses any broken stderr pipe)
+          {
+            int early_fd = open("/tmp/gk_mach_woke.txt", O_WRONLY|O_CREAT|O_TRUNC, 0644);
+            if (early_fd >= 0) {
+              char tmp2[128];
+              int tn2 = __builtin_snprintf(tmp2, sizeof(tmp2), "mach_msg returned kr=%d\n", (int)kr);
+              write(early_fd, tmp2, tn2);
+              fsync(early_fd);
+              close(early_fd);
+            }
+          }
           {
             char tmp[64];
             int tn = __builtin_snprintf(tmp, sizeof(tmp), "[MACH-EXC] mach_msg returned kr=%d msz=%u\n",
@@ -1272,6 +1321,8 @@ RuntimeExitStatus exec_runtime(GameLaunchOptions game_options, int argc, const c
           write(2, buf, n);
           int fd = open("/tmp/gk_mach_sigill.txt", O_WRONLY|O_CREAT|O_TRUNC, 0644);
           if (fd >= 0) { write(fd, buf, n); fsync(fd); close(fd); }
+          // Pause process so lldb can attach for backtrace, then exit
+          raise(SIGSTOP);
           _exit(132);
           return nullptr;
         }, nullptr);
