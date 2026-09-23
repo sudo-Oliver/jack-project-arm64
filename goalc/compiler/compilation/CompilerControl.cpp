@@ -182,6 +182,88 @@ Val* Compiler::compile_asm_file(const goos::Object& form, const goos::Object& re
 }
 
 /*!
+ * Write every compiled function's segment offset to a file, so a faulting kcodeheap address
+ * from a crash dump can be turned back into a GOAL function name.
+ *
+ * Output is one function per line: "<object> <seg> <offset> <length> <name>".
+ * Combine with the "[EE-LINK] link finish:" segment bases printed by the runtime:
+ * offset_in_object = faulting_ee_address - seg_base.
+ */
+Val* Compiler::compile_dump_function_map(const goos::Object& form,
+                                         const goos::Object& rest,
+                                         Env* env) {
+  (void)env;
+  auto args = get_va(form, rest);
+  va_check(form, args, {goos::ObjectType::STRING}, {});
+  auto path = as_string(args.unnamed.at(0));
+
+  std::string out;
+  int count = 0;
+  for (const auto& [obj_name, debug_info] : m_debugger.all_debug_info()) {
+    for (const auto& [func_name, func] : debug_info.all_functions()) {
+      out += fmt::format("{} {} {} {} {}\n", obj_name, func.seg, func.offset_in_seg, func.length,
+                         func_name);
+      count++;
+    }
+  }
+  file_util::write_text_file(path, out);
+  lg::print("Wrote {} functions to {}\n", count, path);
+  return get_none();
+}
+
+/*!
+ * Write one function's instruction offsets, IR, and source lines to a file.
+ *
+ * This is the ARM64-safe counterpart to the x86 disassembler: it never decodes machine code,
+ * it just reports which IR and which line of GOAL source produced the bytes at each offset.
+ * Use it after resolve_goal_addr.py has told you the function and the offset within it.
+ */
+Val* Compiler::compile_dump_function_ir(const goos::Object& form,
+                                        const goos::Object& rest,
+                                        Env* env) {
+  (void)env;
+  auto args = get_va(form, rest);
+  va_check(form, args, {goos::ObjectType::STRING, goos::ObjectType::STRING}, {});
+  auto wanted = as_string(args.unnamed.at(0));
+  auto path = as_string(args.unnamed.at(1));
+
+  std::string out;
+  int found = 0;
+  for (const auto& [obj_name, debug_info] : m_debugger.all_debug_info()) {
+    for (const auto& [func_name, func] : debug_info.all_functions()) {
+      if (func_name != wanted) {
+        continue;
+      }
+      found++;
+      out += fmt::format("=== {} in {} (seg {}, offset_in_seg 0x{:x}, length 0x{:x})\n", func_name,
+                         obj_name, func.seg, func.offset_in_seg, func.length);
+      for (const auto& instr : func.instructions) {
+        std::string src;
+        if (instr.ir_idx >= 0 && instr.ir_idx < int(func.code_sources.size())) {
+          auto info = m_goos.reader.db.try_get_short_info(func.code_sources.at(instr.ir_idx));
+          if (info) {
+            src = fmt::format("{}:{}  {}", info->filename, info->line_idx_to_display,
+                              info->line_text);
+          }
+        }
+        std::string ir;
+        if (instr.ir_idx >= 0 && instr.ir_idx < int(func.ir_strings.size())) {
+          ir = func.ir_strings.at(instr.ir_idx);
+        }
+        out += fmt::format("+0x{:<6x} ir={:<5} {:<60} {}\n", instr.offset, instr.ir_idx, ir, src);
+      }
+      out += "\n";
+    }
+  }
+  if (!found) {
+    lg::print("No function named '{}' was found.\n", wanted);
+  }
+  file_util::write_text_file(path, out);
+  lg::print("Wrote {} function(s) to {}\n", found, path);
+  return get_none();
+}
+
+/*!
  * Simple help / documentation command
  */
 Val* Compiler::compile_repl_help(const goos::Object&, const goos::Object&, Env*) {

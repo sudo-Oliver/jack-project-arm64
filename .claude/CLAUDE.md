@@ -19,11 +19,11 @@ cmake --build build --target gk --parallel $((`sysctl -n hw.logicalcpu`))  # jus
 ./build/offline-test --iso_data_path iso_data/jak1 --game jak1  # needs ISO
 ```
 
-**CRITICAL: IR.cpp changes require CGO rebuild.** Edits to `goalc/compiler/IR.cpp` or the ARM64 emitter only affect future GOAL compilations. The pre-compiled CGOs in `iso_data/jak1/` must be regenerated:
+**CRITICAL: compiler changes require a CGO rebuild.** Edits to `goalc/compiler/IR.cpp`, `goalc/emitter/*`, or any `.gc` only affect future GOAL compilations, so the CGOs must be regenerated:
 ```sh
-./build/goalc/goalc -g jak1 -c "(build-kernel)"   # rebuild KERNEL.CGO
-./build/goalc/goalc -g jak1 -c "(build-game)"     # rebuild GAME.CGO (~9s for 519 targets)
+./build/goalc/goalc -g jak1 -c "(mi)"   # ~52s, rebuilds every CGO under out/jak1/iso/
 ```
+**Use `(mi)`, not `(build-game)`.** `(build-game)` is `(make-group "all-code")` and `all-code` contains only `*all-gc*`: it compiles `.gc` files to `.o` in `out/jak1/obj/` but never packs the CGOs. `-fakeiso` loads `out/jak1/iso/GAME.CGO`, so `(build-game)` alone leaves the game running stale code. `(build-kernel)` does pack KERNEL.CGO, which is why kernel edits appear to take effect while engine edits silently do not.
 
 **Boot timing (Apple Silicon M3 Pro, `-boot -debug -fakeiso`):**
 - IOP emulation init: ~3 minutes

@@ -90,20 +90,32 @@ RegisterInfo RegisterInfo::make_register_info() {
   info.m_xmm_arg_regs =
       std::array<Register, N_ARGS>({XMM1, XMM8, XMM9, XMM10, XMM11, XMM12, XMM15, XMM0});
   // Callee-saved GPR metadata for GOAL codegen.
-  // x19 is intentionally not in the normal ARM64 allocation order: generated GOAL code and
-  // host/asm transitions can both observe it, so treating it as a general local register can
-  // leak host absolute addresses into GOAL offset arithmetic.
-  // x24 is a true AAPCS64 callee-saved GPR and gives the allocator a real home for the most
-  // important values crossing calls. Its numeric ID aliases XMM8 in the shared OpenGOAL register
-  // namespace, so that SIMD register is excluded from allocation below.
+  //
+  // "Callee-saved" here must mean "survives a GOAL kernel context switch", which is stricter than
+  // AAPCS64. thread-suspend/thread-resume (and catch-frame/throw-dispatch) save exactly s0-s4,
+  // declared in gkernel.gc as rbx/rbp/r10/r11/r12. translate_x86_reg_to_arm64 maps those to
+  // x19/X23/X6/X7/X26, so only those registers actually survive a (suspend).
+  //
+  // x26 (= r12 = s4) is the one we hand to the allocator:
+  //   - x19 is deliberately excluded, because generated GOAL code and host/asm transitions can
+  //     both observe it and it can leak host absolute addresses into GOAL offset arithmetic.
+  //   - X6/X7 are ARM64 argument registers, so they are caller-saved for ordinary calls.
+  //   - X23 is free to add later if register pressure demands it.
+  // Do NOT put a register here that the kernel asm does not save: a local living there is silently
+  // replaced by whatever the context switch leaves behind (this used to be X24, which turned
+  // `disp` in display-loop into `pp` across the first (suspend)).
+  //
+  // x26's numeric ID aliases XMM10 in the shared OpenGOAL register namespace, so that SIMD
+  // register is excluded from allocation below.
   // Pad unused slots with Register() (id=-1 sentinel, never matches any allocation).
   info.m_saved_gprs =
-      std::array<Register, N_SAVED_GPRS>({X24, Register(), Register(), Register(), Register()});
-  // Callee-saved SIMD: keep only IDs that do not alias allocated saved GPRs.
+      std::array<Register, N_SAVED_GPRS>({X26, Register(), Register(), Register(), Register()});
+  // Callee-saved SIMD: the kernel saves xmm8-xmm15, so q8-q15 survive a context switch. Keep only
+  // IDs that do not alias allocated saved GPRs - q10 now aliases x26 and must stay out.
   // q13(x29) and q14(x30) are blocked but harmless in the saved list because they are never
   // allocated. Pad unused slots with Register() sentinels.
   info.m_saved_xmms =
-      std::array<Register, N_SAVED_XMMS>({XMM9, XMM10, XMM11, XMM12, XMM13, XMM14, XMM15, Register()});
+      std::array<Register, N_SAVED_XMMS>({XMM8, XMM9, XMM11, XMM12, XMM13, XMM14, XMM15, Register()});
 
   for (size_t i = 0; i < N_SAVED_GPRS; i++) {
     info.m_saved_all[i] = info.m_saved_gprs[i];
@@ -112,17 +124,17 @@ RegisterInfo RegisterInfo::make_register_info() {
     info.m_saved_all[i + N_SAVED_GPRS] = info.m_saved_xmms[i];
   }
 
-  // GPR alloc: temps (x8-x15) first, then args (x0-x7), then a real callee-saved GPR.
-  // Call-crossing values reject caller-saved regs via clobber checks and can land in x24 instead
+  // GPR alloc: temps (x8-x15) first, then args (x0-x7), then the kernel-preserved callee-saved GPR.
+  // Call-crossing values reject caller-saved regs via clobber checks and can land in x26 instead
   // of fragile stack spills. X16/X17 reserved as JIT scratch; X18 special (platform).
   info.m_gpr_alloc_order = {X8, X9, X10, X11, X12, X13, X14, X15,
                              X0, X1, X2,  X3,  X4,  X5,  X6,  X7,
-                             X24};
-  // SIMD alloc: only use q0/q1 (caller-saved, non-conflicting) and q9-q12/q15 (callee-saved).
+                             X26};
+  // SIMD alloc: only use q0/q1 (caller-saved, non-conflicting) and q8/q9/q11/q12/q15 (callee-saved).
   // Exclude q2=x18(special), q3=x19(is_saved mismatch), q4=x20(special),
   //         q5=x21(special), q6=x22(special), q7=x23(is_saved mismatch),
-  //         q8=x24(saved GPR alias), q13=x29(special), q14=x30(special).
-  info.m_xmm_alloc_order = {XMM0, XMM1, XMM9, XMM10, XMM11, XMM12, XMM15};
+  //         q10=x26(saved GPR alias), q13=x29(special), q14=x30(special).
+  info.m_xmm_alloc_order = {XMM0, XMM1, XMM8, XMM9, XMM11, XMM12, XMM15};
 
   info.m_gpr_temp_only_alloc_order = {X8, X9, X10, X11, X12, X13, X14, X15,
                                       X0, X1, X2,  X3,  X4,  X5,  X6,  X7};
@@ -132,7 +144,7 @@ RegisterInfo RegisterInfo::make_register_info() {
   info.m_gpr_spill_temp_alloc_order = {X8,  X9,  X10, X11, X12, X13,
                                        X14, X15, X0,  X1,  X2,  X3,
                                        X4,  X5,  X6,  X7};
-  info.m_xmm_spill_temp_alloc_order = {XMM0, XMM1, XMM9, XMM10, XMM11, XMM12, XMM15};
+  info.m_xmm_spill_temp_alloc_order = {XMM0, XMM1, XMM8, XMM9, XMM11, XMM12, XMM15};
 #else
   info.m_info[RAX] = {false, false, "rax"};  // return, temp
   info.m_info[RCX] = {false, false, "rcx"};  // gpr arg 3, temp

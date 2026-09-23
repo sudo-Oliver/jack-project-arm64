@@ -2919,7 +2919,28 @@ void IR_BlendVF::do_codegen_arm64(emitter::ObjectGenerator* gen,
   auto dst = get_reg_asm(m_dst, allocs, irec, m_use_coloring);
   auto src1 = get_reg_asm(m_src1, allocs, irec, m_use_coloring);
   auto src2 = get_reg_asm(m_src2, allocs, irec, m_use_coloring);
-  gen->add_instr(IGen::blend_vf(*gen, dst, src1, src2, m_mask), irec);
+  u8 mask = m_mask & 0xF;
+
+  // Whole-register masks are a single move.
+  if (mask == 0x0 || mask == 0xF) {
+    gen->add_instr(IGen::blend_vf(*gen, dst, src1, src2, mask), irec);
+    return;
+  }
+
+  // ARM64 has no BLENDPS, so build the blend out of one move plus a per-lane INS. Which source
+  // seeds dst decides which lanes still have to be inserted, and seeding from the source dst
+  // already aliases avoids clobbering the other operand.
+  bool seed_from_src2 = (dst == src2);
+  if (!seed_from_src2 && dst != src1) {
+    gen->add_instr(IGen::mov_vf_vf(*gen, dst, src1), irec);
+  }
+  for (u8 lane = 0; lane < 4; lane++) {
+    bool lane_from_src2 = (mask >> lane) & 1;
+    if (lane_from_src2 == seed_from_src2) {
+      continue;
+    }
+    gen->add_instr(IGen::ins_element_s(*gen, dst, lane_from_src2 ? src2 : src1, lane), irec);
+  }
 }
 
 // ----- Splat VF

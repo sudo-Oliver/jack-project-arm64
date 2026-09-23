@@ -102,6 +102,7 @@ class Debugger {
   InstructionPointerInfo get_rip_info(u64 x86_rip);
   DebugInfo& get_debug_info_for_object(const std::string& object_name);
   bool knows_object(const std::string& object_name) const;
+  const std::unordered_map<std::string, DebugInfo>& all_debug_info() const { return m_debug_info; }
   const InstructionPointerInfo& get_cached_break_info() { return m_break_info; }
   std::string get_info_about_addr(u32 addr);
   Disassembly disassemble_at_rip(const InstructionPointerInfo& info);

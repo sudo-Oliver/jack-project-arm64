@@ -512,6 +512,119 @@ TEST(CodeTester, mov_vf_vf_arm64) {
   EXPECT_EQ(tester.dump_to_hex_string(), "28 1d a9 4e");
 }
 
+TEST(CodeTester, ins_element_s_arm64) {
+  CodeTester tester(emitter::InstructionSet::ARM64);
+  tester.init_code_buffer(32);
+  // INS V8.S[lane], V9.S[lane] for each lane (dst=XMM8→Q8, src=XMM9→Q9).
+  for (u8 lane = 0; lane < 4; lane++) {
+    tester.emit(IGen::ARM64::ins_element_s(emitter::Register(emitter::XMM8),
+                                           emitter::Register(emitter::XMM9), lane));
+  }
+  EXPECT_EQ(tester.dump_to_hex_string(),
+            "28 05 04 6e 28 25 0c 6e 28 45 14 6e 28 65 1c 6e");
+}
+
+#ifdef __aarch64__
+// Execute the mov+INS sequence that IR_BlendVF::do_codegen_arm64 builds, for every mask and every
+// aliasing of dst with src1/src2, and check each lane comes from the source the mask selects.
+TEST(CodeTester, execute_blend_vf_arm64) {
+  struct Vec {
+    u32 v[4];
+  };
+  const Vec src1_val = {{0x1111'0000, 0x1111'0001, 0x1111'0002, 0x1111'0003}};
+  const Vec src2_val = {{0x2222'0000, 0x2222'0001, 0x2222'0002, 0x2222'0003}};
+
+  // dst_alias: 0 = distinct, 1 = dst aliases src1, 2 = dst aliases src2.
+  for (int dst_alias = 0; dst_alias < 3; dst_alias++) {
+    for (u8 mask = 0; mask < 16; mask++) {
+      emitter::Register q_src1(emitter::XMM9), q_src2(emitter::XMM10);
+      emitter::Register q_dst = dst_alias == 1   ? q_src1
+                                : dst_alias == 2 ? q_src2
+                                                 : emitter::Register(emitter::XMM11);
+
+      CodeTester tester(emitter::InstructionSet::ARM64);
+      tester.init_code_buffer(256);
+      // x0 = &src1, x1 = &src2, x2 = &out
+      tester.emit(IGen::ARM64::load128_simd128_gpr64(q_src1, emitter::Register(emitter::X0)));
+      tester.emit(IGen::ARM64::load128_simd128_gpr64(q_src2, emitter::Register(emitter::X1)));
+
+      if (mask == 0x0 || mask == 0xF) {
+        tester.emit(IGen::ARM64::blend_vf(q_dst, q_src1, q_src2, mask));
+      } else {
+        bool seed_from_src2 = (q_dst == q_src2);
+        if (!seed_from_src2 && q_dst != q_src1) {
+          tester.emit(IGen::ARM64::mov_vf_vf(q_dst, q_src1));
+        }
+        for (u8 lane = 0; lane < 4; lane++) {
+          bool lane_from_src2 = (mask >> lane) & 1;
+          if (lane_from_src2 == seed_from_src2) {
+            continue;
+          }
+          tester.emit(
+              IGen::ARM64::ins_element_s(q_dst, lane_from_src2 ? q_src2 : q_src1, lane));
+        }
+      }
+      tester.emit(IGen::ARM64::store128_gpr64_simd128(emitter::Register(emitter::X2), q_dst));
+      tester.emit_return();
+
+      Vec in1 = src1_val, in2 = src2_val, out = {};
+      tester.execute((u64)&in1, (u64)&in2, (u64)&out, 0);
+
+      for (int lane = 0; lane < 4; lane++) {
+        u32 expected = ((mask >> lane) & 1) ? src2_val.v[lane] : src1_val.v[lane];
+        EXPECT_EQ(out.v[lane], expected)
+            << "dst_alias=" << dst_alias << " mask=" << (int)mask << " lane=" << lane;
+      }
+    }
+  }
+}
+#endif
+
+TEST(CodeTester, splat_vf_arm64) {
+  // DUP Vd.4S, Vn.S[lane] for X/Y/Z/W, checked against the system assembler's encodings.
+  const char* expected[4] = {"28 05 04 4e", "28 05 0c 4e", "28 05 14 4e", "28 05 1c 4e"};
+  const emitter::Register::VF_ELEMENT elements[4] = {
+      emitter::Register::VF_ELEMENT::X, emitter::Register::VF_ELEMENT::Y,
+      emitter::Register::VF_ELEMENT::Z, emitter::Register::VF_ELEMENT::W};
+  for (int i = 0; i < 4; i++) {
+    CodeTester tester(emitter::InstructionSet::ARM64);
+    tester.init_code_buffer(32);
+    tester.emit(IGen::ARM64::splat_vf(emitter::Register(emitter::XMM8),
+                                      emitter::Register(emitter::XMM9), elements[i]));
+    EXPECT_EQ(tester.dump_to_hex_string(), expected[i]) << "element " << i;
+  }
+}
+
+#ifdef __aarch64__
+// Broadcasting the wrong lane is silently plausible (you still get floats), so execute the splat
+// and check every output lane really holds the requested input lane.
+TEST(CodeTester, execute_splat_vf_arm64) {
+  struct Vec {
+    u32 v[4];
+  };
+  const Vec src_val = {{0xAAAA'0000, 0xBBBB'1111, 0xCCCC'2222, 0xDDDD'3333}};
+  const emitter::Register::VF_ELEMENT elements[4] = {
+      emitter::Register::VF_ELEMENT::X, emitter::Register::VF_ELEMENT::Y,
+      emitter::Register::VF_ELEMENT::Z, emitter::Register::VF_ELEMENT::W};
+
+  for (int lane = 0; lane < 4; lane++) {
+    CodeTester tester(emitter::InstructionSet::ARM64);
+    tester.init_code_buffer(64);
+    emitter::Register q_src(emitter::XMM9), q_dst(emitter::XMM8);
+    tester.emit(IGen::ARM64::load128_simd128_gpr64(q_src, emitter::Register(emitter::X0)));
+    tester.emit(IGen::ARM64::splat_vf(q_dst, q_src, elements[lane]));
+    tester.emit(IGen::ARM64::store128_gpr64_simd128(emitter::Register(emitter::X1), q_dst));
+    tester.emit_return();
+
+    Vec in = src_val, out = {};
+    tester.execute((u64)&in, (u64)&out, 0, 0);
+    for (int i = 0; i < 4; i++) {
+      EXPECT_EQ(out.v[i], src_val.v[lane]) << "splat lane " << lane << " output " << i;
+    }
+  }
+}
+#endif
+
 TEST(CodeTester, add_vf_arm64) {
   CodeTester tester(emitter::InstructionSet::ARM64);
   tester.init_code_buffer(32);

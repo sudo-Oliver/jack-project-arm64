@@ -1420,8 +1420,8 @@ InstructionARM64 loadvf_rip_plus_s32(Register dest, s64 offset) {
 // TODO - rip relative loads and stores.
 
 InstructionARM64 blend_vf(Register dst, Register src1, Register src2, u8 mask) {
-  // x86 BLENDPS equivalent on ARM64 requires multi-instruction mask setup (BSL path).
-  // Keep codegen moving with exact fast-paths and a conservative fallback.
+  // A partial-mask BLENDPS has no single ARM64 equivalent; IR_BlendVF::do_codegen_arm64 emits a
+  // mov plus per-lane INS instead. Only the two whole-register masks are a single instruction.
   ASSERT(dst.is_128bit_simd(instr_set));
   ASSERT(src1.is_128bit_simd(instr_set));
   ASSERT(src2.is_128bit_simd(instr_set));
@@ -1431,7 +1431,19 @@ InstructionARM64 blend_vf(Register dst, Register src1, Register src2, u8 mask) {
   if ((mask & 0xF) == 0xF) {
     return mov_vf_vf(dst, src2);
   }
-  return mov_vf_vf(dst, src1);
+  ASSERT_MSG(false, "blend_vf: partial mask must be expanded in do_codegen_arm64");
+  return InstructionARM64(0b0);
+}
+
+InstructionARM64 ins_element_s(Register dst, Register src, u8 lane) {
+  // INS Vd.S[lane], Vn.S[lane] — copy one 32-bit lane between vector registers.
+  // 0110 1110 000 imm5 0 imm4 1 Rn Rd, with imm5 = lane<<3 | 0b00100 and imm4 = lane<<2 for S.
+  ASSERT(dst.is_128bit_simd(instr_set));
+  ASSERT(src.is_128bit_simd(instr_set));
+  ASSERT(lane < 4);
+  u32 imm5 = (u32)(lane << 3) | 0b00100u;
+  u32 imm4 = (u32)lane << 2;
+  return InstructionARM64(0x6E000400u | (imm5 << 16) | (imm4 << 11), Rn(qreg(src)), Rd(qreg(dst)));
 }
 
 InstructionARM64 shuffle_vf(Register dst, Register src, u8 dx, u8 dy, u8 dz, u8 dw) {
@@ -1490,12 +1502,15 @@ InstructionARM64 rev64_4s(Register dst, Register src) {
 InstructionARM64 splat_vf(Register dst, Register src, Register::VF_ELEMENT element) {
   // DUP Vd.4S, Vn.S[index] — broadcast single element to all lanes
   // Encoding: 0_1_0_01110_000_imm5_000001_Rn_Rd  (DUP element)
-  // imm5 encodes size+index: for S (32-bit), imm5 = (index << 2) | 0b100
+  // imm5 encodes size and index together: the lowest set bit selects the element size and the
+  // bits above it hold the index, so 32-bit S lanes need imm5 = (index << 3) | 0b00100.
+  // (index << 2) would alias Y onto lane 0 and both Z and W onto lane 1, and for index 1 it
+  // would even select D-sized elements.
   // https://www.scs.stanford.edu/~zyedidia/arm64/dup_advsimd_elt.html
   ASSERT(dst.is_128bit_simd(instr_set));
   ASSERT(src.is_128bit_simd(instr_set));
   u32 idx = static_cast<u32>(element);  // 0=X, 1=Y, 2=Z, 3=W
-  u32 imm5 = (idx << 2) | 0b100u;       // size=10 (32-bit S), index in upper bits
+  u32 imm5 = (idx << 3) | 0b00100u;     // size = 32-bit S, index = imm5<4:3>
   return InstructionARM64(0x4E000400u, Field{(imm5 & 31u) << 16}, Rn(qreg(src)), Rd(qreg(dst)));
 }
 

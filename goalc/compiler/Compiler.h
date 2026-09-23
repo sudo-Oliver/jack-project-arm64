@@ -628,6 +628,8 @@ class Compiler {
   Val* compile_asm_data_file(const goos::Object& form, const goos::Object& rest, Env* env);
   Val* compile_asm_text_file(const goos::Object& form, const goos::Object& rest, Env* env);
   Val* compile_repl_help(const goos::Object& form, const goos::Object& rest, Env* env);
+  Val* compile_dump_function_map(const goos::Object& form, const goos::Object& rest, Env* env);
+  Val* compile_dump_function_ir(const goos::Object& form, const goos::Object& rest, Env* env);
   Val* compile_repl_keybinds(const goos::Object& form, const goos::Object& rest, Env* env);
   Val* compile_listen_to_target(const goos::Object& form, const goos::Object& rest, Env* env);
   Val* compile_reset_target(const goos::Object& form, const goos::Object& rest, Env* env);

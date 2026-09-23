@@ -1089,6 +1089,10 @@ Instruction vpackuswb(const ObjectGenerator& gen, Register dst, Register src0, R
   IGEN_DISPATCH(vpackuswb, dst, src0, src1);
 }
 
+Instruction ins_element_s(const ObjectGenerator& gen, Register dst, Register src, u8 lane) {
+  IGEN_DISPATCH(ins_element_s, dst, src, lane);
+}
+
 Instruction uzp1_8h(const ObjectGenerator& gen, Register dst, Register src0, Register src1) {
   IGEN_DISPATCH(uzp1_8h, dst, src0, src1);
 }

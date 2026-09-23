@@ -166,6 +166,21 @@ void deci2_runner(SystemThreadInterface& iface) {
  */
 void ee_runner(SystemThreadInterface& iface) {
   prof().root_event();
+#if defined(__APPLE__) && defined(__aarch64__)
+  // A GOAL stack overflow faults with no room left to build a signal frame, so without an
+  // alternate stack the handler cannot run and the process dies unreported. Give the EE thread
+  // its own handler stack; the handlers below are installed with SA_ONSTACK.
+  {
+    static thread_local char ee_sigstack[SIGSTKSZ * 4];
+    stack_t ss{};
+    ss.ss_sp = ee_sigstack;
+    ss.ss_size = sizeof(ee_sigstack);
+    ss.ss_flags = 0;
+    if (sigaltstack(&ss, nullptr) != 0) {
+      lg::warn("[EE] sigaltstack failed: {}", strerror(errno));
+    }
+  }
+#endif
   // Allocate Main RAM (EE memory).
   //
   // On Darwin ARM64 (macOS 26+ / Darwin 25): W^X is enforced via APRR hardware.
@@ -1098,16 +1113,18 @@ RuntimeExitStatus exec_runtime(GameLaunchOptions game_options, int argc, const c
 #if defined(__APPLE__) && defined(__aarch64__)
   {
     struct sigaction sa_ill{};
-    sa_ill.sa_flags = SA_SIGINFO;
+    sa_ill.sa_flags = SA_SIGINFO | SA_ONSTACK;
     sa_ill.sa_sigaction = [](int, siginfo_t*, void* ctx) {
       if (!ctx) { raise(SIGILL); return; }
       ucontext_t* uctx = (ucontext_t*)ctx;
       auto& ss = uctx->uc_mcontext->__ss;
       {
+        // Report PC before dereferencing it: if PC itself is unmapped, reading the
+        // instruction faults inside this handler and the crash goes unreported.
         char buf[128];
         int n = __builtin_snprintf(buf, sizeof(buf),
-          "[EE-CRASH] SIGILL at PC=0x%016llx instr=0x%08x\n",
-          (unsigned long long)ss.__pc, *(const uint32_t*)ss.__pc);
+          "[EE-CRASH] SIGILL at PC=0x%016llx LR=0x%016llx\n",
+          (unsigned long long)ss.__pc, (unsigned long long)ss.__lr);
         write(2, buf, n);
       }
       dump_arm64_crash_context(ss.__pc, ss.__lr, ss.__sp, ss.__x, ss.__fp,
@@ -1124,7 +1141,7 @@ RuntimeExitStatus exec_runtime(GameLaunchOptions game_options, int argc, const c
   {
     struct sigaction sa{};
     sa.sa_sigaction = sigbus_handler;
-    sa.sa_flags = SA_SIGINFO;
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
     sigaction(SIGBUS, &sa, nullptr);
 #if defined(__APPLE__) && defined(__aarch64__)
     // Writes to MAP_JIT pages from non-JIT code (e.g. C kernel calling kstrncat into

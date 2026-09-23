@@ -146,6 +146,8 @@ const std::unordered_map<std::string, GoalCompilerForm> g_goal_forms = {
 
     // COMPILER CONTROL
     {"repl-help", {.form_function = &Compiler::compile_repl_help}},
+    {"dump-function-map", {.form_function = &Compiler::compile_dump_function_map}},
+    {"dump-function-ir", {.form_function = &Compiler::compile_dump_function_ir}},
     {"repl-keybinds", {.form_function = &Compiler::compile_repl_keybinds}},
     {":clear", {.form_function = &Compiler::compile_repl_clear_screen}},
     {"gs", {.form_function = &Compiler::compile_gs}},

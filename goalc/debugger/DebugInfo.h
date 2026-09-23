@@ -72,6 +72,10 @@ class DebugInfo {
 
   FunctionDebugInfo& function_by_name(const std::string& name) { return m_functions.at(name); }
 
+  const std::unordered_map<std::string, FunctionDebugInfo>& all_functions() const {
+    return m_functions;
+  }
+
   void clear() { m_functions.clear(); }
 
   std::string disassemble_all_functions(bool* had_failure,

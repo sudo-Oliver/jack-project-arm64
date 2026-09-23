@@ -486,10 +486,14 @@
   ;; I can't see how this makes a difference, as all non-main threads seem
   ;; temporary, but if this turns out to be false, we will need to change this.
   `(rlet ((temp)
-         (off :reg r15 :type uint :reset-here #t))
+         (off :reg r15 :type uint :reset-here #t)
+         (lr :reg lr :type uint))
     (.mov temp return-from-thread) ;; could probably just call this...
     (.add temp off)
-    (.push temp)
+    ;; x86 RET jumps to the address just pushed; ARM64 RET reads LR, so set LR instead.
+    (#if ARM64_PORT
+      (.mov lr temp)
+      (.push temp))
     (.ret)))
 
 (defun reset-and-call ((this thread) (func function))
@@ -2020,7 +2024,17 @@
        (set! (-> this status) 'dead)
        ;; and return (with no deactivate)
        ;; TODO: replace with abandon.
-       (let ((temp (the uint return-from-thread))) (rlet ((off :reg r15 :type uint)) (+! temp off) (.push temp) (.ret))))
+       ;; x86 RET jumps to the address just pushed; ARM64 RET reads LR, so set LR instead.
+       ;; Pushing on ARM64 would leak 16 bytes per call and return to our caller, which
+       ;; calls us again - the stack walks down until it runs off the process stack.
+       (let ((temp (the uint return-from-thread)))
+         (rlet ((off :reg r15 :type uint)
+                (lr :reg lr :type uint))
+           (+! temp off)
+           (#if ARM64_PORT
+             (.mov lr temp)
+             (.push temp))
+           (.ret))))
       ;; second case - we deactivated while initializing.
       ((eq? (-> this status) 'initialize)
        (set! (-> this status) 'dead)

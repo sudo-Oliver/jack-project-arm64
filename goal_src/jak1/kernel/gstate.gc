@@ -450,10 +450,16 @@ It type checks the arguments for the entry function.
          ;; I can't see how this makes a difference, as all non-main threads seem
          ;; temporary, but if this turns out to be false, we will need to change this.
          (rlet ((temp)
-                (off :reg r15 :type uint :reset-here #t))
+                (off :reg r15 :type uint :reset-here #t)
+                (lr :reg lr :type uint))
            (.mov temp return-from-thread) ;; could probably just call this...
            (.add temp off)
-           (.push temp)
+           ;; x86 RET jumps to the address just pushed; ARM64 RET reads LR, so set LR instead.
+           ;; Pushing on ARM64 would leak 16 bytes and return to our caller, which re-enters
+           ;; enter-state - the stack walks down until it hits the low-memory guard.
+           (#if ARM64_PORT
+             (.mov lr temp)
+             (.push temp))
            (.ret)
            #f ;; can't get here
            ))))))
