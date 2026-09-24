@@ -25,6 +25,8 @@ void metal_shutdown_gpu_resource_backend();
 #ifdef __OBJC__
 #import <Metal/Metal.h>
 
-// Returns nil for a handle that was never created or has been destroyed.
+// Both return nil for a handle that was never created or has been destroyed. Texture and buffer
+// handles live in separate spaces, so the same number can mean both.
 id<MTLTexture> metal_texture_from_handle(u64 handle);
+id<MTLBuffer> metal_buffer_from_handle(u64 handle);
 #endif

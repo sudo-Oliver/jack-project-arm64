@@ -20,6 +20,8 @@
  * here is safe to call from the loader thread.
  */
 
+#include <cstddef>
+
 #include "common/common_types.h"
 
 namespace gpu {
@@ -37,10 +39,20 @@ struct TextureCreateInfo {
   bool clamp_and_linear = false;
 };
 
+// Which binding point a buffer is used through. OpenGL needs this at creation time; Metal does
+// not care, but keeping it explicit means an index buffer is never bound as GL_ARRAY_BUFFER (and
+// so never silently rewrites the element-buffer binding of whatever VAO happens to be bound).
+enum class BufferKind { Vertex, Index };
+
 // Function table for one backend. Every entry must be set.
 struct Backend {
   u64 (*create_texture_rgba8)(const TextureCreateInfo& info) = nullptr;
   void (*destroy_texture)(u64 handle) = nullptr;
+  // `data` may be null to allocate without initialising; the loader fills those in chunks.
+  u64 (*create_buffer)(BufferKind kind, size_t size, const void* data) = nullptr;
+  void (*update_buffer)(BufferKind kind, u64 handle, size_t offset, size_t size,
+                        const void* data) = nullptr;
+  void (*destroy_buffer)(u64 handle) = nullptr;
 };
 
 // Install the backend. Call once, before any resource is created.
@@ -48,5 +60,9 @@ void set_backend(const Backend& backend);
 
 u64 create_texture_rgba8(const TextureCreateInfo& info);
 void destroy_texture(u64 handle);
+
+u64 create_buffer(BufferKind kind, size_t size, const void* data);
+void update_buffer(BufferKind kind, u64 handle, size_t offset, size_t size, const void* data);
+void destroy_buffer(u64 handle);
 
 }  // namespace gpu

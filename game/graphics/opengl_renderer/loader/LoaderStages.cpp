@@ -79,11 +79,8 @@ class TfragLoadStage : public LoaderStage {
         auto& in_trees = data.lev_data->level->tfrag_trees[geo];
         for (auto& in_tree : in_trees) {
           GLuint& tree_out = data.lev_data->tfrag_vertex_data[geo].emplace_back();
-          glGenBuffers(1, &tree_out);
-          glBindBuffer(GL_ARRAY_BUFFER, tree_out);
-          glBufferData(GL_ARRAY_BUFFER,
-                       in_tree.unpacked.vertices.size() * sizeof(tfrag3::PreloadedVertex), nullptr,
-                       GL_STATIC_DRAW);
+          tree_out = gpu::create_buffer(gpu::BufferKind::Vertex, in_tree.unpacked.vertices.size() * sizeof(tfrag3::PreloadedVertex),
+              nullptr);
         }
       }
       m_opengl_created = true;
@@ -120,11 +117,11 @@ class TfragLoadStage : public LoaderStage {
           complete_tree = true;
         }
 
-        glBindBuffer(GL_ARRAY_BUFFER, data.lev_data->tfrag_vertex_data[m_next_geo][m_next_tree]);
         u32 upload_size =
             (end_vert_for_chunk - start_vert_for_chunk) * sizeof(tfrag3::PreloadedVertex);
-        glBufferSubData(GL_ARRAY_BUFFER, start_vert_for_chunk * sizeof(tfrag3::PreloadedVertex),
-                        upload_size, tree.unpacked.vertices.data() + start_vert_for_chunk);
+        gpu::update_buffer(gpu::BufferKind::Vertex, data.lev_data->tfrag_vertex_data[m_next_geo][m_next_tree],
+                           start_vert_for_chunk * sizeof(tfrag3::PreloadedVertex), upload_size,
+                           tree.unpacked.vertices.data() + start_vert_for_chunk);
         uploaded_bytes += upload_size;
       }
 
@@ -186,11 +183,8 @@ class ShrubLoadStage : public LoaderStage {
     if (!m_opengl_created) {
       for (auto& in_tree : data.lev_data->level->shrub_trees) {
         GLuint& tree_out = data.lev_data->shrub_vertex_data.emplace_back();
-        glGenBuffers(1, &tree_out);
-        glBindBuffer(GL_ARRAY_BUFFER, tree_out);
-        glBufferData(GL_ARRAY_BUFFER,
-                     in_tree.unpacked.vertices.size() * sizeof(tfrag3::ShrubGpuVertex), nullptr,
-                     GL_STATIC_DRAW);
+        tree_out = gpu::create_buffer(gpu::BufferKind::Vertex, in_tree.unpacked.vertices.size() * sizeof(tfrag3::ShrubGpuVertex),
+            nullptr);
       }
       m_opengl_created = true;
       return false;
@@ -222,11 +216,11 @@ class ShrubLoadStage : public LoaderStage {
         complete_tree = true;
       }
 
-      glBindBuffer(GL_ARRAY_BUFFER, data.lev_data->shrub_vertex_data[m_next_tree]);
       u32 upload_size =
           (end_vert_for_chunk - start_vert_for_chunk) * sizeof(tfrag3::ShrubGpuVertex);
-      glBufferSubData(GL_ARRAY_BUFFER, start_vert_for_chunk * sizeof(tfrag3::ShrubGpuVertex),
-                      upload_size, tree.unpacked.vertices.data() + start_vert_for_chunk);
+      gpu::update_buffer(gpu::BufferKind::Vertex, data.lev_data->shrub_vertex_data[m_next_tree],
+                         start_vert_for_chunk * sizeof(tfrag3::ShrubGpuVertex), upload_size,
+                         tree.unpacked.vertices.data() + start_vert_for_chunk);
       uploaded_bytes += upload_size;
 
       if (complete_tree) {
@@ -278,16 +272,11 @@ class TieLoadStage : public LoaderStage {
         auto& in_trees = data.lev_data->level->tie_trees[geo];
         for (auto& in_tree : in_trees) {
           LevelData::TieOpenGL& tree_out = data.lev_data->tie_data[geo].emplace_back();
-          glGenBuffers(1, &tree_out.vertex_buffer);
-          glBindBuffer(GL_ARRAY_BUFFER, tree_out.vertex_buffer);
-          glBufferData(GL_ARRAY_BUFFER,
-                       in_tree.unpacked.vertices.size() * sizeof(tfrag3::PreloadedVertex), nullptr,
-                       GL_STATIC_DRAW);
+          tree_out.vertex_buffer = gpu::create_buffer(gpu::BufferKind::Vertex, in_tree.unpacked.vertices.size() * sizeof(tfrag3::PreloadedVertex),
+              nullptr);
 
-          glGenBuffers(1, &tree_out.index_buffer);
-          glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, tree_out.index_buffer);
-          glBufferData(GL_ELEMENT_ARRAY_BUFFER, in_tree.unpacked.indices.size() * sizeof(u32),
-                       nullptr, GL_STATIC_DRAW);
+          tree_out.index_buffer = gpu::create_buffer(gpu::BufferKind::Index, in_tree.unpacked.indices.size() * sizeof(u32),
+              nullptr);
         }
       }
       m_opengl_created = true;
@@ -322,14 +311,13 @@ class TieLoadStage : public LoaderStage {
           complete_tree = true;
         }
 
-        glBindBuffer(GL_ARRAY_BUFFER,
-                     data.lev_data->tie_data[m_next_geo][m_next_tree].vertex_buffer);
         u32 upload_size =
             (end_vert_for_chunk - start_vert_for_chunk) * sizeof(tfrag3::PreloadedVertex);
         {
           auto bsd = scoped_prof(fmt::format("buffer-{}k", upload_size / 1024).c_str());
-          glBufferSubData(GL_ARRAY_BUFFER, start_vert_for_chunk * sizeof(tfrag3::PreloadedVertex),
-                          upload_size, tree.unpacked.vertices.data() + start_vert_for_chunk);
+        gpu::update_buffer(gpu::BufferKind::Vertex, data.lev_data->tie_data[m_next_geo][m_next_tree].vertex_buffer,
+                           start_vert_for_chunk * sizeof(tfrag3::PreloadedVertex), upload_size,
+                           tree.unpacked.vertices.data() + start_vert_for_chunk);
         }
 
         uploaded_bytes += upload_size;
@@ -378,8 +366,6 @@ class TieLoadStage : public LoaderStage {
           }
           if (wind_idx_buffer_len > 0) {
             out_tree.has_wind = true;
-            glGenBuffers(1, &out_tree.wind_indices);
-            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, out_tree.wind_indices);
             std::vector<u32> temp;
             temp.resize(wind_idx_buffer_len);
             u32 off = 0;
@@ -389,8 +375,8 @@ class TieLoadStage : public LoaderStage {
               off += draw.vertex_index_stream.size();
             }
 
-            glBufferData(GL_ELEMENT_ARRAY_BUFFER, wind_idx_buffer_len * sizeof(u32), temp.data(),
-                         GL_STATIC_DRAW);
+            out_tree.wind_indices = gpu::create_buffer(gpu::BufferKind::Index, wind_idx_buffer_len * sizeof(u32),
+                temp.data());
             abort = true;
           }
         }
@@ -435,11 +421,10 @@ class TieLoadStage : public LoaderStage {
           complete_tree = true;
         }
 
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,
-                     data.lev_data->tie_data[m_next_geo][m_next_tree].index_buffer);
         u32 upload_size = (end_ind_for_chunk - start_ind_for_chunk) * sizeof(u32);
-        glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, start_ind_for_chunk * sizeof(u32), upload_size,
-                        tree.unpacked.indices.data() + start_ind_for_chunk);
+        gpu::update_buffer(gpu::BufferKind::Index, data.lev_data->tie_data[m_next_geo][m_next_tree].index_buffer,
+                           start_ind_for_chunk * sizeof(u32), upload_size,
+                           tree.unpacked.indices.data() + start_ind_for_chunk);
         uploaded_bytes += upload_size;
 
         if (complete_tree) {
@@ -503,22 +488,17 @@ class CollideLoaderStage : public LoaderStage {
       return true;
     }
     if (!m_opengl_created) {
-      glGenBuffers(1, &data.lev_data->collide_vertices);
-      glBindBuffer(GL_ARRAY_BUFFER, data.lev_data->collide_vertices);
-      glBufferData(
-          GL_ARRAY_BUFFER,
-          data.lev_data->level->collision.vertices.size() * sizeof(tfrag3::CollisionMesh::Vertex),
-          nullptr, GL_STATIC_DRAW);
+      data.lev_data->collide_vertices = gpu::create_buffer(gpu::BufferKind::Vertex, data.lev_data->level->collision.vertices.size() * sizeof(tfrag3::CollisionMesh::Vertex),
+          nullptr);
       m_opengl_created = true;
       return false;
     }
 
     u32 start = m_vtx;
     u32 end = std::min((u32)data.lev_data->level->collision.vertices.size(), start + 32768);
-    glBindBuffer(GL_ARRAY_BUFFER, data.lev_data->collide_vertices);
-    glBufferSubData(GL_ARRAY_BUFFER, start * sizeof(tfrag3::CollisionMesh::Vertex),
-                    (end - start) * sizeof(tfrag3::CollisionMesh::Vertex),
-                    data.lev_data->level->collision.vertices.data() + start);
+    gpu::update_buffer(gpu::BufferKind::Vertex, data.lev_data->collide_vertices,
+                       start * sizeof(tfrag3::CollisionMesh::Vertex), (end - start) * sizeof(tfrag3::CollisionMesh::Vertex),
+                       data.lev_data->level->collision.vertices.data() + start);
     m_vtx = end;
 
     if (m_vtx == data.lev_data->level->collision.vertices.size()) {
@@ -573,26 +553,20 @@ class HfragLoaderStage : public LoaderStage {
     }
 
     if (!m_opengl) {
-      glGenBuffers(1, &data.lev_data->hfrag_indices);
-      glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, data.lev_data->hfrag_indices);
-      glBufferData(GL_ELEMENT_ARRAY_BUFFER,
-                   data.lev_data->level->hfrag.indices.size() * sizeof(u32), nullptr,
-                   GL_STATIC_DRAW);
+      data.lev_data->hfrag_indices = gpu::create_buffer(gpu::BufferKind::Index, data.lev_data->level->hfrag.indices.size() * sizeof(u32),
+          nullptr);
 
-      glGenBuffers(1, &data.lev_data->hfrag_vertices);
-      glBindBuffer(GL_ARRAY_BUFFER, data.lev_data->hfrag_vertices);
-      glBufferData(GL_ARRAY_BUFFER,
-                   data.lev_data->level->hfrag.vertices.size() * sizeof(tfrag3::HfragmentVertex),
-                   nullptr, GL_STATIC_DRAW);
+      data.lev_data->hfrag_vertices = gpu::create_buffer(gpu::BufferKind::Vertex, data.lev_data->level->hfrag.vertices.size() * sizeof(tfrag3::HfragmentVertex),
+          nullptr);
       m_opengl = true;
     }
 
     if (!m_vtx_uploaded) {
       u32 start = m_idx;
       m_idx = std::min(start + 32768, (u32)data.lev_data->level->hfrag.indices.size());
-      glBindBuffer(GL_ARRAY_BUFFER, data.lev_data->hfrag_indices);
-      glBufferSubData(GL_ARRAY_BUFFER, start * sizeof(u32), (m_idx - start) * sizeof(u32),
-                      data.lev_data->level->hfrag.indices.data() + start);
+      gpu::update_buffer(gpu::BufferKind::Vertex, data.lev_data->hfrag_indices,
+                         start * sizeof(u32), (m_idx - start) * sizeof(u32),
+                         data.lev_data->level->hfrag.indices.data() + start);
       if (m_idx != data.lev_data->level->hfrag.indices.size()) {
         return false;
       } else {
@@ -603,10 +577,9 @@ class HfragLoaderStage : public LoaderStage {
 
     u32 start = m_idx;
     m_idx = std::min(start + 32768, (u32)data.lev_data->level->hfrag.vertices.size());
-    glBindBuffer(GL_ARRAY_BUFFER, data.lev_data->hfrag_vertices);
-    glBufferSubData(GL_ARRAY_BUFFER, start * sizeof(tfrag3::HfragmentVertex),
-                    (m_idx - start) * sizeof(tfrag3::HfragmentVertex),
-                    data.lev_data->level->hfrag.vertices.data() + start);
+    gpu::update_buffer(gpu::BufferKind::Vertex, data.lev_data->hfrag_vertices,
+                       start * sizeof(tfrag3::HfragmentVertex), (m_idx - start) * sizeof(tfrag3::HfragmentVertex),
+                       data.lev_data->level->hfrag.vertices.data() + start);
 
     if (m_idx != data.lev_data->level->hfrag.vertices.size()) {
       return false;
@@ -638,26 +611,20 @@ bool MercLoaderStage::run(Timer& /*timer*/, LoaderInput& data) {
   }
 
   if (!m_opengl) {
-    glGenBuffers(1, &data.lev_data->merc_indices);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, data.lev_data->merc_indices);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER,
-                 data.lev_data->level->merc_data.indices.size() * sizeof(u32), nullptr,
-                 GL_STATIC_DRAW);
+    data.lev_data->merc_indices = gpu::create_buffer(gpu::BufferKind::Index, data.lev_data->level->merc_data.indices.size() * sizeof(u32),
+        nullptr);
 
-    glGenBuffers(1, &data.lev_data->merc_vertices);
-    glBindBuffer(GL_ARRAY_BUFFER, data.lev_data->merc_vertices);
-    glBufferData(GL_ARRAY_BUFFER,
-                 data.lev_data->level->merc_data.vertices.size() * sizeof(tfrag3::MercVertex),
-                 nullptr, GL_STATIC_DRAW);
+    data.lev_data->merc_vertices = gpu::create_buffer(gpu::BufferKind::Vertex, data.lev_data->level->merc_data.vertices.size() * sizeof(tfrag3::MercVertex),
+        nullptr);
     m_opengl = true;
   }
 
   if (!m_vtx_uploaded) {
     u32 start = m_idx;
     m_idx = std::min(start + 32768, (u32)data.lev_data->level->merc_data.indices.size());
-    glBindBuffer(GL_ARRAY_BUFFER, data.lev_data->merc_indices);
-    glBufferSubData(GL_ARRAY_BUFFER, start * sizeof(u32), (m_idx - start) * sizeof(u32),
-                    data.lev_data->level->merc_data.indices.data() + start);
+    gpu::update_buffer(gpu::BufferKind::Vertex, data.lev_data->merc_indices,
+                       start * sizeof(u32), (m_idx - start) * sizeof(u32),
+                       data.lev_data->level->merc_data.indices.data() + start);
     if (m_idx != data.lev_data->level->merc_data.indices.size()) {
       return false;
     } else {
@@ -668,10 +635,9 @@ bool MercLoaderStage::run(Timer& /*timer*/, LoaderInput& data) {
 
   u32 start = m_idx;
   m_idx = std::min(start + 32768, (u32)data.lev_data->level->merc_data.vertices.size());
-  glBindBuffer(GL_ARRAY_BUFFER, data.lev_data->merc_vertices);
-  glBufferSubData(GL_ARRAY_BUFFER, start * sizeof(tfrag3::MercVertex),
-                  (m_idx - start) * sizeof(tfrag3::MercVertex),
-                  data.lev_data->level->merc_data.vertices.data() + start);
+  gpu::update_buffer(gpu::BufferKind::Vertex, data.lev_data->merc_vertices,
+                     start * sizeof(tfrag3::MercVertex), (m_idx - start) * sizeof(tfrag3::MercVertex),
+                     data.lev_data->level->merc_data.vertices.data() + start);
 
   if (m_idx != data.lev_data->level->merc_data.vertices.size()) {
     return false;
