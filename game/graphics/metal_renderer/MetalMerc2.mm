@@ -58,7 +58,10 @@ struct BufferPool {
 
 struct MetalMerc2::Impl {
   id<MTLDevice> device = nil;
+  // One cache per shader: a pipeline state carries the shader's functions and vertex layout, so
+  // merc and emerc cannot share one.
   MetalDrawStateCache states;
+  MetalDrawStateCache envmap_states;
   bool ready = false;
 
   // The skinning matrices, one buffer per flush.
@@ -121,6 +124,16 @@ bool MetalMerc2::init(MetalRenderState* render_state) {
 
   m_impl->states.init(render_state->device, vert, frag, vd, render_state->color_format,
                       render_state->depth_format);
+
+  // emerc: the environment-mapped pass, same vertex layout, different shader.
+  id<MTLFunction> envmap_vert = [render_state->library newFunctionWithName:@"emerc_vert"];
+  id<MTLFunction> envmap_frag = [render_state->library newFunctionWithName:@"emerc_frag"];
+  if (!envmap_vert || !envmap_frag) {
+    lg::error("[Metal] emerc shader entry points missing from the library");
+    return false;
+  }
+  m_impl->envmap_states.init(render_state->device, envmap_vert, envmap_frag, vd,
+                             render_state->color_format, render_state->depth_format);
 
   m_impl->bones.device = render_state->device;
   m_impl->bones.length = MAX_SHADER_BONE_VECTORS * sizeof(math::Vector4f);
@@ -197,11 +210,10 @@ void MetalMerc2::backend_do_draws(const Draw* draws,
                                   bool envmap,
                                   bool set_fade,
                                   MercDebugStats* /*stats*/) {
-  // The envmap pass needs the emerc shader, which is not ported yet. Drawing it with merc2 would
-  // put the wrong texture coordinates on the model, so skip it rather than draw it wrong.
-  if (envmap || !m_current_render_state || !m_current_render_state->encoder) {
+  if (!m_current_render_state || !m_current_render_state->encoder) {
     return;
   }
+  MetalDrawStateCache& states = envmap ? m_impl->envmap_states : m_impl->states;
 
   id<MTLRenderCommandEncoder> encoder = m_current_render_state->encoder;
   id<MTLBuffer> vertices = metal_buffer_from_handle(level->merc_vertices);
@@ -246,6 +258,11 @@ void MetalMerc2::backend_do_draws(const Draw* draws,
     memcpy(&u.light_col2, &light.color2.x(), sizeof(u.light_col2));
     memcpy(&u.light_ambient, &light.ambient.x(), sizeof(u.light_ambient));
 
+    if (set_fade) {
+      // The envmap pass is faded by a colour the game sends per draw.
+      u.fade = {draw.fade[0] / 255.f, draw.fade[1] / 255.f, draw.fade[2] / 255.f,
+                draw.fade[3] / 255.f};
+    }
     u.ignore_alpha = (draw.flags & DrawFlags::IGNORE_ALPHA) ? 1 : 0;
     u.decal_enable = draw.mode.get_decal() ? 1 : 0;
     u.gfx_hack_no_tex = (draw.flags & DrawFlags::NO_TEXTURE) ? 1 : 0;
@@ -261,8 +278,8 @@ void MetalMerc2::backend_do_draws(const Draw* draws,
                       offset:draw.first_bone * sizeof(math::Vector4f)
                      atIndex:MetalBufferIndexBones];
     [encoder setFragmentTexture:texture atIndex:0];
-    [encoder setFragmentSamplerState:m_impl->states.sampler(draw.mode) atIndex:0];
-    [encoder setDepthStencilState:m_impl->states.depth_state(draw.mode, false)];
+    [encoder setFragmentSamplerState:states.sampler(draw.mode) atIndex:0];
+    [encoder setDepthStencilState:states.depth_state(draw.mode, false)];
 
     const MTLPrimitiveType prim =
         draw.no_strip ? MTLPrimitiveTypeTriangle : MTLPrimitiveTypeTriangleStrip;
@@ -290,13 +307,13 @@ void MetalMerc2::backend_do_draws(const Draw* draws,
       rgb_mode.set_ab(true);
 
       u.light_dir1_fade_en.w = 1.f;
-      encode(m_impl->states.pipeline(rgb_mode, MTLColorWriteMaskRed | MTLColorWriteMaskGreen |
-                                                   MTLColorWriteMaskBlue));
+      encode(states.pipeline(rgb_mode, MTLColorWriteMaskRed | MTLColorWriteMaskGreen |
+                                           MTLColorWriteMaskBlue));
       u.light_dir1_fade_en.w = -1.f;
-      encode(m_impl->states.pipeline(draw.mode, MTLColorWriteMaskAlpha));
+      encode(states.pipeline(draw.mode, MTLColorWriteMaskAlpha));
       m_last_frame_tris += draw.num_triangles * 2;
     } else {
-      encode(m_impl->states.pipeline(draw.mode));
+      encode(states.pipeline(draw.mode));
       m_last_frame_tris += draw.num_triangles;
     }
   }

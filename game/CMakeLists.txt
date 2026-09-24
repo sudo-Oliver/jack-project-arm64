@@ -365,7 +365,6 @@ if(APPLE)
                             graphics/metal_renderer/MetalShrub.mm
                             graphics/metal_renderer/MetalTie3.mm
                             graphics/metal_renderer/MetalDirect.mm
-                            graphics/metal_renderer/MetalDirect2.mm
                             graphics/metal_renderer/MetalMerc2.mm
                             graphics/metal_renderer/MetalSky.mm
                             graphics/metal_renderer/MetalRenderer.mm

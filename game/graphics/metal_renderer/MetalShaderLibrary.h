@@ -43,11 +43,10 @@ struct ShaderDef {
 // Keep in sync with the files in shaders/. Ported one at a time from the OpenGL renderer.
 inline const std::vector<ShaderDef>& all_shaders() {
   static const std::vector<ShaderDef> shaders = {
-      {"solid_color.metal", "solid_color_vert", "solid_color_frag"},
       {"tfrag3.metal", "tfrag3_vert", "tfrag3_frag"},
       {"shrub.metal", "shrub_vert", "shrub_frag"},
-      {"direct2.metal", "direct2_vert", "direct2_frag"},
       {"merc2.metal", "merc2_vert", "merc2_frag"},
+      {"emerc.metal", "emerc_vert", "emerc_frag"},
       {"sky_blend.metal", "sky_blend_vert", "sky_blend_frag"},
       {"direct_basic_textured.metal", "direct_basic_textured_vert",
        "direct_basic_textured_frag"},
