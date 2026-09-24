@@ -30,6 +30,7 @@ set(RUNTIME_SOURCE
         graphics/display.cpp
         graphics/gfx_test.cpp
         graphics/gfx.cpp
+        graphics/gpu_resources.cpp
         graphics/jak2_texture_remap.cpp
         graphics/jak3_texture_remap.cpp
         graphics/jakx_texture_remap.cpp
@@ -354,6 +355,7 @@ add_subdirectory(sound)
 # It sits alongside the OpenGL backend; the renderer is chosen at runtime (see Gfx::GetRenderer).
 if(APPLE)
     list(APPEND RUNTIME_SOURCE graphics/pipelines/metal.mm
+                              graphics/metal_renderer/MetalGpuResources.mm
                               graphics/metal_renderer/MetalShaderLibrary.cpp)
 
 endif()
@@ -364,7 +366,8 @@ add_library(runtime STATIC ${RUNTIME_SOURCE} "../third-party/glad/src/glad.c")
 target_link_libraries(runtime common fmt SDL3::SDL3 imgui discord-rpc sound stb_image libco libcurl)
 if(APPLE)
     target_link_libraries(runtime "-framework Metal" "-framework QuartzCore" "-framework Foundation")
-    set_source_files_properties(graphics/pipelines/metal.mm PROPERTIES
+    set_source_files_properties(graphics/pipelines/metal.mm
+                                graphics/metal_renderer/MetalGpuResources.mm PROPERTIES
         COMPILE_FLAGS "-fobjc-arc")
     target_include_directories(runtime PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/graphics/metal_renderer/shaders)
 endif()

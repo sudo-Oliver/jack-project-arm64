@@ -7,7 +7,7 @@
 #include "common/util/Assert.h"
 #include "common/util/Timer.h"
 
-#include "game/graphics/pipelines/opengl.h"
+#include "game/graphics/gpu_resources.h"
 #include "game/graphics/texture/jak1_tpage_dir.h"
 #include "game/graphics/texture/jak2_tpage_dir.h"
 #include "game/graphics/texture/jak3_tpage_dir.h"
@@ -33,24 +33,12 @@ std::string GoalTexturePage::print() const {
 }
 
 u64 upload_to_gpu(const u8* data, u16 w, u16 h) {
-  GLuint tex_id;
-  glGenTextures(1, &tex_id);
-  GLint old_tex;
-  glGetIntegerv(GL_ACTIVE_TEXTURE, &old_tex);
-  glActiveTexture(GL_TEXTURE0);
-  glBindTexture(GL_TEXTURE_2D, tex_id);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_INT_8_8_8_8_REV, data);
-  glGenerateMipmap(GL_TEXTURE_2D);
-  float aniso = 0.0f;
-  glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY, &aniso);
-  glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY, aniso);
-
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-  glActiveTexture(old_tex);
-  return tex_id;
+  gpu::TextureCreateInfo info;
+  info.w = w;
+  info.h = h;
+  info.data = data;
+  info.clamp_and_linear = true;
+  return gpu::create_texture_rgba8(info);
 }
 
 GpuTexture* TexturePool::give_texture(const TextureInput& in) {

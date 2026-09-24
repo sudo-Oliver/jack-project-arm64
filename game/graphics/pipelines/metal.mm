@@ -19,6 +19,7 @@
 #include "common/log/log.h"
 
 #include "game/graphics/gfx.h"
+#include "game/graphics/metal_renderer/MetalGpuResources.h"
 #include "game/graphics/metal_renderer/MetalShaderLibrary.h"
 #include "game/system/hid/sdl_util.h"
 
@@ -126,6 +127,10 @@ std::shared_ptr<GfxDisplay> metal_make_display(int width,
   ctx->layer.framebufferOnly = YES;
 
   lg::info("[Metal] device: {}", [[ctx->device name] UTF8String]);
+
+  // Route every backend-neutral GPU resource creation (TexturePool, the loader stages) to Metal
+  // instead of OpenGL. Must happen before anything uploads a texture.
+  metal_install_gpu_resource_backend((__bridge void*)ctx->device, (__bridge void*)ctx->queue);
 
   // Compile the MSL shaders. Runtime compilation keeps the shader edit loop fast and avoids
   // requiring the Metal Toolchain; see MetalShaderLibrary.h.
@@ -242,6 +247,7 @@ MetalDisplay::MetalDisplay(SDL_Window* window,
 }
 
 MetalDisplay::~MetalDisplay() {
+  metal_shutdown_gpu_resource_backend();
   if (m_ctx) {
     m_ctx->queue = nil;
     m_ctx->device = nil;
