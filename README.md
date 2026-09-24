@@ -5,10 +5,102 @@
 <p align="center">
   <a href="https://opengoal.dev/docs/intro" rel="nofollow"><img src="https://img.shields.io/badge/Documentation-Here-informational" alt="Documentation Badge" style="max-width:100%;"></a>
   <a title="Crowdin" target="_blank" href="https://crowdin.com/project/opengoal"><img src="https://badges.crowdin.net/opengoal/localized.svg"></a>
-  <a target="_blank" rel="noopener noreferrer" href="https://github.com/open-goal/jak-project/actions/workflows/build-matrix.yaml"><img src="https://github.com/open-goal/jak-project/actions/workflows/build-matrix.yaml/badge.svg" alt="Linux and Windows Build" style="max-width:100%;"></a>
   <a href="https://www.codacy.com/gh/open-goal/jak-project/dashboard?utm_source=github.com&amp;utm_medium=referral&amp;utm_content=open-goal/jak-project&amp;utm_campaign=Badge_Grade" rel="nofollow"><img src="https://app.codacy.com/project/badge/Grade/29316d04a1644aa390c33be07289f3f5" alt="Codacy Badge" style="max-width:100%;"></a>
   <a href="https://discord.gg/VZbXMHXzWv"><img src="https://img.shields.io/discord/756287461377703987" alt="Discord"></a>
 </p>
+
+# OpenGOAL on Apple Silicon, natively and on Metal
+
+This is a fork of [open-goal/jak-project](https://github.com/open-goal/jak-project) with two
+goals:
+
+1. **Native ARM64.** The GOAL compiler emits AArch64 directly and the runtime executes it. No
+   Rosetta, no emulation.
+2. **Metal instead of OpenGL.** macOS deprecated OpenGL years ago and caps it at 4.1. The target
+   is a real Metal renderer, not a translation layer: no ANGLE, no MoltenVK, no GL-over-Metal
+   shim.
+
+Everything else is upstream OpenGOAL, and the upstream README follows below.
+
+## Status
+
+| Part | State |
+|---|---|
+| **Jak 1 on ARM64** | **Playable.** Boots to `GAMEPLAY: enter village1` in roughly 90 seconds and runs indefinitely. |
+| **Jak 2 / Jak 3** | Not ported here. They build, but the ARM64 work targets Jak 1 for now. |
+| **OpenGL renderer** | Fully working, and the default. It is the reference the Metal work is checked against. |
+| **Metal renderer** | Early. Owns the window, device, command queue and `CAMetalLayer`, compiles MSL at runtime, receives DMA frames from GOAL and walks all 70 buckets. No bucket draws its own contents yet. |
+
+The Metal backend is opt-in and never replaces OpenGL on the same build:
+
+```sh
+./build/game/gk -v --game jak1 -- -boot -fakeiso                       # OpenGL (default)
+OPENGOAL_RENDERER=metal ./build/game/gk -v --game jak1 -- -boot -fakeiso  # Metal
+```
+
+Being able to flip between the two on one build is how a Metal bug is told apart from a codegen
+bug. Please keep it that way in any change you make.
+
+## Building on Apple Silicon
+
+```sh
+export LIBRARY_PATH="$LIBRARY_PATH:/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/lib"
+cmake -B build --preset=Release-macos-arm64-clang
+cmake --build build --parallel $(sysctl -n hw.logicalcpu)
+./build/goalc-test                                   # 693 tests, all passing
+```
+
+The `LIBRARY_PATH` export is required before configuring. `gk` is code-signed at build time with
+Hardened Runtime and `allow-jit`, which Apple Silicon requires for JIT execution.
+
+**Compiler changes need a CGO rebuild.** Edits to `goalc/compiler/IR.cpp`, `goalc/emitter/*` or
+any `.gc` only affect future GOAL compilations:
+
+```sh
+./build/goalc/goalc -g jak1 -c "(mi)"
+```
+
+Use `(mi)`, not `(build-game)`: `(build-game)` compiles `.gc` files but never packs the CGOs, so
+`-fakeiso` keeps loading stale code.
+
+## Contributing
+
+Issues and pull requests are welcome, in English. A few things specific to this fork:
+
+- **Keep the two backends in step.** Every `do_codegen_arm64` in `goalc/compiler/IR.cpp` must have
+  semantic parity with its `do_codegen_x86` sibling. When you add a case to one, add it to the
+  other.
+- **Verify ARM64 encodings against the assembler**, not against intuition. Write the mnemonic to a
+  `.s`, `clang -c -target arm64-apple-macos`, then `otool -t`. A wrong encoding usually does not
+  crash: it computes a plausible wrong number and the game carries on.
+- **Prefer an executing test to an expected-hex-string test.** Three shipped bugs were the same
+  `imm5` element-index mistake, and hex-string tests passed for all of them.
+- **Run `./build/goalc-test` before and after.** `test/goalc/test_arm64_*.cpp` is a differential
+  suite imported from an independent ARM64 fork; a failure there describes ARM64 semantics rather
+  than this implementation.
+- **Two branches, on purpose.** `master` is the working baseline; `arm64-playable-metal-scaffold`
+  is where the Metal work happens. Please target one of those rather than adding more.
+
+`CODEX.md` is the engineering log: what broke, how it was found, and what is still open. Read it
+before starting anything non-trivial. `.claude/CLAUDE.md` holds the same rules in short form.
+
+## Credits
+
+- [open-goal/jak-project](https://github.com/open-goal/jak-project) -- the decompilation, the GOAL
+  compiler and the runtime. Everything here is downstream of that work.
+- [DiMiTriFrog/jak2-macos-arm64](https://github.com/DiMiTriFrog/jak2-macos-arm64) -- the original
+  ARM64 backend work that made native Apple Silicon possible at all.
+- [nikolasburns/jak-arm64-macos](https://github.com/nikolasburns/jak-arm64-macos) -- an
+  independent ARM64 fork (ISC). `test/goalc/test_arm64_*.cpp` and `common/jit_memory.h` are
+  imported from it, with the differences from our implementation documented in place. Importing
+  those tests found three silent codegen defects here; see CODEX.md.
+
+---
+
+## Upstream OpenGOAL README <!-- omit from toc -->
+
+Everything below this line is upstream documentation and applies to this fork unchanged, except
+where the Apple Silicon sections above say otherwise.
 
 ## Please read first <!-- omit from toc -->
 
