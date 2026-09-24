@@ -1,4 +1,4 @@
-#include "Generic2.h"
+#include "Generic2Core.h"
 #include "game/graphics/opengl_renderer/AdgifHandler.h"
 
 /*!
@@ -7,7 +7,7 @@
  * The DmaFollower will either point to the start of the next bucket (and the function will return
  * true), or to the beginning of the next non-NOP DMA for this bucket.
  */
-bool Generic2::check_for_end_of_generic_data(DmaFollower& dma, u32 next_bucket) {
+bool Generic2Core::check_for_end_of_generic_data(DmaFollower& dma, u32 next_bucket) {
   while (dma.current_tag().qwc == 0 && dma.current_tag_vifcode0().kind == VifCode::Kind::NOP &&
          dma.current_tag_vifcode1().kind == VifCode::Kind::NOP) {
     // this "CALL" tag is inserted by the engine to reset the GS. It's always inserted at the end of
@@ -32,7 +32,7 @@ bool Generic2::check_for_end_of_generic_data(DmaFollower& dma, u32 next_bucket) 
  * Otherwise, populates m_drawing_config which contains the common draw settings for all data being
  * rendered in this bucket.
  */
-bool Generic2::handle_bucket_setup_dma(DmaFollower& dma, u32 next_bucket) {
+bool Generic2Core::handle_bucket_setup_dma(DmaFollower& dma, u32 next_bucket) {
   // if the engine didn't run the generic renderer setup function, this bucket will end here.
   if (check_for_end_of_generic_data(dma, next_bucket)) {
     return true;
@@ -97,7 +97,7 @@ bool Generic2::handle_bucket_setup_dma(DmaFollower& dma, u32 next_bucket) {
   return false;
 }
 
-void Generic2::reset_buffers() {
+void Generic2Core::reset_buffers() {
   m_max_frags_seen = std::max(m_next_free_frag, m_max_frags_seen);
   m_max_verts_seen = std::max(m_next_free_vert, m_max_verts_seen);
   m_max_adgifs_seen = std::max(m_next_free_adgif, m_max_adgifs_seen);
@@ -124,21 +124,21 @@ bool is_nop_or_flushe_vif(const u8* data) {
   return k == VifCode::Kind::NOP || k == VifCode::Kind::FLUSHE;
 }
 
-u32 unpack_vtx_positions(Generic2::Vertex* vtx, const u8* data, int vtx_count) {
+u32 unpack_vtx_positions(Generic2Core::Vertex* vtx, const u8* data, int vtx_count) {
   for (int i = 0; i < vtx_count; i++) {
     memcpy(vtx[i].xyz.data(), data + (i * 12), 12);
   }
   return vtx_count * 12;
 }
 
-u32 unpack_vertex_colors(Generic2::Vertex* vtx, const u8* data, int vtx_count) {
+u32 unpack_vertex_colors(Generic2Core::Vertex* vtx, const u8* data, int vtx_count) {
   for (int i = 0; i < vtx_count; i++) {
     memcpy(vtx[i].rgba.data(), data + (i * 4), 4);
   }
   return vtx_count * 4;
 }
 
-u32 unpack_vtx_tcs(Generic2::Vertex* vtx, const u8* data, int vtx_count) {
+u32 unpack_vtx_tcs(Generic2Core::Vertex* vtx, const u8* data, int vtx_count) {
   for (int i = 0; i < vtx_count; i++) {
     s16 s, t;
     memcpy(&s, data + (i * 4), 2);
@@ -155,7 +155,7 @@ u32 unpack_vtx_tcs(Generic2::Vertex* vtx, const u8* data, int vtx_count) {
   return vtx_count * 4;
 }
 
-u32 Generic2::handle_fragments_after_unpack_v4_32(const u8* data,
+u32 Generic2Core::handle_fragments_after_unpack_v4_32(const u8* data,
                                                   u32 off,
                                                   u32 first_unpack_bytes,
                                                   u32 end_of_vif,
@@ -310,7 +310,7 @@ u32 Generic2::handle_fragments_after_unpack_v4_32(const u8* data,
   return off;
 }
 
-void Generic2::process_dma_jak1(DmaFollower& dma, u32 next_bucket) {
+void Generic2Core::process_dma_jak1(DmaFollower& dma, u32 next_bucket) {
   reset_buffers();
 
   // handle the stuff at the beginning.
@@ -394,7 +394,7 @@ bool is_jak2_end(const DmaTransfer& xf) {
          xf.vifcode1().kind == VifCode::Kind::DIRECT;
 }
 
-void Generic2::process_dma_jak2(DmaFollower& dma, u32 next_bucket) {
+void Generic2Core::process_dma_jak2(DmaFollower& dma, u32 next_bucket) {
   reset_buffers();
   auto first_data = dma.read_and_advance();
 
@@ -520,7 +520,7 @@ void Generic2::process_dma_jak2(DmaFollower& dma, u32 next_bucket) {
   ASSERT(next_bucket == dma.current_tag_offset());
 }
 
-void unpack_vertex(Generic2::Vertex* out, const u8* in, int count) {
+void unpack_vertex(Generic2Core::Vertex* out, const u8* in, int count) {
   for (int i = 0; i < count; i++) {
     // st:
     s32 s, t;
@@ -550,7 +550,7 @@ void unpack_vertex(Generic2::Vertex* out, const u8* in, int count) {
   }
 }
 
-void Generic2::process_dma_prim(DmaFollower& dma, u32 next_bucket) {
+void Generic2Core::process_dma_prim(DmaFollower& dma, u32 next_bucket) {
   reset_buffers();
   auto first_data = dma.read_and_advance();
 
@@ -612,14 +612,14 @@ void Generic2::process_dma_prim(DmaFollower& dma, u32 next_bucket) {
     // up2 is vertex upload.
 
     auto* frag = &next_frag();
-    ASSERT(up1.size_bytes == Generic2::FRAG_HEADER_SIZE + 5 * 16);  // header + adgif
-    memcpy(frag->header, up1.data, Generic2::FRAG_HEADER_SIZE);
+    ASSERT(up1.size_bytes == Generic2Core::FRAG_HEADER_SIZE + 5 * 16);  // header + adgif
+    memcpy(frag->header, up1.data, Generic2Core::FRAG_HEADER_SIZE);
     frag->adgif_idx = m_next_free_adgif;
     frag->adgif_count = 1;
     frag->mscal_addr = 6;
     frag->uses_hud = false;
     auto* adgif = &next_adgif();
-    memcpy(&adgif->data, up1.data + Generic2::FRAG_HEADER_SIZE, sizeof(AdGifData));
+    memcpy(&adgif->data, up1.data + Generic2Core::FRAG_HEADER_SIZE, sizeof(AdGifData));
     // printf("tex0: %lx, tex1: %lx, mip %lx, clamp %lx, alpha %lx\n", adgif->data.tex0_addr,
     //        adgif->data.tex1_addr, adgif->data.mip_addr, adgif->data.clamp_addr,
     //        adgif->data.alpha_addr);
@@ -633,7 +633,7 @@ void Generic2::process_dma_prim(DmaFollower& dma, u32 next_bucket) {
   }
 }
 
-void Generic2::process_dma_lightning(DmaFollower& dma, u32 next_bucket) {
+void Generic2Core::process_dma_lightning(DmaFollower& dma, u32 next_bucket) {
   reset_buffers();
   auto first_data = dma.read_and_advance();
   // if unused, sends 0 nop nop
@@ -693,14 +693,14 @@ void Generic2::process_dma_lightning(DmaFollower& dma, u32 next_bucket) {
     (void)mscal;
 
     auto* frag = &next_frag();
-    ASSERT(maybe_first_upload.size_bytes == Generic2::FRAG_HEADER_SIZE + 5 * 16);  // header + adgif
-    memcpy(frag->header, maybe_first_upload.data, Generic2::FRAG_HEADER_SIZE);
+    ASSERT(maybe_first_upload.size_bytes == Generic2Core::FRAG_HEADER_SIZE + 5 * 16);  // header + adgif
+    memcpy(frag->header, maybe_first_upload.data, Generic2Core::FRAG_HEADER_SIZE);
     frag->adgif_idx = m_next_free_adgif;
     frag->adgif_count = 1;
     frag->mscal_addr = 6;
     frag->uses_hud = false;
     auto* adgif = &next_adgif();
-    memcpy(&adgif->data, maybe_first_upload.data + Generic2::FRAG_HEADER_SIZE, sizeof(AdGifData));
+    memcpy(&adgif->data, maybe_first_upload.data + Generic2Core::FRAG_HEADER_SIZE, sizeof(AdGifData));
     // (new 'static 'gif-tag-regs-32 :regs0 (gif-reg-id st) :regs1 (gif-reg-id rgbaq) :regs2
     // (gif-reg-id xyzf2))
     int num_vtx = second_upload.size_bytes / (16 * 3);

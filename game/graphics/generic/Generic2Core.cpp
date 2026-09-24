@@ -1,28 +1,18 @@
-#include "Generic2.h"
-
-#include "game/graphics/opengl_renderer/AdgifHandler.h"
+#include "Generic2Core.h"
 
 #include "third-party/imgui/imgui.h"
 
-Generic2::Generic2(ShaderLibrary& shaders,
-                   u32 num_verts,
-                   u32 num_frags,
-                   u32 num_adgif,
-                   u32 num_buckets) {
+Generic2Core::Generic2Core(u32 num_verts, u32 num_frags, u32 num_adgif, u32 num_buckets) {
   m_verts.resize(num_verts);
   m_fragments.resize(num_frags);
   m_adgifs.resize(num_adgif);
   m_buckets.resize(num_buckets);
   m_indices.resize(num_verts * 3);
-
-  opengl_setup(shaders);
 }
 
-Generic2::~Generic2() {
-  opengl_cleanup();
-}
+Generic2Core::~Generic2Core() = default;
 
-void Generic2::draw_debug_window() {
+void Generic2Core::draw_debug_window() {
   ImGui::Checkbox("Alpha 1", &m_alpha_draw_enable[0]);
   ImGui::Checkbox("Alpha 2", &m_alpha_draw_enable[1]);
   ImGui::Checkbox("Alpha 3", &m_alpha_draw_enable[2]);
@@ -50,28 +40,27 @@ void Generic2::draw_debug_window() {
  * generic renderer. This renderer is expected to follow the chain until it reaches "next_bucket"
  * and then return.
  */
-void Generic2::render_in_mode(DmaFollower& dma,
-                              SharedRenderState* render_state,
-                              ScopedProfilerNode& prof,
-                              Mode mode) {
+void Generic2Core::render_in_mode(DmaFollower& dma,
+                                  GameVersion version,
+                                  u32 next_bucket,
+                                  Mode mode) {
   // Generic2 has 3 passes.
   {
     // our first pass is to go over the DMA chain from the game and extract the data into buffers
-    auto p = prof.make_scoped_child("dma");
     switch (mode) {
       case Mode::NORMAL:
       case Mode::WARP:
-        if (render_state->version == GameVersion::Jak1) {
-          process_dma_jak1(dma, render_state->next_bucket);
+        if (version == GameVersion::Jak1) {
+          process_dma_jak1(dma, next_bucket);
         } else {
-          process_dma_jak2(dma, render_state->next_bucket);
+          process_dma_jak2(dma, next_bucket);
         }
         break;
       case Mode::LIGHTNING:
-        process_dma_lightning(dma, render_state->next_bucket);
+        process_dma_lightning(dma, next_bucket);
         break;
       case Mode::PRIM:
-        process_dma_prim(dma, render_state->next_bucket);
+        process_dma_prim(dma, next_bucket);
         break;
       default:
         ASSERT_NOT_REACHED();
@@ -83,7 +72,6 @@ void Generic2::render_in_mode(DmaFollower& dma,
   {
     // the next pass is to look at all of that data, and figure out the best order to draw it
     // using OpenGL
-    auto p = prof.make_scoped_child("setup");
     switch (mode) {
       case Mode::NORMAL:
         setup_draws(true, true);
@@ -102,7 +90,6 @@ void Generic2::render_in_mode(DmaFollower& dma,
 
   {
     // the final pass is the actual drawing.
-    auto p = prof.make_scoped_child("drawing");
-    do_draws(render_state, p);
+    do_draws();
   }
 }

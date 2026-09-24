@@ -55,10 +55,10 @@ set(RUNTIME_SOURCE
         graphics/opengl_renderer/dma_helpers.cpp
         graphics/eye/EyeRendererCore.cpp
         graphics/opengl_renderer/EyeRenderer.cpp
-        graphics/opengl_renderer/foreground/Generic2_Build.cpp
-        graphics/opengl_renderer/foreground/Generic2_DMA.cpp
+        graphics/generic/Generic2Core_Build.cpp
+        graphics/generic/Generic2Core_DMA.cpp
         graphics/opengl_renderer/foreground/Generic2_OpenGL.cpp
-        graphics/opengl_renderer/foreground/Generic2.cpp
+        graphics/generic/Generic2Core.cpp
         graphics/opengl_renderer/foreground/Generic2BucketRenderer.cpp
         graphics/opengl_renderer/foreground/Merc2.cpp
         graphics/opengl_renderer/foreground/Merc2BucketRenderer.cpp

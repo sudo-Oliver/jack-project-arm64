@@ -297,7 +297,33 @@ void Generic2::do_hud_draws(SharedRenderState* render_state, ScopedProfilerNode&
   }
 }
 
-void Generic2::do_draws(SharedRenderState* render_state, ScopedProfilerNode& prof) {
+Generic2::Generic2(ShaderLibrary& shaders,
+                   u32 num_verts,
+                   u32 num_frags,
+                   u32 num_adgif,
+                   u32 num_buckets)
+    : Generic2Core(num_verts, num_frags, num_adgif, num_buckets) {
+  opengl_setup(shaders);
+}
+
+Generic2::~Generic2() {
+  opengl_cleanup();
+}
+
+void Generic2::render_in_mode(DmaFollower& dma,
+                              SharedRenderState* render_state,
+                              ScopedProfilerNode& prof,
+                              Mode mode) {
+  m_current_render_state = render_state;
+  m_current_prof = &prof;
+  Generic2Core::render_in_mode(dma, render_state->version, render_state->next_bucket, mode);
+  m_current_render_state = nullptr;
+  m_current_prof = nullptr;
+}
+
+void Generic2::do_draws() {
+  SharedRenderState* render_state = m_current_render_state;
+  ScopedProfilerNode& prof = *m_current_prof;
   glBindVertexArray(m_ogl.vao);
   glBindBuffer(GL_ARRAY_BUFFER, m_ogl.vertex_buffer);
   glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_ogl.index_buffer);

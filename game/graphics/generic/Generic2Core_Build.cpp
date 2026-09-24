@@ -1,10 +1,10 @@
-#include "Generic2.h"
+#include "Generic2Core.h"
 
 /*!
  * Main function to set up Generic2 draw lists.
  * This function figures out which vertices belong to which draw settings.
  */
-void Generic2::setup_draws(bool enable_at, bool default_fog) {
+void Generic2Core::setup_draws(bool enable_at, bool default_fog) {
   if (m_next_free_frag == 0) {
     return;
   }
@@ -26,7 +26,7 @@ void Generic2::setup_draws(bool enable_at, bool default_fog) {
  * settings, the tbp (texture vram address), and the "vertex flags" that need to be set for each
  * vertex.  This information is used in later steps.
  */
-void Generic2::determine_draw_modes(bool enable_at, bool default_fog) {
+void Generic2Core::determine_draw_modes(bool enable_at, bool default_fog) {
   // initialize draw mode
   DrawMode current_mode;
   current_mode.set_at(enable_at);
@@ -219,7 +219,7 @@ void Generic2::determine_draw_modes(bool enable_at, bool default_fog) {
 /*!
  * For each adgif, figure out the vertices that it belongs to, in the giant vertex buffer.
  */
-void Generic2::link_adgifs_back_to_frags() {
+void Generic2Core::link_adgifs_back_to_frags() {
   for (u32 i = 0; i < m_next_free_frag; i++) {
     auto& frag = m_fragments[i];
     for (u32 j = 0; j < frag.adgif_count; j++) {
@@ -236,7 +236,7 @@ void Generic2::link_adgifs_back_to_frags() {
  * Build linked lists of adgifs that share the same settings.
  * TODO: also determine texture units per bucket here.
  */
-void Generic2::draws_to_buckets() {
+void Generic2Core::draws_to_buckets() {
   std::unordered_map<u64, u32> draw_key_to_bucket;
   for (u32 i = 0; i < m_next_free_adgif; i++) {
     auto& ad = m_adgifs[i];
@@ -282,7 +282,7 @@ void Generic2::draws_to_buckets() {
  * Extract the matrix. They are exactly a perspective projection and they are all the same.
  * I don't think this will hold for TIE...
  */
-void Generic2::process_matrices() {
+void Generic2Core::process_matrices() {
   // first, we need to find the projection matrix.
   // most of the time, it's first. If you have the hud open, there may be a few others.
   bool found_proj_matrix = false;
@@ -346,7 +346,7 @@ void Generic2::process_matrices() {
  * After all bucketing/draw modes have been determined, fill out the flag fields of all vertices.
  * TODO: fill out texture units
  */
-void Generic2::final_vertex_update() {
+void Generic2Core::final_vertex_update() {
   for (u32 i = 0; i < m_next_free_adgif; i++) {
     auto& ad = m_adgifs[i];
     for (u32 j = 0; j < ad.vtx_count; j++) {
@@ -358,7 +358,7 @@ void Generic2::final_vertex_update() {
 /*!
  * Build the index buffer.
  */
-void Generic2::build_index_buffer() {
+void Generic2Core::build_index_buffer() {
   for (u32 bucket_idx = 0; bucket_idx < m_next_free_bucket; bucket_idx++) {
     auto& bucket = m_buckets[bucket_idx];
     bucket.tri_count = 0;
