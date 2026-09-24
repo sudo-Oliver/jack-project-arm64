@@ -50,6 +50,9 @@ class MetalDisplay : public GfxDisplay {
   std::shared_ptr<InputManager> m_input_manager;
 
   bool m_should_quit = false;
+  // The common texture pack ("GAME") has to be in the pool before the game uploads anything that
+  // references it. Loaded on the first frame, which is the first point the render thread owns.
+  bool m_common_level_loaded = false;
 };
 
 extern const GfxRendererModule gRendererMetal;

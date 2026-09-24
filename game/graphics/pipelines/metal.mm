@@ -18,7 +18,12 @@
 #include "common/global_profiler/GlobalProfiler.h"
 #include "common/log/log.h"
 
+#include "common/util/FileUtil.h"
+
 #include "game/graphics/gfx.h"
+#include "game/runtime.h"
+#include "game/graphics/opengl_renderer/loader/Loader.h"
+#include "game/graphics/texture/TexturePool.h"
 #include "game/graphics/metal_renderer/MetalGpuResources.h"
 #include "game/graphics/metal_renderer/MetalShaderLibrary.h"
 #include "game/system/hid/sdl_util.h"
@@ -41,8 +46,19 @@ bool g_metal_inited = false;
 
 // Mirrors GraphicsData in the OpenGL backend: the game thread hands a DMA chain over here and
 // waits, the render thread consumes it. Kept separate so the two backends cannot interfere.
+constexpr PerGameVersion<int> metal_fr3_level_count(jak1::LEVEL_TOTAL,
+                                                    jak2::LEVEL_TOTAL,
+                                                    jak3::LEVEL_TOTAL,
+                                                    jakx::LEVEL_TOTAL);
+
 struct MetalGraphicsData {
-  explicit MetalGraphicsData(u32 main_memory_size) : dma_copier(main_memory_size) {}
+  MetalGraphicsData(u32 main_memory_size, GameVersion version)
+      : dma_copier(main_memory_size),
+        texture_pool(std::make_shared<TexturePool>(version)),
+        loader(std::make_shared<Loader>(
+            file_util::get_jak_project_dir() / "out" / game_version_names[version] / "fr3",
+            metal_fr3_level_count[version])),
+        version(version) {}
 
   std::mutex sync_mutex;
   std::condition_variable sync_cv;
@@ -53,6 +69,13 @@ struct MetalGraphicsData {
   u64 frame_idx_of_input_data = 0;
   bool has_data_to_render = false;
   FixedChunkDmaCopier dma_copier;
+
+  // Shared with the OpenGL backend: the texture conversion and the .fr3 level data are identical,
+  // and both allocate through gpu::, which metal_make_display has pointed at Metal by the time
+  // anything here runs.
+  std::shared_ptr<TexturePool> texture_pool;
+  std::shared_ptr<Loader> loader;
+  GameVersion version;
 };
 
 std::unique_ptr<MetalGraphicsData> g_metal_gfx_data;
@@ -86,7 +109,7 @@ std::shared_ptr<GfxDisplay> metal_make_display(int width,
                                                int height,
                                                const char* title,
                                                GfxGlobalSettings& /*settings*/,
-                                               GameVersion /*game_version*/,
+                                               GameVersion game_version,
                                                bool is_main) {
   SDL_Window* window = SDL_CreateWindow(
       title, width, height,
@@ -176,7 +199,7 @@ std::shared_ptr<GfxDisplay> metal_make_display(int width,
     }
   }
   if (!g_metal_gfx_data) {
-    g_metal_gfx_data = std::make_unique<MetalGraphicsData>(EE_MAIN_MEM_SIZE);
+    g_metal_gfx_data = std::make_unique<MetalGraphicsData>(EE_MAIN_MEM_SIZE, game_version);
   }
   g_metal_inited = true;
 
@@ -225,10 +248,29 @@ void metal_send_chain(const void* data, u32 offset) {
   g_metal_gfx_data->has_data_to_render = true;
   g_metal_gfx_data->dma_cv.notify_all();
 }
-void metal_texture_upload_now(const u8* /*tpage*/, int /*mode*/, u32 /*s7_ptr*/) {}
-void metal_texture_relocate(u32 /*destination*/, u32 /*source*/, u32 /*format*/) {}
-void metal_set_levels(const std::vector<std::string>& /*levels*/) {}
-void metal_set_active_levels(const std::vector<std::string>& /*levels*/) {}
+void metal_texture_upload_now(const u8* tpage, int mode, u32 s7_ptr) {
+  if (g_metal_gfx_data) {
+    g_metal_gfx_data->texture_pool->handle_upload_now(tpage, mode, g_ee_main_mem, s7_ptr, false);
+  }
+}
+
+void metal_texture_relocate(u32 destination, u32 source, u32 format) {
+  if (g_metal_gfx_data) {
+    g_metal_gfx_data->texture_pool->relocate(destination, source, format);
+  }
+}
+
+void metal_set_levels(const std::vector<std::string>& levels) {
+  if (g_metal_gfx_data) {
+    g_metal_gfx_data->loader->set_want_levels(levels);
+  }
+}
+
+void metal_set_active_levels(const std::vector<std::string>& levels) {
+  if (g_metal_gfx_data) {
+    g_metal_gfx_data->loader->set_active_levels(levels);
+  }
+}
 void metal_set_pmode_alp(float /*val*/) {}
 
 }  // namespace
@@ -276,6 +318,13 @@ void MetalDisplay::process_sdl_events() {
 }
 
 void MetalDisplay::render() {
+  if (!m_common_level_loaded && g_metal_gfx_data) {
+    auto p = scoped_prof("load-common");
+    const auto& common =
+        g_metal_gfx_data->loader->load_common(*g_metal_gfx_data->texture_pool, "GAME");
+    lg::info("[Metal] common level loaded: {} textures", common.textures.size());
+    m_common_level_loaded = true;
+  }
   {
     auto p = scoped_prof("sdl-input-monitor-poll-for-kb-mouse");
     m_input_manager->poll_keyboard_data();
@@ -351,6 +400,27 @@ void MetalDisplay::render() {
       lg::info("[Metal] first frame from GOAL: walked {} of {} buckets", buckets_walked,
                kMetalBucketCount);
       logged_first = true;
+    }
+  }
+
+  // Pump the level loader. It reads the .fr3 files on its own thread and does the GPU-side work
+  // here, through gpu::, which is pointed at Metal. Same call the OpenGL backend makes once per
+  // frame.
+  {
+    auto p = scoped_prof("loader");
+    g_metal_gfx_data->loader->update(*g_metal_gfx_data->texture_pool);
+  }
+
+  {
+    static u64 logged_levels = 0;
+    auto in_use = g_metal_gfx_data->loader->get_in_use_levels();
+    if (in_use.size() != logged_levels) {
+      logged_levels = in_use.size();
+      std::string names;
+      for (auto* lev : in_use) {
+        names += lev->level->level_name + " ";
+      }
+      lg::info("[Metal] levels loaded: {}({})", logged_levels, names);
     }
   }
 
