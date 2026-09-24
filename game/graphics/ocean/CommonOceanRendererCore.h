@@ -36,6 +36,10 @@ class CommonOceanRendererCore {
   void init_for_mid();
   void kick_from_mid(const u8* data);
 
+  // The mid ocean's envmap pass has to be drawn back to front. That reordering is data work, so
+  // it happens here and a backend's flush_mid_draws can assume it is done.
+  void flush_mid();
+
  protected:
   // Draw what the kicks built. The backends implement these.
   virtual void flush_near_draws() = 0;

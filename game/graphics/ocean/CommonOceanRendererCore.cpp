@@ -6,6 +6,7 @@
 
 #include "CommonOceanRendererCore.h"
 
+#include <algorithm>
 #include <cstring>
 
 #include "common/log/log.h"
@@ -19,6 +20,26 @@ CommonOceanRendererCore::CommonOceanRendererCore() {
 }
 
 CommonOceanRendererCore::~CommonOceanRendererCore() = default;
+
+namespace {
+void reverse_indices(u32* indices, u32 count) {
+  if (count) {
+    for (u32 a = 0, b = count - 1; a < b; a++, b--) {
+      std::swap(indices[a], indices[b]);
+    }
+  }
+}
+}  // namespace
+
+void CommonOceanRendererCore::flush_mid() {
+  // The game draws some sections of ocean twice: a low-poly mesh with the ocean texture, the same
+  // with the envmap, then a high-poly mesh with each, which overwrite them. Drawing all the ocean
+  // textures together and then all the envmaps gives the same result if the envmap pass runs back
+  // to front and zeroes the destination alpha as it goes, because the blend mode then discards
+  // the low-poly version that follows.
+  reverse_indices(m_indices[1].data(), m_next_free_index[1]);
+  flush_mid_draws();
+}
 
 void CommonOceanRendererCore::init_for_near() {
   m_next_free_vertex = 0;
@@ -320,11 +341,4 @@ void CommonOceanRendererCore::init_for_mid() {
   }
 }
 
-void reverse_indices(u32* indices, u32 count) {
-  if (count) {
-    for (u32 a = 0, b = count - 1; a < b; a++, b--) {
-      std::swap(indices[a], indices[b]);
-    }
-  }
-}
 

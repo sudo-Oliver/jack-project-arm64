@@ -48,6 +48,8 @@ set(RUNTIME_SOURCE
         graphics/opengl_renderer/DirectRenderer.cpp
         graphics/direct/DirectRenderer2Core.cpp
         graphics/direct/DirectRendererCore.cpp
+        graphics/ocean/CommonOceanRendererCore.cpp
+        graphics/ocean/OceanTextureCore.cpp
         graphics/foreground/Merc2Core.cpp
         graphics/opengl_renderer/DirectRenderer2.cpp
         graphics/opengl_renderer/dma_helpers.cpp
@@ -68,7 +70,6 @@ set(RUNTIME_SOURCE
         graphics/opengl_renderer/ocean/OceanMidAndFar.cpp
         graphics/opengl_renderer/ocean/OceanNear_PS2.cpp
         graphics/opengl_renderer/ocean/OceanNear.cpp
-        graphics/opengl_renderer/ocean/OceanTexture_PC.cpp
         graphics/opengl_renderer/ocean/OceanTexture.cpp
         graphics/opengl_renderer/opengl_utils.cpp
         graphics/opengl_renderer/OpenGLRenderer.cpp
