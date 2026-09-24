@@ -57,6 +57,16 @@
 ;; default size of stack to backup for a process
 (defconstant PROCESS_STACK_SAVE_SIZE 256)
 
+(defmacro backup-stack-size (size)
+  "Adjust an x86-tuned backup stack budget for this target.
+
+   Every ARM64 call pushes x29/x30 and keeps SP 16-byte aligned, where x86's CALL pushes only an
+   8-byte return address. The same GOAL call depth therefore needs more backup stack here, and
+   thread-suspend copies exactly stack-size bytes: if the thread used more, the copy runs off the
+   bottom of the buffer and corrupts whatever the process heap put in front of it.
+   Observed without this: 'suspend called without enough stack', Stack: 144/128, ~85k times per run."
+  `(#if ARM64_PORT (+ ,size 64) ,size))
+
 ;; the size of the shared heap used by dynamically sized processes
 (#if PC_BIG_MEMORY
   (defconstant PROCESS_HEAP_MULT 3) ;; 3x actors

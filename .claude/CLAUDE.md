@@ -25,17 +25,19 @@ cmake --build build --target gk --parallel $((`sysctl -n hw.logicalcpu`))  # jus
 ```
 **Use `(mi)`, not `(build-game)`.** `(build-game)` is `(make-group "all-code")` and `all-code` contains only `*all-gc*`: it compiles `.gc` files to `.o` in `out/jak1/obj/` but never packs the CGOs. `-fakeiso` loads `out/jak1/iso/GAME.CGO`, so `(build-game)` alone leaves the game running stale code. `(build-kernel)` does pack KERNEL.CGO, which is why kernel edits appear to take effect while engine edits silently do not.
 
-**Boot timing (Apple Silicon M3 Pro, `-boot -debug -fakeiso`):**
-- IOP emulation init: ~3 minutes
-- GAME.CGO (346 objects) linking: ~11 minutes
-- Total to `time-of-day` module: ~14 minutes
-- Allow 25+ minutes for full boot to `kernel: machine started`
+**Boot timing (Apple Silicon, `-boot -debug -fakeiso`):** roughly 90 seconds from launch to
+`GAMEPLAY: enter village1`. (Earlier notes claimed 14-25 minutes; that was the pre-fix state.)
+The game then runs indefinitely -- to test, use `timeout 150 ./build/game/gk ...` and expect
+exit 124, or run it without a timeout and close it yourself for exit 0.
 
 ### ARM64-specific rules
 
 - Every `do_codegen_arm64` in `goalc/compiler/IR.cpp` **must** have semantic parity with its `do_codegen_x86` sibling. When adding a case to one, add it to the other.
 - The emitter (`goalc/emitter/IGenARM64.cpp`) contains single-instruction helpers. When an x86 idiom has no single ARM64 equivalent (e.g., 3-reg+offset addressing, PC-relative byte load), the **caller in `IR.cpp`** must emit the multi-instruction sequence — never silently ignore an offset.
-- Always add a `CodeTester.*_arm64` test in `test/goalc/test_emitter.cpp` for every new emitter function.
+- Always add a `CodeTester.*_arm64` test in `test/goalc/test_CodeTester.cpp` for every new emitter function. **Prefer an executing test (`CodeTester.execute_*`) over an expected-hex-string test.** A wrong ARM64 encoding usually does not crash -- it computes a plausible wrong number and the engine carries on. Three separate shipped bugs (`splat_vf`, `ins_vf_element`, `ins_vf_element_from_gpr32`) were the same `imm5` element-index mistake, and hex-string tests passed for all of them.
+- **SIMD element index encoding:** in `imm5` the lowest set bit selects the element size and the bits above it hold the index. 32-bit (S) lanes need `imm5 = (index << 3) | 0b00100`, and `INS`'s `imm4 = srcIdx << 2`. Verify any new encoding against the system assembler: write the mnemonic to a `.s`, `clang -c -target arm64-apple-macos`, then `otool -t`.
+- **Platform dispatch:** grep for `__x86_64__` before trusting an `#if` chain. mips2c's `jalr` had no ARM64 branch and silently compiled to nothing, so GOAL callbacks never ran. Always end such chains with `#else #error`.
+- **"Callee-saved" here means "survives a GOAL kernel context switch"**, which is stricter than AAPCS64. `thread-suspend` saves only `s0-s4` (= `x19/X23/X6/X7/X26` after `translate_x86_reg_to_arm64`). Never put a register in `m_saved_gprs` that is not in that set.
 - `InstructionSet::ARM64` is detected via `gen->instr_set()`. Use existing dispatch patterns in `IR.cpp`.
 - ARM64 ABI on Darwin: x0–x7 args, x8 scratch/indirect-result, x16–x17 IP regs, x18 platform (do not touch), x19–x28 callee-saved, x29 FP, x30 LR. GOAL additionally reserves x22 (offset/R15) and x23 (GOAL stack) — see `game/kernel/asm_funcs_arm64.s`.
 - Stack must stay 16-byte aligned at all call sites.

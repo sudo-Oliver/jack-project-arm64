@@ -182,6 +182,8 @@
   "Set the backup stack size of a thread. This should only be done on the main-thread.
   This should be done immediately after allocating the main-thread.
    Users can do this if they want a larger or smaller backup stack than the default."
+  ;; callers pass sizes measured on x86; see backup-stack-size for why ARM64 needs more.
+  (let ((stack-size (backup-stack-size stack-size)))
   (let ((proc (-> this process)))
     (cond
       ((neq? this (-> proc main-thread))
@@ -196,7 +198,7 @@
        ;; our heap cur point to right after us. So we can safely bump it forward to give us more space.
        (set! (-> proc heap-cur) (the pointer (&+ this (-> this type size) (- *gtype-basic-offset*) stack-size)))
        (set! (-> this stack-size) stack-size))
-      (else (msg-err "illegal attempt change stack size of ~A after more heap allocation has occured.~%" proc) (break))))
+      (else (msg-err "illegal attempt change stack size of ~A after more heap allocation has occured.~%" proc) (break)))))
   (none))
 
 (defmethod new cpu-thread ((allocation symbol) (type-to-make type) (parent-process process) (name symbol) (stack-size int) (stack-top pointer))
@@ -207,7 +209,8 @@
   The stack-top is for the execution stack.
   The stack-size is for the backup stack (applicable for main thread only)"
   ;; first, let's see if we're doing the main or temp thread
-  (let* ((this (cond
+  (let* ((stack-size (backup-stack-size stack-size))
+         (this (cond
                  ((-> parent-process top-thread)
                   ;; we're allocating a temporary thread, the main thread already exists.
                   ;; we can stash the cpu-thread structure at the bottom of the stack.

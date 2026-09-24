@@ -512,17 +512,79 @@ TEST(CodeTester, mov_vf_vf_arm64) {
   EXPECT_EQ(tester.dump_to_hex_string(), "28 1d a9 4e");
 }
 
-TEST(CodeTester, ins_element_s_arm64) {
-  CodeTester tester(emitter::InstructionSet::ARM64);
-  tester.init_code_buffer(32);
-  // INS V8.S[lane], V9.S[lane] for each lane (dst=XMM8→Q8, src=XMM9→Q9).
-  for (u8 lane = 0; lane < 4; lane++) {
-    tester.emit(IGen::ARM64::ins_element_s(emitter::Register(emitter::XMM8),
-                                           emitter::Register(emitter::XMM9), lane));
+TEST(CodeTester, ins_vf_element_arm64) {
+  // INS Vd.S[d], Vn.S[s] for every lane pair, checked against the system assembler.
+  // In imm5 the lowest set bit selects the element size, so a wrong shift silently aliases
+  // lanes together and can even select D-sized elements.
+  const char* expected[4][4] = {
+      {"28 05 04 6e", "28 25 04 6e", "28 45 04 6e", "28 65 04 6e"},
+      {"28 05 0c 6e", "28 25 0c 6e", "28 45 0c 6e", "28 65 0c 6e"},
+      {"28 05 14 6e", "28 25 14 6e", "28 45 14 6e", "28 65 14 6e"},
+      {"28 05 1c 6e", "28 25 1c 6e", "28 45 1c 6e", "28 65 1c 6e"}};
+  for (u8 d = 0; d < 4; d++) {
+    for (u8 sIdx = 0; sIdx < 4; sIdx++) {
+      CodeTester tester(emitter::InstructionSet::ARM64);
+      tester.init_code_buffer(32);
+      tester.emit(IGen::ARM64::ins_vf_element(emitter::Register(emitter::XMM8), d,
+                                              emitter::Register(emitter::XMM9), sIdx));
+      EXPECT_EQ(tester.dump_to_hex_string(), expected[d][sIdx])
+          << "dst lane " << (int)d << " src lane " << (int)sIdx;
+    }
   }
-  EXPECT_EQ(tester.dump_to_hex_string(),
-            "28 05 04 6e 28 25 0c 6e 28 45 14 6e 28 65 1c 6e");
 }
+
+TEST(CodeTester, umov_and_ins_gpr32_arm64) {
+  const char* umov_expected[4] = {"28 3d 04 0e", "28 3d 0c 0e", "28 3d 14 0e", "28 3d 1c 0e"};
+  const char* ins_expected[4] = {"28 1d 04 4e", "28 1d 0c 4e", "28 1d 14 4e", "28 1d 1c 4e"};
+  for (u8 i = 0; i < 4; i++) {
+    {
+      CodeTester tester(emitter::InstructionSet::ARM64);
+      tester.init_code_buffer(32);
+      tester.emit(IGen::ARM64::umov_gpr32_vf_element(emitter::Register(emitter::X8),
+                                                     emitter::Register(emitter::XMM9), i));
+      EXPECT_EQ(tester.dump_to_hex_string(), umov_expected[i]) << "umov lane " << (int)i;
+    }
+    {
+      CodeTester tester(emitter::InstructionSet::ARM64);
+      tester.init_code_buffer(32);
+      tester.emit(IGen::ARM64::ins_vf_element_from_gpr32(emitter::Register(emitter::XMM8), i,
+                                                         emitter::Register(emitter::X9)));
+      EXPECT_EQ(tester.dump_to_hex_string(), ins_expected[i]) << "ins lane " << (int)i;
+    }
+  }
+}
+
+#ifdef __aarch64__
+// Executing check: a wrong lane index still produces floats, so verify the moved lane really is
+// the requested one for every source/destination pair.
+TEST(CodeTester, execute_ins_vf_element_arm64) {
+  struct Vec {
+    u32 v[4];
+  };
+  const Vec dst_val = {{0xD0, 0xD1, 0xD2, 0xD3}};
+  const Vec src_val = {{0x50, 0x51, 0x52, 0x53}};
+  for (u8 d = 0; d < 4; d++) {
+    for (u8 sIdx = 0; sIdx < 4; sIdx++) {
+      CodeTester tester(emitter::InstructionSet::ARM64);
+      tester.init_code_buffer(64);
+      emitter::Register q_dst(emitter::XMM8), q_src(emitter::XMM9);
+      tester.emit(IGen::ARM64::load128_simd128_gpr64(q_dst, emitter::Register(emitter::X0)));
+      tester.emit(IGen::ARM64::load128_simd128_gpr64(q_src, emitter::Register(emitter::X1)));
+      tester.emit(IGen::ARM64::ins_vf_element(q_dst, d, q_src, sIdx));
+      tester.emit(IGen::ARM64::store128_gpr64_simd128(emitter::Register(emitter::X2), q_dst));
+      tester.emit_return();
+
+      Vec in_dst = dst_val, in_src = src_val, out = {};
+      tester.execute((u64)&in_dst, (u64)&in_src, (u64)&out, 0);
+      for (int lane = 0; lane < 4; lane++) {
+        u32 expected = (lane == d) ? src_val.v[sIdx] : dst_val.v[lane];
+        EXPECT_EQ(out.v[lane], expected)
+            << "d=" << (int)d << " s=" << (int)sIdx << " lane=" << lane;
+      }
+    }
+  }
+}
+#endif
 
 #ifdef __aarch64__
 // Execute the mov+INS sequence that IR_BlendVF::do_codegen_arm64 builds, for every mask and every
@@ -561,7 +623,7 @@ TEST(CodeTester, execute_blend_vf_arm64) {
             continue;
           }
           tester.emit(
-              IGen::ARM64::ins_element_s(q_dst, lane_from_src2 ? q_src2 : q_src1, lane));
+              IGen::ARM64::ins_vf_element(q_dst, lane, lane_from_src2 ? q_src2 : q_src1, lane));
         }
       }
       tester.emit(IGen::ARM64::store128_gpr64_simd128(emitter::Register(emitter::X2), q_dst));

@@ -633,6 +633,32 @@ static void dump_arm64_crash_context(uint64_t pc,
     }
   }
 
+  // Manual frame-pointer unwind. backtrace() gives up almost immediately here because the EE
+  // thread's frame pointer lives inside EE memory, but the chain itself is intact, so walking it
+  // by hand recovers the C++ frames that led into a mips2c helper.
+  {
+    uintptr_t cur_fp = fp;
+    write(2, "[EE-CRASH] FP-chain:\n", 21);
+    for (int depth = 0; depth < 24 && cur_fp && (cur_fp & 0xf) == 0; depth++) {
+      uintptr_t next_fp = ((const uintptr_t*)cur_fp)[0];
+      uintptr_t ret_addr = ((const uintptr_t*)cur_fp)[1];
+      if (!ret_addr) {
+        break;
+      }
+      Dl_info di_f{};
+      dladdr((void*)ret_addr, &di_f);
+      n = __builtin_snprintf(buf, sizeof(buf), "  [%2d] 0x%016llx  %s + 0x%llx\n", depth,
+                             (unsigned long long)ret_addr,
+                             di_f.dli_sname ? di_f.dli_sname : "?",
+                             di_f.dli_saddr ? (unsigned long long)(ret_addr - (uintptr_t)di_f.dli_saddr) : 0ULL);
+      write(2, buf, n);
+      if (next_fp <= cur_fp) {
+        break;  // frame pointers must grow toward the stack base
+      }
+      cur_fp = next_fp;
+    }
+  }
+
   // Instructions around LR (caller site) — helps identify the faulting call
   {
     uintptr_t ee_base = (uintptr_t)g_ee_main_mem;

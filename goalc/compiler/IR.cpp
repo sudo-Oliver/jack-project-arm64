@@ -2939,7 +2939,7 @@ void IR_BlendVF::do_codegen_arm64(emitter::ObjectGenerator* gen,
     if (lane_from_src2 == seed_from_src2) {
       continue;
     }
-    gen->add_instr(IGen::ins_element_s(*gen, dst, lane_from_src2 ? src2 : src1, lane), irec);
+    gen->add_instr(IGen::ARM64::ins_vf_element(dst, lane, lane_from_src2 ? src2 : src1, lane), irec);
   }
 }
 

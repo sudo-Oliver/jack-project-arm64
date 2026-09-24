@@ -800,7 +800,6 @@ InstructionX86 vpshufhw(Register dst, Register src, u8 imm);
 
 InstructionX86 vpackuswb(Register dst, Register src0, Register src1);
 
-InstructionX86 ins_element_s(Register dst, Register src, u8 lane);
 
 InstructionX86 uzp1_8h(Register dst, Register src0, Register src1);
 

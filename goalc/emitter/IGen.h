@@ -989,7 +989,6 @@ Instruction vpshufhw(const ObjectGenerator& gen, Register dst, Register src, u8 
 
 Instruction vpackuswb(const ObjectGenerator& gen, Register dst, Register src0, Register src1);
 
-Instruction ins_element_s(const ObjectGenerator& gen, Register dst, Register src, u8 lane);
 
 Instruction uzp1_8h(const ObjectGenerator& gen, Register dst, Register src0, Register src1);
 

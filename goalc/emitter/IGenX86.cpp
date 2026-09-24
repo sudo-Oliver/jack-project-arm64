@@ -2453,13 +2453,6 @@ InstructionX86 vpackuswb(Register dst, Register src0, Register src1) {
   return instr;
 }
 
-InstructionX86 ins_element_s(Register dst, Register src, u8 lane) {
-  // ARM64-only — x86 blends with a single BLENDPS.
-  (void)dst; (void)src; (void)lane;
-  ASSERT_MSG(false, "ins_element_s is ARM64-only");
-  return InstructionX86(0);
-}
-
 InstructionX86 uzp1_8h(Register dst, Register src0, Register src1) {
   // ARM64-only — should never be called on x86.
   (void)dst; (void)src0; (void)src1;

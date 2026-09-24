@@ -1435,17 +1435,6 @@ InstructionARM64 blend_vf(Register dst, Register src1, Register src2, u8 mask) {
   return InstructionARM64(0b0);
 }
 
-InstructionARM64 ins_element_s(Register dst, Register src, u8 lane) {
-  // INS Vd.S[lane], Vn.S[lane] — copy one 32-bit lane between vector registers.
-  // 0110 1110 000 imm5 0 imm4 1 Rn Rd, with imm5 = lane<<3 | 0b00100 and imm4 = lane<<2 for S.
-  ASSERT(dst.is_128bit_simd(instr_set));
-  ASSERT(src.is_128bit_simd(instr_set));
-  ASSERT(lane < 4);
-  u32 imm5 = (u32)(lane << 3) | 0b00100u;
-  u32 imm4 = (u32)lane << 2;
-  return InstructionARM64(0x6E000400u | (imm5 << 16) | (imm4 << 11), Rn(qreg(src)), Rd(qreg(dst)));
-}
-
 InstructionARM64 shuffle_vf(Register dst, Register src, u8 dx, u8 dy, u8 dz, u8 dw) {
   (void)dst; (void)src; (void)dx; (void)dy; (void)dz; (void)dw;
   ASSERT_MSG(false, "shuffle_vf: not reachable on ARM64 — handle in do_codegen_arm64");
@@ -1468,28 +1457,31 @@ InstructionARM64 ext_16b(Register dst, Register src0, Register src1, u8 imm) {
 InstructionARM64 ins_vf_element(Register dst, u8 dstIdx, Register src, u8 srcIdx) {
   // INS Vd.S[dstIdx], Vn.S[srcIdx] — insert 32-bit float element
   // Advanced SIMD copy (element): 0_1_1_01110_000_imm5_0_imm4_1_Rn_Rd
-  // imm5 = (dstIdx<<2)|4, imm4 = srcIdx<<1
+  // In imm5 the lowest set bit picks the element size and the bits above it hold the index, so
+  // 32-bit S lanes need imm5 = (dstIdx << 3) | 0b00100 and imm4 = srcIdx << 2. Shifting by one
+  // less (the old code) collapses lanes onto each other and even selects D-sized elements.
   ASSERT(dstIdx < 4 && srcIdx < 4);
-  u32 imm5 = ((u32)dstIdx << 2u) | 4u;
-  u32 imm4 = (u32)srcIdx << 1u;
+  u32 imm5 = ((u32)dstIdx << 3u) | 0b00100u;
+  u32 imm4 = (u32)srcIdx << 2u;
   return InstructionARM64(0x6E000400u, Field{imm5 << 16}, Field{imm4 << 11}, Rn(qreg(src)), Rd(qreg(dst)));
 }
 
 InstructionARM64 umov_gpr32_vf_element(Register gpr_dst, Register vf_src, u8 idx) {
   // UMOV Wd, Vn.S[idx] — extract 32-bit SIMD element to GPR (unsigned)
-  // Advanced SIMD copy: 0_0_1_01110_000_imm5_0_0111_1_Rn_Rd  (op=1 = bit 29)
-  // imm5 = (idx<<2)|4  (S-lane encoding: bit2=1, upper bits = lane index)
+  // Advanced SIMD copy: 0_0_0_01110_000_imm5_0_0111_1_Rn_Rd
+  // Q must be 0 for a 32-bit destination (base 0x0E003C00, not 0x2E003C00), and imm5 uses the
+  // same size/index packing as ins_vf_element.
   ASSERT(idx < 4);
-  u32 imm5 = ((u32)idx << 2u) | 4u;
-  return InstructionARM64(0x2E003C00u, Field{imm5 << 16}, Rn(qreg(vf_src)), Rd(gpr_dst.id()));
+  u32 imm5 = ((u32)idx << 3u) | 0b00100u;
+  return InstructionARM64(0x0E003C00u, Field{imm5 << 16}, Rn(qreg(vf_src)), Rd(gpr_dst.id()));
 }
 
 InstructionARM64 ins_vf_element_from_gpr32(Register vf_dst, u8 idx, Register gpr_src) {
   // INS Vd.S[idx], Wn — insert GPR 32-bit word into SIMD element
   // Advanced SIMD copy: 0_1_0_01110_000_imm5_0_00111_Rn_Rd
-  // imm5 = (idx<<2)|4  (S-lane encoding, same as ins_vf_element dst field)
+  // imm5 uses the same size/index packing as ins_vf_element.
   ASSERT(idx < 4);
-  u32 imm5 = ((u32)idx << 2u) | 4u;
+  u32 imm5 = ((u32)idx << 3u) | 0b00100u;
   return InstructionARM64(0x4E001C00u, Field{imm5 << 16}, Rn(gpr_src.id()), Rd(qreg(vf_dst)));
 }
 

@@ -2,13 +2,46 @@
 
 This branch is the Apple Silicon ARM64 experimental port baseline.
 
-Current target state:
+## Current state (2026-09-24)
 
-- Jak 1 boots natively on Apple Silicon without Rosetta.
-- Sony Presents screen appears.
-- Naughty Dog intro and title/start-screen audio continue after Sony.
-- The process must not crash immediately after Sony.
-- Post-Sony video may still be black or broken. That renderer bug is separate.
+**Jak 1 is playable natively on Apple Silicon, without Rosetta and without OpenGL problems.**
+
+Verified in this state:
+
+- Boots to the title screen and plays the intro (`begin load title-vis`, `GAMEPLAY: enter title`).
+- In-game rendering looks correct. You can move Jak around and play.
+- Audio is continuous and correctly aligned.
+- Runs indefinitely -- observed past `Kernel dispatch #8700`; it exits 0 only when closed by hand.
+- Zero `[EE-CRASH]`, zero `suspend called without enough stack`, zero nav-mesh geometry warnings.
+
+Eight ARM64 bugs stood between the reverted baseline and this, each with its own section below.
+Only two of them were crashes. The other six produced **silently wrong answers**, which is why
+they survived so long and why the symptom was "flickering garbage" rather than a stack trace:
+
+| Bug | Symptom |
+|---|---|
+| `blend_vf` no-op | every masked VU op discarded its result |
+| `splat_vf` wrong lane | every broadcast VU op used the wrong component |
+| `ins_vf_element` wrong lane (+ `umov`, `ins`-from-GPR) | every swizzle, so every cross product, so every surface normal |
+| allocator saved GPR (X24) not preserved by the kernel | locals silently replaced after `(suspend)` |
+| backup stack too small for ARM64 frames | `thread-suspend` copy ran off the buffer, ~85k times per run |
+| mips2c `jalr` unimplemented on ARM64 | GOAL callbacks never ran, `v0` kept garbage |
+| `push`-then-`RET` (3 sites) | stack leak + infinite re-entry |
+| `(build-game)` does not pack CGOs | changes silently never reached the running game |
+
+**The recurring theme, worth internalising before touching anything here:** on ARM64 a wrong
+instruction encoding usually does not crash. It computes a plausible wrong number, and the engine
+carries on. Three separate bugs above were the *same* `imm5` element-index mistake in three
+different emitter functions. When something looks visually wrong, suspect the emitter and write an
+**executing** test (`CodeTester.execute_*`), not an expected-hex-string test -- the hex tests
+passed the whole time.
+
+### Next: the Metal renderer
+
+The OpenGL path now produces a correct picture, which is exactly the reference the Metal port
+needs. Start from `## Next up: Metal` below.
+
+Historical note, kept because older logs refer to it:
 
 Known bad state:
 
@@ -106,41 +139,71 @@ into the CGOs otherwise.
 
 ## Boot
 
-Use `-fakeiso` for this baseline:
-
 ```sh
-rtk ./build/game/gk -v --game jak1 -- -boot -fakeiso -debug
+# Debug boot: skips title/intro, drops you straight into village1. Full logging.
+./build/game/gk -v --game jak1 -- -boot -fakeiso -debug
+
+# Retail boot: title screen + intro, i.e. what a player sees.
+./build/game/gk -v --game jak1 -- -boot -fakeiso
 ```
 
-Do not use `--no-display` for the visual/audio baseline check.
+**The missing intro under `-debug` is intentional, not a bug.** `game-info.gc` picks the continue
+point like this:
+
+```lisp
+((!= *kernel-boot-message* 'play) "demo-start")
+(*debug-segment* "village1-hut")   ;; -debug lands here
+(else "title-start")
+```
+
+`-debug` sets `*debug-segment*`, so you spawn at `village1-hut`. Drop `-debug` to get
+`title-start`. Use the debug boot for iterating and the retail boot to confirm the full path.
+
+Do not use `--no-display` for the visual/audio check.
 
 ## Expected Log Markers
 
-Good baseline markers:
+Debug boot (`-debug`):
 
 ```text
 Got correct kernel version 2.0
-begin load title-vis [tit.DGO]
-GAMEPLAY: enter title
-Load music village1
+kernel: machine started
+begin load village1-vis
+Displaying level village1
+GAMEPLAY: enter village1
 Kernel dispatch #100
 Kernel dispatch #1000
 ```
 
-The compiled version should be the current restore commit on `experimental`,
-or a local baseline checkout such as `d4bf68543`. It must not be the known bad
-`7b226be70` unless the restore patch is applied locally.
+Retail boot (no `-debug`):
+
+```text
+begin load title-vis
+GAMEPLAY: enter title
+```
+
+The dispatch counter keeps climbing for as long as the game runs -- observed past #8700. The
+process should only exit because you closed it, with status 0.
+
+Counts that must all be **zero** in a healthy run -- check these before believing a change is
+good, because each one was a real bug that produced no crash:
+
+```sh
+grep -ac "EE-CRASH" log                              # faults
+grep -ac "suspend called without enough stack" log   # backup stack too small
+grep -ac "inverted normals" log                      # cross products / SIMD lanes wrong
+grep -ac "zero area" log                             # same
+```
+
+A non-zero exit (132 = SIGILL, 138/139 = SIGBUS) is a regression.
 
 ## SIGBUS Note
 
-`[SIGBUS] count=...` is not automatically a crash in this port. The current
-runtime can recover from many SIGBUS faults and continue dispatching frames.
+`[SIGBUS] count=...` is not automatically a crash in this port: writes into the MAP_JIT code
+region fault by design and the handler emulates them, so a large count during linking is normal.
 
-Real regression:
-
-- process exits or aborts directly after Sony Presents
-- no Naughty Dog / title audio continues
-- no `Kernel dispatch #100` or later markers appear
+`[EE-CRASH]` is different -- that is a fault the handler could *not* explain, and it is always a
+real bug even if the game keeps running afterwards.
 
 ## Fixed: masked vector ops were a no-op on ARM64
 
@@ -284,15 +347,113 @@ scripts/arm64/resolve_goal_addr.py /tmp/funcmap.txt /tmp/gk.log 0x19880
 Then `(dump-function-ir "enter-state" ...)` and look up `+0xcdc` to get the source line.
 Regenerate the function map after any compiler or GOAL change -- offsets move.
 
-## Known remaining bug: MIPS2C read outside EE memory
+## Fixed: mips2c `jalr` did nothing on Apple ARM64
 
-Boot now reaches `machine started`, `Displaying level village1` and `GAMEPLAY: enter village1`,
-and the display loop renders several frames before failing.
+This was the last crash. `ExecutionContext::jalr` in `game/mips2c/mips2c_private.h` is how
+hand-translated VU/EE code calls back into GOAL. Its dispatch was:
 
-The current crash is in C++ rather than GOAL: `Mips2C::ExecutionContext::lw` reads
-`EE+0x8b160250`, which is past the end of the 128 MB EE memory. That is the hand-translated VU
-code under `game/mips2c/`, i.e. the next layer of the renderer -- the same area the
-`2ecf78f88` revert touched.
+```cpp
+#ifdef __linux__                              /* systemv */
+#elif defined __APPLE__ && defined __x86_64__ /* systemv */
+#elif _WIN32                                  /* win32   */
+#endif
+```
+
+On Apple ARM64 no branch matches, so the body compiled to nothing: the GOAL function was never
+called and `gprs[v0]` kept whatever was left from the previous instruction. Callers then used
+that as a pointer. `sp_launch_particles_var` did exactly this and read `EE+0x8b160250`.
+
+Nothing warned about it -- no `#error`, no assert, and the `extern "C"` block had the same gap so
+there was not even a missing symbol at link time. It now calls `_call_goal8_asm_arm64` (already
+present in `game/kernel/asm_funcs_arm64.s` with a matching signature) and ends in
+`#else #error`, so the next unhandled platform fails loudly.
+
+**Worth repeating as a rule:** grep for `__x86_64__` before trusting any platform dispatch in this
+tree. `game/mips2c/mips2c_table.cpp` has two more such chains -- those do handle ARM64, but the
+pattern is a recurring source of silent no-ops.
+
+## Tooling: symbolizing a crash inside mips2c / C++
+
+`backtrace()` is nearly useless on the EE thread: the frame pointer lives inside EE memory, so it
+gives up after a few frames. The chain itself is intact, so `dump_arm64_crash_context` now walks
+it by hand and prints an `[EE-CRASH] FP-chain:` block. That is what identified
+`sp_launch_particles_var` -- `dladdr` had been misattributing the PC to
+`ExecutionContext::lw` because the generated mips2c functions are static and have no exported
+symbol.
+
+For line numbers, build a dSYM (the binary has a debug map, 400+ OSO entries, but no dSYM):
+
+```sh
+dsymutil build/game/gk -o /tmp/gk.dSYM        # ~2s
+# slide = runtime address of a known symbol - its static address:
+nm build/game/gk | grep dump_arm64_crash_context
+atos -o /tmp/gk.dSYM/Contents/Resources/DWARF/gk -l 0x100000000 <static addr>
+```
+
+Beware: with inlining, `atos` and `dladdr` will confidently name the *wrong* function. Trust the
+FP-chain over a single symbolized PC, and confirm with a targeted check in the suspect helper
+before acting on it.
+
+## Fixed: wrong SIMD element index broke every cross product
+
+The same `imm5` mistake as `splat_vf`, in three more emitter functions. For an Advanced SIMD
+element index, the **lowest set bit of `imm5` selects the element size** and the bits above it
+hold the index, so 32-bit lanes need `imm5 = (index << 3) | 0b00100`. The code used
+`(index << 2) | 4`, and `ins_vf_element` also used `imm4 = srcIdx << 1` instead of `srcIdx << 2`:
+
+| function | was | effect |
+|---|---|---|
+| `ins_vf_element` | `imm5=(d<<2)\|4`, `imm4=s<<1` | 15 of 16 lane pairs wrong |
+| `ins_vf_element_from_gpr32` | `imm5=(i<<2)\|4` | wrong for every lane but 0 |
+| `umov_gpr32_vf_element` | `imm5=(i<<2)\|4`, base `0x2E003C00` | wrong lane *and* wrong base (Q must be 0 for a 32-bit destination: `0x0E003C00`) |
+
+`ins_vf_element` is what `IR_SwizzleVF::do_codegen_arm64` builds every swizzle out of, and
+`.outer.product.a.vf` / `.outer.product.b.vf` are implemented as two swizzles plus a multiply.
+So **every cross product in the engine was wrong**, which is why `initialize-mesh!` reported
+things like "nav-mesh has 76 triangles with inverted normals (out of 76 triangles)". After the
+fix those warnings go to zero and the picture is correct.
+
+The swizzle *patterns* in `IR.cpp` were fine all along -- only the instruction they were built
+from was broken. Verified against the system assembler for all 16 lane pairs, and
+`CodeTester.execute_ins_vf_element_arm64` executes each pair and checks the moved lane.
+
+`ins_element_s` (added earlier for `IR_BlendVF`) was a same-lane duplicate of this function and
+has been removed; the blend now uses `ins_vf_element` directly.
+
+## Fixed: backup stacks were sized for x86 frames
+
+`thread-suspend` copies exactly `stack-size` bytes of the thread's stack into the process heap.
+Each ARM64 call pushes x29/x30 and keeps SP 16-byte aligned, where x86's `CALL` pushes only an
+8-byte return address, so the same GOAL call depth needs more bytes here. It was consistently
+16 over: `Stack: 144/128`, logged **85352 times in a single run**, and the copy loop then ran off
+the bottom of the buffer into whatever the process heap had put in front of it.
+
+`backup-stack-size` in `gkernel-h.gc` adds 64 bytes of headroom on ARM64, applied in the two
+places that set a backup stack size: `stack-size-set!` and `new cpu-thread`. Call sites keep
+their x86-tuned numbers.
+
+Watch for `suspend called without enough stack` in the log -- it should be zero. If it comes
+back, the margin is too small for some new call depth, not a reason to ignore the message.
+
+## Next up: Metal
+
+The OpenGL renderer now produces a correct picture, so it is the reference to port against.
+Suggested order:
+
+1. Capture a reference: screenshots and `[EE-LINK]`/frame logs from the working OpenGL build,
+   so any Metal regression is obvious.
+2. Stand up the Metal device/queue/layer next to the existing `GLDisplay`
+   (`game/graphics/pipelines/opengl.cpp`), add `GfxPipeline::Metal` in `game/graphics/gfx.h`,
+   and get a cleared frame on screen.
+3. Port the 92 GLSL shaders in `game/graphics/opengl_renderer/shaders/` to MSL and replace
+   `Shader.cpp`'s compile/link path with `MTLLibrary`/`MTLRenderPipelineState`.
+4. Convert the renderer classes one bucket at a time (`tfrag3` first -- it covers most of the
+   world and is easy to eyeball), keeping OpenGL selectable so the two can be compared directly.
+5. Port `game/graphics/texture/` to `MTLTexture`, then `Fbo.h` to `MTLRenderPassDescriptor` for
+   the multi-pass effects (glow probes, shadows, sky blend).
+
+Keep the OpenGL backend working throughout. Being able to flip between the two is the only cheap
+way to tell a Metal bug from yet another codegen bug.
 
 ## Test coverage gap on ARM64
 
