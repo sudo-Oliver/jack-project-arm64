@@ -358,6 +358,7 @@ if(APPLE)
                               graphics/metal_renderer/MetalGpuResources.mm
                               graphics/metal_renderer/MetalRenderState.mm
                               graphics/metal_renderer/MetalShrub.mm
+                              graphics/metal_renderer/MetalTie3.mm
                               graphics/metal_renderer/MetalRenderer.mm
                               graphics/metal_renderer/MetalTFragment.mm
                               graphics/metal_renderer/MetalShaderLibrary.cpp)
@@ -374,6 +375,7 @@ if(APPLE)
                                 graphics/metal_renderer/MetalGpuResources.mm
                               graphics/metal_renderer/MetalRenderState.mm
                               graphics/metal_renderer/MetalShrub.mm
+                              graphics/metal_renderer/MetalTie3.mm
                               graphics/metal_renderer/MetalRenderer.mm
                               graphics/metal_renderer/MetalTFragment.mm PROPERTIES
         COMPILE_FLAGS "-fobjc-arc")
