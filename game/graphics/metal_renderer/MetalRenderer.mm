@@ -10,6 +10,7 @@
 #include "common/log/log.h"
 
 #include "game/graphics/metal_renderer/MetalDirect.h"
+#include "game/graphics/metal_renderer/MetalEye.h"
 #include "game/graphics/metal_renderer/MetalMerc2.h"
 #include "game/graphics/metal_renderer/MetalOcean.h"
 #include "game/graphics/metal_renderer/MetalShrub.h"
@@ -97,6 +98,15 @@ void MetalRenderer::init_bucket_table() {
     m_bucket_renderers[(int)id] = std::make_unique<MetalTextureUploadHandler>(name, (int)id);
   }
 
+  // The eyes. merc looks its eye textures up in this, so the render state carries a pointer to
+  // it.
+  {
+    auto eyes = std::make_unique<MetalEyeRenderer>("common-pris-eyes",
+                                                   (int)BucketId::MERC_EYES_AFTER_PRIS);
+    m_render_state.eye_renderer = eyes.get();
+    m_bucket_renderers[(int)BucketId::MERC_EYES_AFTER_PRIS] = std::move(eyes);
+  }
+
   // The ocean: the first bucket builds the water texture and draws the far and mid water, the
   // second draws the near water.
   m_bucket_renderers[(int)BucketId::OCEAN_MID_AND_FAR] =
@@ -169,6 +179,8 @@ bool MetalRenderer::init(id<MTLDevice> device,
         mid->init_textures(*m_render_state.texture_pool, GameVersion::Jak1);
       } else if (auto* near_ocean = dynamic_cast<MetalOceanNear*>(renderer.get())) {
         near_ocean->init_textures(*m_render_state.texture_pool, GameVersion::Jak1);
+      } else if (auto* eyes = dynamic_cast<MetalEyeRenderer*>(renderer.get())) {
+        eyes->init_textures(*m_render_state.texture_pool, GameVersion::Jak1);
       }
     }
   }

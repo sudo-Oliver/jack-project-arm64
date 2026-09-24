@@ -8,10 +8,12 @@
 #import <Metal/Metal.h>
 
 #include <array>
+#include <optional>
 #include <vector>
 
 #include "common/log/log.h"
 
+#include "game/graphics/metal_renderer/MetalEye.h"
 #include "game/graphics/metal_renderer/MetalGpuResources.h"
 
 #include "metal_shader_types.h"
@@ -229,11 +231,21 @@ void MetalMerc2::backend_do_draws(const Draw* draws,
   for (u32 di = 0; di < num_draws; di++) {
     const auto& draw = draws[di];
 
-    // Animated-texture slots and eye textures both need renderers that are not ported yet.
-    if (draw.texture < 0 || (u32)draw.texture >= level->textures.size()) {
+    // An eye is drawn with a texture the eye renderer built this frame, named by an id rather
+    // than a slot in the level.
+    std::optional<u64> handle;
+    if ((draw.texture & 0xffffff00) == 0xefffff00) {
+      if (m_current_render_state->eye_renderer) {
+        handle = m_current_render_state->eye_renderer->lookup_eye_texture(draw.texture & 0xff);
+      }
+    } else if (draw.texture >= 0 && (u32)draw.texture < level->textures.size()) {
+      handle = level->textures[draw.texture];
+    }
+    // A negative texture is an animated slot, which needs the TextureAnimator.
+    if (!handle) {
       continue;
     }
-    id<MTLTexture> texture = metal_texture_from_handle(level->textures[draw.texture]);
+    id<MTLTexture> texture = metal_texture_from_handle(*handle);
     if (!texture) {
       continue;
     }

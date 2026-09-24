@@ -101,6 +101,9 @@ struct MetalRenderState {
   MTLPixelFormat depth_format = MTLPixelFormatInvalid;
 
   std::shared_ptr<TexturePool> texture_pool;
+  // merc draws the eyes with textures this renderer builds, so it has to be reachable from a
+  // bucket that is not its own. The OpenGL SharedRenderState carries it for the same reason.
+  class MetalEyeRenderer* eye_renderer = nullptr;
   std::shared_ptr<Loader> loader;
 
   // Where this bucket's data ends. A renderer must leave the DMA cursor exactly here, or every

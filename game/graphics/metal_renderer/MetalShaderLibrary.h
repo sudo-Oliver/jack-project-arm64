@@ -48,6 +48,7 @@ inline const std::vector<ShaderDef>& all_shaders() {
       {"merc2.metal", "merc2_vert", "merc2_frag"},
       {"emerc.metal", "emerc_vert", "emerc_frag"},
       {"sky_blend.metal", "sky_blend_vert", "sky_blend_frag"},
+      {"eye.metal", "eye_vert", "eye_frag"},
       {"ocean_common.metal", "ocean_common_vert", "ocean_common_frag"},
       {"ocean_texture.metal", "ocean_texture_vert", "ocean_texture_frag"},
       {"ocean_texture_mipmap.metal", "ocean_texture_mipmap_vert", "ocean_texture_mipmap_frag"},
