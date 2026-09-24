@@ -46,6 +46,7 @@ set(RUNTIME_SOURCE
         graphics/opengl_renderer/debug_gui.cpp
         graphics/opengl_renderer/DepthCue.cpp
         graphics/opengl_renderer/DirectRenderer.cpp
+        graphics/direct/DirectRenderer2Core.cpp
         graphics/opengl_renderer/DirectRenderer2.cpp
         graphics/opengl_renderer/dma_helpers.cpp
         graphics/opengl_renderer/EyeRenderer.cpp
@@ -354,14 +355,18 @@ add_subdirectory(sound)
 # The Metal backend is Objective-C++ and only exists on Apple platforms.
 # It sits alongside the OpenGL backend; the renderer is chosen at runtime (see Gfx::GetRenderer).
 if(APPLE)
-    list(APPEND RUNTIME_SOURCE graphics/pipelines/metal.mm
-                              graphics/metal_renderer/MetalGpuResources.mm
-                              graphics/metal_renderer/MetalRenderState.mm
-                              graphics/metal_renderer/MetalShrub.mm
-                              graphics/metal_renderer/MetalTie3.mm
-                              graphics/metal_renderer/MetalRenderer.mm
-                              graphics/metal_renderer/MetalTFragment.mm
-                              graphics/metal_renderer/MetalShaderLibrary.cpp)
+    # One list, because every one of these also needs -fobjc-arc below. A file added to only one
+    # of two lists compiles without ARC and leaks every Objective-C object it makes.
+    set(METAL_OBJCXX_SOURCE graphics/pipelines/metal.mm
+                            graphics/metal_renderer/MetalGpuResources.mm
+                            graphics/metal_renderer/MetalRenderState.mm
+                            graphics/metal_renderer/MetalShrub.mm
+                            graphics/metal_renderer/MetalTie3.mm
+                            graphics/metal_renderer/MetalRenderer.mm
+                            graphics/metal_renderer/MetalTextureUploadHandler.mm
+                            graphics/metal_renderer/MetalTFragment.mm)
+    list(APPEND RUNTIME_SOURCE ${METAL_OBJCXX_SOURCE}
+                               graphics/metal_renderer/MetalShaderLibrary.cpp)
 
 endif()
 
@@ -371,14 +376,7 @@ add_library(runtime STATIC ${RUNTIME_SOURCE} "../third-party/glad/src/glad.c")
 target_link_libraries(runtime common fmt SDL3::SDL3 imgui discord-rpc sound stb_image libco libcurl)
 if(APPLE)
     target_link_libraries(runtime "-framework Metal" "-framework QuartzCore" "-framework Foundation")
-    set_source_files_properties(graphics/pipelines/metal.mm
-                                graphics/metal_renderer/MetalGpuResources.mm
-                              graphics/metal_renderer/MetalRenderState.mm
-                              graphics/metal_renderer/MetalShrub.mm
-                              graphics/metal_renderer/MetalTie3.mm
-                              graphics/metal_renderer/MetalRenderer.mm
-                              graphics/metal_renderer/MetalTFragment.mm PROPERTIES
-        COMPILE_FLAGS "-fobjc-arc")
+    set_source_files_properties(${METAL_OBJCXX_SOURCE} PROPERTIES COMPILE_FLAGS "-fobjc-arc")
     target_include_directories(runtime PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/graphics/metal_renderer/shaders)
 endif()
 if(WIN32)

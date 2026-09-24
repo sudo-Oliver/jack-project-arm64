@@ -11,8 +11,14 @@
 
 #include "game/graphics/metal_renderer/MetalShrub.h"
 #include "game/graphics/metal_renderer/MetalTFragment.h"
+#include "game/graphics/metal_renderer/MetalTextureUploadHandler.h"
 #include "game/graphics/metal_renderer/MetalTie3.h"
 #include "game/graphics/opengl_renderer/buckets.h"
+#include "game/runtime.h"
+
+// kmachine.h declares this, but it cannot be included here: it pulls in the kernel's Ptr<>, and
+// Metal.h pulls in MacTypes.h, which has its own `Ptr` typedef. The declaration is one line.
+u32 offset_of_s7();
 
 MetalRenderer::MetalRenderer(std::shared_ptr<TexturePool> texture_pool,
                              std::shared_ptr<Loader> loader) {
@@ -43,6 +49,20 @@ void MetalRenderer::init_bucket_table() {
   m_bucket_renderers[(int)BucketId::TFRAG_LEVEL1] = std::make_unique<MetalTFragment>(
       "l1-tfrag-tfrag", (int)BucketId::TFRAG_LEVEL1, normal_tfrags, 1);
 
+  // The alpha pass draws the same trees again in two more kinds. They are separate buckets
+  // because they come after the sky blend and the transparent tfrags, which is what puts the
+  // dirt tracks and the ice on top of the ground rather than under it.
+  const std::vector<tfrag3::TFragmentTreeKind> dirt_tfrags = {tfrag3::TFragmentTreeKind::DIRT};
+  const std::vector<tfrag3::TFragmentTreeKind> ice_tfrags = {tfrag3::TFragmentTreeKind::ICE};
+  m_bucket_renderers[(int)BucketId::TFRAG_DIRT_LEVEL0] = std::make_unique<MetalTFragment>(
+      "l0-alpha-tfrag-dirt", (int)BucketId::TFRAG_DIRT_LEVEL0, dirt_tfrags, 0);
+  m_bucket_renderers[(int)BucketId::TFRAG_DIRT_LEVEL1] = std::make_unique<MetalTFragment>(
+      "l1-alpha-tfrag-dirt", (int)BucketId::TFRAG_DIRT_LEVEL1, dirt_tfrags, 1);
+  m_bucket_renderers[(int)BucketId::TFRAG_ICE_LEVEL0] = std::make_unique<MetalTFragment>(
+      "l0-alpha-tfrag-ice", (int)BucketId::TFRAG_ICE_LEVEL0, ice_tfrags, 0);
+  m_bucket_renderers[(int)BucketId::TFRAG_ICE_LEVEL1] = std::make_unique<MetalTFragment>(
+      "l1-alpha-tfrag-ice", (int)BucketId::TFRAG_ICE_LEVEL1, ice_tfrags, 1);
+
   m_bucket_renderers[(int)BucketId::TIE_LEVEL0] =
       std::make_unique<MetalTie3>("l0-tfrag-tie", (int)BucketId::TIE_LEVEL0, 0);
   m_bucket_renderers[(int)BucketId::TIE_LEVEL1] =
@@ -52,6 +72,26 @@ void MetalRenderer::init_bucket_table() {
       std::make_unique<MetalShrub>("l0-shrub", (int)BucketId::SHRUB_NORMAL_LEVEL0, 0);
   m_bucket_renderers[(int)BucketId::SHRUB_NORMAL_LEVEL1] =
       std::make_unique<MetalShrub>("l1-shrub", (int)BucketId::SHRUB_NORMAL_LEVEL1, 1);
+
+  // The texture-upload buckets, in the same places the OpenGL table puts them. They draw nothing;
+  // they tell the TexturePool which PS2 page now holds which texture, and every renderer after
+  // them looks its textures up in that pool.
+  const std::pair<const char*, BucketId> texture_buckets[] = {
+      {"l0-tfrag-tex", BucketId::TFRAG_TEX_LEVEL0},
+      {"l1-tfrag-tex", BucketId::TFRAG_TEX_LEVEL1},
+      {"l0-shrub-tex", BucketId::SHRUB_TEX_LEVEL0},
+      {"l1-shrub-tex", BucketId::SHRUB_TEX_LEVEL1},
+      {"l0-alpha-tex", BucketId::ALPHA_TEX_LEVEL0},
+      {"l1-alpha-tex", BucketId::ALPHA_TEX_LEVEL1},
+      {"l0-pris-tex", BucketId::PRIS_TEX_LEVEL0},
+      {"l1-pris-tex", BucketId::PRIS_TEX_LEVEL1},
+      {"l0-water-tex", BucketId::WATER_TEX_LEVEL0},
+      {"l1-water-tex", BucketId::WATER_TEX_LEVEL1},
+      {"common-tex", BucketId::PRE_SPRITE_TEX},
+  };
+  for (const auto& [name, id] : texture_buckets) {
+    m_bucket_renderers[(int)id] = std::make_unique<MetalTextureUploadHandler>(name, (int)id);
+  }
 }
 
 bool MetalRenderer::init(id<MTLDevice> device,
@@ -144,6 +184,8 @@ void MetalRenderer::render(DmaFollower dma, id<MTLRenderCommandEncoder> encoder)
   }
   m_last_frame_tris = 0;
   m_render_state.encoder = encoder;
+  m_render_state.ee_main_memory = g_ee_main_mem;
+  m_render_state.offset_of_s7 = offset_of_s7();
 
   scan_frame_state(dma);
 
