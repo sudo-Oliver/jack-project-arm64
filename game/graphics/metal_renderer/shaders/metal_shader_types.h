@@ -56,3 +56,16 @@ struct Tfrag3Uniforms {
   int decal;
   int gfx_hack_no_tex;
 };
+
+// direct2.metal. Everything the GS draw mode cannot bake into a pipeline or a sampler.
+struct Direct2Uniforms {
+  METAL_FLOAT4 fog_color;  // rgb is the colour, a is the intensity
+  float alpha_reject;
+  float color_mult;
+  float scissor_adjust;
+  float pad;
+};
+
+// How many textures one grouped direct draw can use at once. Must match TEX_UNITS in
+// DirectRenderer2Core and the array size in direct2.metal.
+enum { MetalDirect2TexUnits = 10 };

@@ -10,6 +10,8 @@
 #include "common/log/log.h"
 #include "common/util/Assert.h"
 
+#include "common/dma/dma.h"
+
 #include "fmt/format.h"
 
 DirectRenderer2Core::DirectRenderer2Core(u32 max_verts,
@@ -62,6 +64,58 @@ std::string DirectRenderer2Core::Draw::to_single_line_string() const {
   return fmt::format("mode 0x{:8x} tbp 0x{:4x} fix 0x{:2x}\n", mode.as_int(), tbp, fix);
 }
 
+
+namespace {
+
+/*!
+ * If it is a DIRECT, return the quadword count it carries. If it is ignorable (nop, flush),
+ * return 0.
+ */
+u32 get_direct_qwc_or_nop(const VifCode& code) {
+  switch (code.kind) {
+    case VifCode::Kind::NOP:
+    case VifCode::Kind::FLUSHA:
+      return 0;
+    case VifCode::Kind::DIRECT:
+      return code.immediate == 0 ? 65536 : code.immediate;
+    default:
+      ASSERT_MSG(false, fmt::format("expected direct, got {}", code.print()));
+      return 0;
+  }
+}
+
+}  // namespace
+
+void DirectRenderer2Core::render_vif_data(u32 vif0, u32 vif1, const u8* data, u32 size) {
+  // Walk forward looking for DIRECTs, skipping the nops and flushes between them.
+  u32 gif_qwc = get_direct_qwc_or_nop(VifCode(vif0));
+  if (gif_qwc) {
+    ASSERT(get_direct_qwc_or_nop(VifCode(vif1)) == 0);
+  } else {
+    gif_qwc = get_direct_qwc_or_nop(VifCode(vif1));
+  }
+
+  u32 offset_into_data = 0;
+  while (offset_into_data < size) {
+    if (gif_qwc) {
+      if (offset_into_data & 0xf) {
+        // Not quadword-aligned: what follows has to be a nop.
+        u32 vif;
+        memcpy(&vif, data + offset_into_data, 4);
+        offset_into_data += 4;
+        ASSERT(get_direct_qwc_or_nop(VifCode(vif)) == 0);
+      } else {
+        render_gif_data(data + offset_into_data);
+        offset_into_data += gif_qwc * 16;
+      }
+    } else {
+      u32 vif;
+      memcpy(&vif, data + offset_into_data, 4);
+      offset_into_data += 4;
+      gif_qwc = get_direct_qwc_or_nop(VifCode(vif));
+    }
+  }
+}
 
 void DirectRenderer2Core::render_gif_data(const u8* data) {
   bool eop = false;

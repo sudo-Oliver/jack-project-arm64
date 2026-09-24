@@ -9,6 +9,7 @@
 
 #include "common/log/log.h"
 
+#include "game/graphics/metal_renderer/MetalDirect2.h"
 #include "game/graphics/metal_renderer/MetalShrub.h"
 #include "game/graphics/metal_renderer/MetalTFragment.h"
 #include "game/graphics/metal_renderer/MetalTextureUploadHandler.h"
@@ -92,6 +93,14 @@ void MetalRenderer::init_bucket_table() {
   for (const auto& [name, id] : texture_buckets) {
     m_bucket_renderers[(int)id] = std::make_unique<MetalTextureUploadHandler>(name, (int)id);
   }
+
+  // The GIF buckets: debug draws and the subtitle text. Batch sizes are the OpenGL table's.
+  m_bucket_renderers[(int)BucketId::DEBUG] =
+      std::make_unique<MetalDirectBucketRenderer>("debug", (int)BucketId::DEBUG, 0x20000);
+  m_bucket_renderers[(int)BucketId::DEBUG_NO_ZBUF] = std::make_unique<MetalDirectBucketRenderer>(
+      "debug-no-zbuf", (int)BucketId::DEBUG_NO_ZBUF, 0x8000);
+  m_bucket_renderers[(int)BucketId::SUBTITLE] =
+      std::make_unique<MetalDirectBucketRenderer>("subtitle", (int)BucketId::SUBTITLE, 6000);
 }
 
 bool MetalRenderer::init(id<MTLDevice> device,
@@ -186,6 +195,7 @@ void MetalRenderer::render(DmaFollower dma, id<MTLRenderCommandEncoder> encoder)
   m_render_state.encoder = encoder;
   m_render_state.ee_main_memory = g_ee_main_mem;
   m_render_state.offset_of_s7 = offset_of_s7();
+  m_render_state.frame_index++;
 
   scan_frame_state(dma);
 
@@ -232,6 +242,8 @@ void MetalRenderer::render(DmaFollower dma, id<MTLRenderCommandEncoder> encoder)
       m_last_frame_tris += shrub->last_frame_tris();
     } else if (auto* tie = dynamic_cast<MetalTie3*>(renderer.get())) {
       m_last_frame_tris += tie->last_frame_tris();
+    } else if (auto* direct = dynamic_cast<MetalDirectBucketRenderer*>(renderer.get())) {
+      m_last_frame_tris += direct->last_frame_tris();
     }
   }
   m_render_state.encoder = nil;

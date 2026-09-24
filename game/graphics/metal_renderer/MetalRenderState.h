@@ -105,6 +105,11 @@ struct MetalRenderState {
   LevelVis occlusion_vis[jak1::LEVEL_MAX];
 
   math::Vector<u8, 4> fog_color{0, 0, 0, 0};
+  float fog_intensity = 1.f;
+
+  // Counts up once per frame. Renderers that write into GPU buffers the GPU may still be reading
+  // use it to pick which of their buffers is safe to touch.
+  u64 frame_index = 0;
 
   // The EE's main memory, and where the GOAL symbol table sits in it. The texture-upload buckets
   // point into EE memory rather than carrying the texture data, so they need both.

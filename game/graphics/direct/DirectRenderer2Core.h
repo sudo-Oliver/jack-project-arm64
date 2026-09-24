@@ -32,6 +32,11 @@ class DirectRenderer2Core {
   // they are close to full.
   void render_gif_data(const u8* data);
 
+  // Consumes one DMA transfer's worth of VIF data, which is GIF packets wrapped in DIRECT codes
+  // with nops between them. Same walk DirectRenderer::render_vif does, and neither half of it is
+  // backend-specific.
+  void render_vif_data(u32 vif0, u32 vif1, const u8* data, u32 size);
+
   const std::string& name() const { return m_name; }
 
  protected:
