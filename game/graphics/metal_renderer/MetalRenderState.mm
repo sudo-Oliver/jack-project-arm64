@@ -9,6 +9,10 @@
 
 #include "common/goal_constants.h"
 #include "common/log/log.h"
+#include "common/util/Timer.h"
+
+u32 g_metal_pipeline_builds = 0;
+double g_metal_pipeline_build_seconds = 0;
 
 void MetalDrawStateCache::init(id<MTLDevice> device,
                                id<MTLFunction> vert,
@@ -88,8 +92,14 @@ id<MTLRenderPipelineState> MetalDrawStateCache::pipeline(DrawMode mode,
   }
   color.blendingEnabled = blend;
 
+  // Building a pipeline is a compile, and it is synchronous. Doing one in the middle of a frame
+  // costs milliseconds, which is a visible hitch at 60 Hz -- so count them, and warm the cache
+  // when a level is loaded rather than meeting a new draw mode mid-frame.
+  Timer build_timer;
   NSError* err = nil;
   id<MTLRenderPipelineState> pso = [m_device newRenderPipelineStateWithDescriptor:desc error:&err];
+  g_metal_pipeline_builds++;
+  g_metal_pipeline_build_seconds += build_timer.getSeconds();
   if (!pso) {
     lg::error("[Metal] pipeline for draw mode {} failed: {}", mode.as_int(),
               err ? [[err localizedDescription] UTF8String] : "unknown error");

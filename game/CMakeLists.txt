@@ -53,6 +53,7 @@ set(RUNTIME_SOURCE
         graphics/foreground/Merc2Core.cpp
         graphics/opengl_renderer/DirectRenderer2.cpp
         graphics/opengl_renderer/dma_helpers.cpp
+        graphics/eye/EyeRendererCore.cpp
         graphics/opengl_renderer/EyeRenderer.cpp
         graphics/opengl_renderer/foreground/Generic2_Build.cpp
         graphics/opengl_renderer/foreground/Generic2_DMA.cpp

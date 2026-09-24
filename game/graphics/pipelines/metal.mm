@@ -21,6 +21,8 @@
 #include "common/global_profiler/GlobalProfiler.h"
 #include <atomic>
 
+#include "common/util/Timer.h"
+
 #include "common/log/log.h"
 
 #include "common/util/FileUtil.h"
@@ -45,7 +47,6 @@ struct MetalContext {
   id<MTLLibrary> library = nil;
   // First ported shader. Proves source -> MTLLibrary -> pipeline state -> draw end to end.
   // Depth buffer for the world geometry. Recreated whenever the drawable changes size.
-  id<MTLTexture> frame_texture = nil;
   id<MTLTexture> depth_texture = nil;
   u32 depth_w = 0, depth_h = 0;
 };
@@ -284,6 +285,7 @@ void metal_set_active_levels(const std::vector<std::string>& levels) {
 // The PCRTC alpha register. Zero means the screen is blacked out, which is when the game loads a
 // level, and coming out of that is the moment everything has to be ready.
 std::atomic<float> g_metal_pmode_alp{1.f};
+double g_metal_worst_frame_ms = 0;
 void metal_set_pmode_alp(float val) {
   g_metal_pmode_alp = val;
 }
@@ -416,9 +418,18 @@ void MetalDisplay::render() {
   // Every renderer's per-frame buffers are sized for that many frames: without this the CPU runs
   // ahead and rewrites a buffer the GPU is still reading, which shows up as a flicker over the
   // whole picture rather than as an error.
+  //
+  // This whole block is skipped when the game thread has no frame for us. The layer goes on
+  // showing the drawable it was last given, so there is nothing to redraw -- and nothing to
+  // clear, which is what used to put a blank frame between every real one. The bookkeeping below
+  // it still runs: the game thread is waiting on it.
+  if (have_frame) {
   dispatch_semaphore_wait(g_metal_frame_semaphore, DISPATCH_TIME_FOREVER);
 
   @autoreleasepool {
+    // A lambda, so that giving up on this frame leaves the bookkeeping below it to run: the game
+    // thread is waiting on that.
+    [&] {
     id<CAMetalDrawable> drawable = [m_ctx->layer nextDrawable];
     if (!drawable) {
       // The layer can legitimately run out of drawables (e.g. the window is occluded).
@@ -430,21 +441,6 @@ void MetalDisplay::render() {
     // frame did not.
     const u32 dw = (u32)drawable.texture.width;
     const u32 dh = (u32)drawable.texture.height;
-    // The frame is drawn into a texture we own rather than straight into the drawable, and that
-    // texture is blitted to the drawable afterwards. This display loop runs more often than the
-    // game produces frames; drawing into the drawable would clear it on every one of those calls,
-    // so a frame with no new data would come out blank -- a flicker over the whole picture.
-    // Keeping the last frame in a texture of our own means those calls re-present it instead.
-    if (!m_ctx->frame_texture || m_ctx->depth_w != dw || m_ctx->depth_h != dh) {
-      MTLTextureDescriptor* fd =
-          [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:kMetalColorFormat
-                                                             width:dw
-                                                            height:dh
-                                                         mipmapped:NO];
-      fd.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
-      fd.storageMode = MTLStorageModePrivate;
-      m_ctx->frame_texture = [m_ctx->device newTextureWithDescriptor:fd];
-    }
     if (!m_ctx->depth_texture || m_ctx->depth_w != dw || m_ctx->depth_h != dh) {
       MTLTextureDescriptor* dd =
           [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:kMetalDepthFormat
@@ -459,11 +455,8 @@ void MetalDisplay::render() {
     }
 
     MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
-    pass.colorAttachments[0].texture = m_ctx->frame_texture;
-    // Only a real frame clears. Without one there is nothing to draw, and the texture already
-    // holds the last frame.
-    pass.colorAttachments[0].loadAction =
-        have_frame ? MTLLoadActionClear : MTLLoadActionLoad;
+    pass.colorAttachments[0].texture = drawable.texture;
+    pass.colorAttachments[0].loadAction = MTLLoadActionClear;
     pass.colorAttachments[0].storeAction = MTLStoreActionStore;
     // Distinctive clear colour: proof the Metal path is what is on screen, not OpenGL.
     pass.colorAttachments[0].clearColor = MTLClearColorMake(0.1, 0.1, 0.25, 1.0);
@@ -480,7 +473,7 @@ void MetalDisplay::render() {
     id<MTLRenderCommandEncoder> enc = [cmd renderCommandEncoderWithDescriptor:pass];
 
     // Every bucket, in order, through the bucket table.
-    if (g_metal_gfx_data && have_frame) {
+    if (g_metal_gfx_data) {
       if (!g_metal_gfx_data->renderer_ready) {
         g_metal_gfx_data->renderer_ready = g_metal_gfx_data->renderer->init(
             m_ctx->device, m_ctx->library, kMetalColorFormat, kMetalDepthFormat);
@@ -497,21 +490,6 @@ void MetalDisplay::render() {
 
     [enc endEncoding];
     [offscreen_cmd commit];
-
-    // Hand the finished frame to the drawable.
-    {
-      id<MTLBlitCommandEncoder> present_blit = [cmd blitCommandEncoder];
-      [present_blit copyFromTexture:m_ctx->frame_texture
-                        sourceSlice:0
-                        sourceLevel:0
-                       sourceOrigin:MTLOriginMake(0, 0, 0)
-                         sourceSize:MTLSizeMake(dw, dh, 1)
-                          toTexture:drawable.texture
-                   destinationSlice:0
-                   destinationLevel:0
-                  destinationOrigin:MTLOriginMake(0, 0, 0)];
-      [present_blit endEncoding];
-    }
 
     // Debug readback: OPENGOAL_METAL_SCREENSHOT=<path> writes the first fully-drawn frame to a
     // PNG and stops. Metal draws into a drawable the window server owns, so there is no way to
@@ -587,7 +565,9 @@ void MetalDisplay::render() {
                g_metal_gfx_data->frame_idx);
       screenshot_done = true;
     }
+    }();
   }
+  }  // if (have_frame)
 
   // Release the game thread: it blocks in metal_sync_path/metal_vsync until the frame is done.
   if (have_frame) {
@@ -598,6 +578,33 @@ void MetalDisplay::render() {
     std::unique_lock<std::mutex> lock(g_metal_gfx_data->sync_mutex);
     g_metal_gfx_data->frame_idx++;
     g_metal_gfx_data->sync_cv.notify_all();
+  }
+
+  // OPENGOAL_FPS_LOG=1 prints the frame rate every second. Both backends do it the same way, so
+  // the two numbers are comparable.
+  {
+    static Timer frame_timer;
+    const double this_frame = frame_timer.getSeconds();
+    frame_timer.start();
+    if (this_frame > g_metal_worst_frame_ms) {
+      g_metal_worst_frame_ms = this_frame;
+    }
+  }
+
+  if (have_frame && std::getenv("OPENGOAL_FPS_LOG")) {
+    static Timer fps_timer;
+    static int fps_frames = 0;
+    fps_frames++;
+    if (fps_timer.getSeconds() >= 1.0) {
+      lg::info("[Metal] {:.1f} fps, worst frame {:.2f} ms, {} pipelines built ({:.1f} ms)",
+               fps_frames / fps_timer.getSeconds(), g_metal_worst_frame_ms * 1000.0,
+               g_metal_pipeline_builds, g_metal_pipeline_build_seconds * 1000.0);
+      g_metal_pipeline_builds = 0;
+      g_metal_pipeline_build_seconds = 0;
+      fps_frames = 0;
+      g_metal_worst_frame_ms = 0;
+      fps_timer.start();
+    }
   }
 
   if (m_should_quit) {

@@ -37,6 +37,11 @@
 // still reading it -- which looks like a flicker, not like an error.
 constexpr int kMetalFramesInFlight = 3;
 
+// How many pipeline states have been built, and how long that took. A pipeline build is a
+// synchronous shader compile; one in the middle of a frame is a hitch.
+extern u32 g_metal_pipeline_builds;
+extern double g_metal_pipeline_build_seconds;
+
 /*!
  * Blend, depth and sampler state for a GS DrawMode.
  *

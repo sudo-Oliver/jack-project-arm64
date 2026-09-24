@@ -769,6 +769,28 @@ void GLDisplay::render() {
     prof().instant_event("engine-notify");
     std::unique_lock<std::mutex> lock(g_gfx_data->sync_mutex);
     g_gfx_data->frame_idx++;
+
+    // OPENGOAL_FPS_LOG=1 prints the frame rate every second. The Metal backend does it the same
+    // way, so the two numbers are comparable.
+    if (std::getenv("OPENGOAL_FPS_LOG")) {
+      static Timer fps_timer;
+      static Timer frame_timer;
+      static int fps_frames = 0;
+      static double worst_frame = 0;
+      const double this_frame = frame_timer.getSeconds();
+      frame_timer.start();
+      if (this_frame > worst_frame) {
+        worst_frame = this_frame;
+      }
+      fps_frames++;
+      if (fps_timer.getSeconds() >= 1.0) {
+        lg::info("[OpenGL] {:.1f} fps, worst frame {:.2f} ms", fps_frames / fps_timer.getSeconds(),
+                 worst_frame * 1000.0);
+        fps_frames = 0;
+        worst_frame = 0;
+        fps_timer.start();
+      }
+    }
     g_gfx_data->sync_cv.notify_all();
   }
 
