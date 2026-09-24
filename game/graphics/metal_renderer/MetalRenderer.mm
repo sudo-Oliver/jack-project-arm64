@@ -9,7 +9,7 @@
 
 #include "common/log/log.h"
 
-#include "game/graphics/metal_renderer/MetalDirect2.h"
+#include "game/graphics/metal_renderer/MetalDirect.h"
 #include "game/graphics/metal_renderer/MetalMerc2.h"
 #include "game/graphics/metal_renderer/MetalShrub.h"
 #include "game/graphics/metal_renderer/MetalSky.h"
@@ -228,7 +228,9 @@ void MetalRenderer::scan_frame_state(DmaFollower dma) {
 
 void MetalRenderer::render(DmaFollower dma,
                            id<MTLRenderCommandEncoder> encoder,
-                           id<MTLCommandBuffer> offscreen_cmd) {
+                           id<MTLCommandBuffer> offscreen_cmd,
+                           u32 viewport_width,
+                           u32 viewport_height) {
   if (!m_ready) {
     return;
   }
@@ -238,6 +240,8 @@ void MetalRenderer::render(DmaFollower dma,
   }
   m_render_state.encoder = encoder;
   m_render_state.offscreen_cmd = offscreen_cmd;
+  m_render_state.viewport_width = viewport_width;
+  m_render_state.viewport_height = viewport_height;
   m_render_state.ee_main_memory = g_ee_main_mem;
   m_render_state.offset_of_s7 = offset_of_s7();
   m_render_state.frame_index++;

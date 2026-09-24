@@ -253,7 +253,7 @@ void MetalSkyBlendHandler::render(DmaFollower& dma, MetalRenderState* render_sta
 MetalSkyRenderer::MetalSkyRenderer(const std::string& name, int my_id)
     : MetalBucketRenderer(name, my_id),
       // 100 triangles, the batch size the OpenGL sky renderer uses.
-      m_direct(100 * 3, 100 * 4, 100, name, false) {}
+      m_direct("sky-direct", 100) {}
 
 bool MetalSkyRenderer::init(MetalRenderState* render_state) {
   return m_direct.init(render_state);
@@ -276,15 +276,15 @@ void MetalSkyRenderer::render(DmaFollower& dma, MetalRenderState* render_state) 
 
   auto setup_packet = dma.read_and_advance();
   ASSERT(setup_packet.size_bytes == 16 * 4);
-  m_direct.render_gif_data(setup_packet.data, render_state);
+  m_direct.render_gif(setup_packet.data, setup_packet.size_bytes, render_state);
 
   if (dma.current_tag().qwc == 5) {
     auto draw_setup_packet = dma.read_and_advance();
-    m_direct.render_gif_data(draw_setup_packet.data, render_state);
+    m_direct.render_gif(draw_setup_packet.data, draw_setup_packet.size_bytes, render_state);
 
     while (dma.current_tag().kind == DmaTag::Kind::CNT) {
       auto data = dma.read_and_advance();
-      m_direct.render_gif_data(data.data, render_state);
+      m_direct.render_gif(data.data, data.size_bytes, render_state);
     }
 
     dma.read_and_advance();  // empty
@@ -296,8 +296,7 @@ void MetalSkyRenderer::render(DmaFollower& dma, MetalRenderState* render_state) 
     while (dma.current_tag_offset() != render_state->next_bucket && !dma.ended()) {
       auto data = dma.read_and_advance();
       if (data.size_bytes) {
-        m_direct.render_vif_data(data.vif0(), data.vif1(), data.data, data.size_bytes,
-                                 render_state);
+        m_direct.render_vif(data.vif0(), data.vif1(), data.data, data.size_bytes, render_state);
       }
     }
   }

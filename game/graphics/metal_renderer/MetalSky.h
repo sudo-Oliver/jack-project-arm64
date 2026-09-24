@@ -18,7 +18,7 @@
 
 #include "common/common_types.h"
 
-#include "game/graphics/metal_renderer/MetalDirect2.h"
+#include "game/graphics/metal_renderer/MetalDirect.h"
 #include "game/graphics/metal_renderer/MetalRenderState.h"
 #include "game/graphics/metal_renderer/MetalTFragment.h"
 #include "game/graphics/opengl_renderer/SkyBlendCommon.h"
@@ -67,6 +67,8 @@ class MetalSkyBlendHandler : public MetalBucketRenderer {
 
 /*!
  * The sky geometry: GIF packets through the direct renderer, same as the OpenGL SkyRenderer.
+ * It has to be the older direct renderer: the sky sends REGLIST packets, which the newer one
+ * does not handle.
  */
 class MetalSkyRenderer : public MetalBucketRenderer {
  public:
@@ -78,7 +80,7 @@ class MetalSkyRenderer : public MetalBucketRenderer {
   u32 last_frame_tris() const { return m_direct.last_frame_tris(); }
 
  private:
-  MetalDirect2 m_direct;
+  MetalDirect m_direct;
 };
 
 #endif  // __OBJC__

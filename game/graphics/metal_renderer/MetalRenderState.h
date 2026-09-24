@@ -121,6 +121,11 @@ struct MetalRenderState {
   };
   LevelVis occlusion_vis[jak1::LEVEL_MAX];
 
+  // The drawable's size in pixels. The direct renderer's scissor test compares GS coordinates
+  // against window coordinates, so it needs both.
+  u32 viewport_width = 0;
+  u32 viewport_height = 0;
+
   math::Vector<u8, 4> fog_color{0, 0, 0, 0};
   float fog_intensity = 1.f;
 

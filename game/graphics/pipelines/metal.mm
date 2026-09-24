@@ -469,7 +469,7 @@ void MetalDisplay::render() {
             m_ctx->device, m_ctx->library, kMetalColorFormat, kMetalDepthFormat);
       }
       if (g_metal_gfx_data->renderer_ready) {
-        g_metal_gfx_data->renderer->render(dma_for_frame, enc, offscreen_cmd);
+        g_metal_gfx_data->renderer->render(dma_for_frame, enc, offscreen_cmd, dw, dh);
         static u32 logged_tris = 0;
         if (g_metal_gfx_data->renderer->last_frame_tris() != logged_tris) {
           logged_tris = g_metal_gfx_data->renderer->last_frame_tris();

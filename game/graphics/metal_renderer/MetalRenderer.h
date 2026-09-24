@@ -36,7 +36,9 @@ class MetalRenderer {
   // Walks one frame's DMA chain and draws it into `encoder`.
   void render(DmaFollower dma,
               id<MTLRenderCommandEncoder> encoder,
-              id<MTLCommandBuffer> offscreen_cmd);
+              id<MTLCommandBuffer> offscreen_cmd,
+              u32 viewport_width,
+              u32 viewport_height);
 
   // Triangles drawn on the last frame, summed over every bucket that counts them.
   u32 last_frame_tris() const { return m_last_frame_tris; }

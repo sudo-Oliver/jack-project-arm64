@@ -66,6 +66,24 @@ struct Direct2Uniforms {
   float pad;
 };
 
+// direct_basic_textured.metal. Everything the GS state cannot bake into a pipeline object.
+struct DirectUniforms {
+  METAL_FLOAT4 fog_color;
+  // game width, game height, viewport width, viewport height
+  METAL_FLOAT4 game_sizes;
+  float alpha_min;
+  float alpha_max;
+  float color_mult;
+  float alpha_mult;
+  float ta0;
+  float scissor_adjust;
+  float height_scale;
+  int scissor_enable;
+  int greater;
+  int offscreen_mode;
+  int pad0, pad1;
+};
+
 // sky_blend.metal.
 struct SkyBlendUniforms {
   float intensity;
