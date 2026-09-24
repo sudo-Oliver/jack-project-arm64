@@ -1144,7 +1144,10 @@ InstructionARM64 shl_gpr64_u8(Register reg, uint8_t sa) {
   // LSL Xd, Xd, #sa — UBFM Xd, Xd, #(-sa & 63), #(63-sa)
   // https://www.scs.stanford.edu/~zyedidia/arm64/lsl_ubfm.html
   ASSERT(reg.is_gpr(instr_set));
-  ASSERT(sa < 64);
+  // x86's SHL/SHR/SAR r64, imm8 masks the count with & 63 in hardware, so a GOAL constant shift of
+  // 64 is a shift of 0 there. Mask here too rather than asserting: an assert would turn code that
+  // compiles and runs on x86 into a compiler crash.
+  sa &= 63u;
   u32 immr = (64u - sa) & 63u;
   u32 imms = 63u - sa;
   return InstructionARM64(Base(0b1101001101, 10), Field{(immr << 16)}, Imm6(imms), Rn(reg.id()), Rd(reg.id()));
@@ -1154,7 +1157,10 @@ InstructionARM64 shr_gpr64_u8(Register reg, uint8_t sa) {
   // LSR Xd, Xd, #sa — UBFM Xd, Xd, #sa, #63
   // https://www.scs.stanford.edu/~zyedidia/arm64/lsr_ubfm.html
   ASSERT(reg.is_gpr(instr_set));
-  ASSERT(sa < 64);
+  // x86's SHL/SHR/SAR r64, imm8 masks the count with & 63 in hardware, so a GOAL constant shift of
+  // 64 is a shift of 0 there. Mask here too rather than asserting: an assert would turn code that
+  // compiles and runs on x86 into a compiler crash.
+  sa &= 63u;
   return InstructionARM64(Base(0b1101001101, 10), Field{((u32)sa << 16)}, Imm6(63), Rn(reg.id()), Rd(reg.id()));
 }
 
@@ -1162,7 +1168,10 @@ InstructionARM64 sar_gpr64_u8(Register reg, uint8_t sa) {
   // ASR Xd, Xd, #sa — SBFM Xd, Xd, #sa, #63
   // https://www.scs.stanford.edu/~zyedidia/arm64/asr_sbfm.html
   ASSERT(reg.is_gpr(instr_set));
-  ASSERT(sa < 64);
+  // x86's SHL/SHR/SAR r64, imm8 masks the count with & 63 in hardware, so a GOAL constant shift of
+  // 64 is a shift of 0 there. Mask here too rather than asserting: an assert would turn code that
+  // compiles and runs on x86 into a compiler crash.
+  sa &= 63u;
   return InstructionARM64(Base(0b1001001101, 10), Field{((u32)sa << 16)}, Imm6(63), Rn(reg.id()), Rd(reg.id()));
 }
 
@@ -1485,6 +1494,28 @@ InstructionARM64 ins_vf_element_from_gpr32(Register vf_dst, u8 idx, Register gpr
   return InstructionARM64(0x4E001C00u, Field{imm5 << 16}, Rn(gpr_src.id()), Rd(qreg(vf_dst)));
 }
 
+InstructionARM64 ins_vf_d_gpr(Register vf_dst, u8 idx, Register gpr_src) {
+  // INS Vd.D[idx], Xn — insert a GPR doubleword into a 64-bit SIMD lane.
+  // Advanced SIMD copy (general): 0_1_0_01110_000_imm5_0_0011_1_Rn_Rd
+  // D lanes set bit 3 of imm5 as the size marker and hold the index above it:
+  // imm5 = (idx << 4) | 0b01000. Verified against the system assembler:
+  //   ins v3.d[0], x5 -> 4e081ca3, ins v3.d[1], x5 -> 4e181ca3
+  ASSERT(idx < 2);
+  u32 imm5 = ((u32)idx << 4u) | 0b01000u;
+  return InstructionARM64(0x4E001C00u, Field{imm5 << 16}, Rn(gpr_src.id()), Rd(qreg(vf_dst)));
+}
+
+InstructionARM64 umov_gpr64_vf_d(Register gpr_dst, Register vf_src, u8 idx) {
+  // UMOV Xd, Vn.D[idx] — extract a 64-bit SIMD lane into a GPR.
+  // Advanced SIMD copy: 0_1_0_01110_000_imm5_0_0111_1_Rn_Rd. Q is 1 here, unlike the 32-bit
+  // umov_gpr32_vf_element, because the destination is an X register. Verified against the system
+  // assembler:
+  //   umov x7, v9.d[0] -> 4e083d27, umov x7, v9.d[1] -> 4e183d27
+  ASSERT(idx < 2);
+  u32 imm5 = ((u32)idx << 4u) | 0b01000u;
+  return InstructionARM64(0x4E003C00u, Field{imm5 << 16}, Rn(qreg(vf_src)), Rd(gpr_dst.id()));
+}
+
 InstructionARM64 rev64_4s(Register dst, Register src) {
   // REV64 Vd.4S, Vn.4S — reverse 32-bit elements within each 64-bit lane
   // Advanced SIMD two-reg misc: 0_1_0_01110_10_1_00000_000010_Rn_Rd
@@ -1698,20 +1729,22 @@ InstructionARM64 pextlw_swapped(Register dst, Register src0, Register src1) {
 
 InstructionARM64 parallel_compare_e_b(Register dst, Register src0, Register src1) {
   // CMEQ Vd.16B, Vn.16B, Vm.16B — compare equal, 16x int8
-  // 0_1_0_01110_00_1_Rm_100011_Rn_Rd: 0x4E208C00
-  return InstructionARM64(0x4E208C00u, Rm(qreg(src1)), Rn(qreg(src0)), Rd(qreg(dst)));
+  // U must be 1: 0_1_1_01110_00_1_Rm_100011_Rn_Rd = 0x6E208C00. With U=0 the same opcode is
+  // CMTST, which reports "equal" for any pair that shares a set bit -- 0xFF vs 0x01 came back
+  // true. Verified against the system assembler: cmeq v0.16b, v1.16b, v2.16b -> 6e228c20
+  return InstructionARM64(0x6E208C00u, Rm(qreg(src1)), Rn(qreg(src0)), Rd(qreg(dst)));
 }
 
 InstructionARM64 parallel_compare_e_h(Register dst, Register src0, Register src1) {
   // CMEQ Vd.8H, Vn.8H, Vm.8H — compare equal, 8x int16
-  // size=01: 0x4E608C00
-  return InstructionARM64(0x4E608C00u, Rm(qreg(src1)), Rn(qreg(src0)), Rd(qreg(dst)));
+  // size=01, U=1: cmeq v0.8h, v1.8h, v2.8h -> 6e628c20
+  return InstructionARM64(0x6E608C00u, Rm(qreg(src1)), Rn(qreg(src0)), Rd(qreg(dst)));
 }
 
 InstructionARM64 parallel_compare_e_w(Register dst, Register src0, Register src1) {
   // CMEQ Vd.4S, Vn.4S, Vm.4S — compare equal, 4x int32
-  // size=10: 0x4EA08C00
-  return InstructionARM64(0x4EA08C00u, Rm(qreg(src1)), Rn(qreg(src0)), Rd(qreg(dst)));
+  // size=10, U=1: cmeq v0.4s, v1.4s, v2.4s -> 6ea28c20
+  return InstructionARM64(0x6EA08C00u, Rm(qreg(src1)), Rn(qreg(src0)), Rd(qreg(dst)));
 }
 
 InstructionARM64 parallel_compare_gt_b(Register dst, Register src0, Register src1) {
@@ -1750,9 +1783,14 @@ InstructionARM64 pcpyud(Register dst, Register src0, Register src1) {
 }
 
 InstructionARM64 vpsubd(Register dst, Register src0, Register src1) {
-  // SUB Vd.2D, Vn.2D, Vm.2D — subtract 2x int64
-  // "Advanced SIMD three same" size=11: 0_1_1_01110_11_1_Rm_100001_Rn_Rd → 0x6EE08400
-  return InstructionARM64(0x6EE08400u, Rm(qreg(src1)), Rn(qreg(src0)), Rd(qreg(dst)));
+  // SUB Vd.4S, Vn.4S, Vm.4S — subtract 4x int32.
+  // This mirrors x86 VPSUBD, which subtracts packed doublewords; the PS2's psubw is 32-bit too
+  // (see the "psubW on mips is psubD on x86" note in do_codegen_x86). Using .2D here let a borrow
+  // out of the low 32 bits propagate into the high lane of each 64-bit pair, which is wrong for
+  // every input where the low half underflows.
+  // "Advanced SIMD three same" size=10: 0_1_1_01110_10_1_Rm_100001_Rn_Rd → 0x6EA08400
+  // Verified against the system assembler: sub v0.4s, v1.4s, v2.4s -> 6ea28420
+  return InstructionARM64(0x6EA08400u, Rm(qreg(src1)), Rn(qreg(src0)), Rd(qreg(dst)));
 }
 
 InstructionARM64 vpsrldq(Register dst, Register src, u8 imm) {

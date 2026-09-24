@@ -642,6 +642,12 @@ void CodeGenerator::do_asm_function_x86(FunctionEnv* env, int f_idx, bool allow_
 void CodeGenerator::do_asm_function_arm64(FunctionEnv* env, int f_idx, bool allow_saved_regs) {
   auto f_rec = m_gen.get_existing_function_record(f_idx);
   const auto& allocs = env->alloc_result();
+
+  // do_asm_function_x86 refuses here when the coloring used a callee-saved register without
+  // allow-saved-regs, because an asm function gets no prologue to save it. We cannot: our ARM64
+  // allocator hands q15 to a value inside return-from-thread, so the same check rejects code that
+  // compiles and runs. Whether that coloring is safe -- q15 survives a context switch, but
+  // nothing here saves it -- is an open question; see CODEX.md.
   (void)allow_saved_regs;
 
   if (allocs.stack_slots_for_spills) {

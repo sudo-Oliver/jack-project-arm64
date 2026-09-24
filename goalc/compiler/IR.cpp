@@ -1459,25 +1459,19 @@ void IR_LoadConstOffset::do_codegen_arm64(emitter::ObjectGenerator* gen,
     if (m_offset >= -4095 && m_offset <= 4095) {
       gen->add_instr(IGen::lea_reg_plus_off32(*gen, addr_scratch, base_reg, m_offset), irec);
     } else {
-      // Large offset: two paths depending on whether addr_scratch and base alias
-      ASSERT_MSG((m_offset >= 0 ? m_offset : -(int64_t)m_offset) <= (int64_t)0xFFFFFF,
-                 "IR_LoadConstOffset::do_codegen_arm64: offset exceeds 24-bit range");
-      const u32 abs_off = (u32)(m_offset >= 0 ? m_offset : -(int64_t)m_offset);
-      const u32 upper = abs_off >> 12;
-      const u32 lower = abs_off & 0xFFF;
+      // Large offset: two paths depending on whether addr_scratch and base alias.
       if (addr_scratch.id() != base_reg.id()) {
         // addr_scratch != base: load constant into addr_scratch then add base
         load_constant((u64)(s64)m_offset, gen, irec, addr_scratch);
         gen->add_instr(IGen::add_gpr64_gpr64(*gen, addr_scratch, base_reg), irec);
       } else {
-        // addr_scratch == base: adjust in-place; load will overwrite the adjusted value
-        if (m_offset > 0) {
-          if (upper) gen->add_instr(IGen::ARM64::add_gpr64_imm_lsl12(addr_scratch, upper), irec);
-          if (lower) gen->add_instr(IGen::ARM64::add_gpr64_imm8s(addr_scratch, (int64_t)lower), irec);
-        } else {
-          if (upper) gen->add_instr(IGen::ARM64::sub_gpr64_imm_lsl12(addr_scratch, upper), irec);
-          if (lower) gen->add_instr(IGen::ARM64::sub_gpr64_imm8s(addr_scratch, (int64_t)lower), irec);
-        }
+        // addr_scratch == base: adjust in place; the load overwrites the adjusted value.
+        // The offset goes through X16 (IP0, never allocated by GOAL -- no x86 register maps to
+        // it, see translate_x86_reg_to_arm64) rather than an ADD/SUB imm12 pair, which would cap
+        // the offset at 24 bits. base_reg is an allocated register, so it is never X16 itself.
+        auto imm_scratch = emitter::Register(emitter::X16);
+        load_constant((u64)(s64)m_offset, gen, irec, imm_scratch);
+        gen->add_instr(IGen::add_gpr64_gpr64(*gen, addr_scratch, imm_scratch), irec);
       }
     }
     effective_base = addr_scratch;
@@ -1575,19 +1569,12 @@ void IR_StoreConstOffset::do_codegen_arm64(emitter::ObjectGenerator* gen,
     if (off >= -4095 && off <= 4095) {
       gen->add_instr(IGen::lea_reg_plus_off32(*gen, base_reg, base_reg, off), irec);
     } else {
-      // Large offset: split into upper 12 bits (LSL#12) + lower 12 bits
-      ASSERT_MSG((off >= 0 ? off : -off) <= (int64_t)0xFFFFFF,
-                 "IR_StoreConstOffset::do_codegen_arm64: offset exceeds 24-bit range");
-      const u32 abs_off = (u32)(off >= 0 ? off : -off);
-      const u32 upper = abs_off >> 12;
-      const u32 lower = abs_off & 0xFFF;
-      if (off >= 0) {
-        if (upper) gen->add_instr(IGen::ARM64::add_gpr64_imm_lsl12(base_reg, upper), irec);
-        if (lower) gen->add_instr(IGen::ARM64::add_gpr64_imm8s(base_reg, (int64_t)lower), irec);
-      } else {
-        if (upper) gen->add_instr(IGen::ARM64::sub_gpr64_imm_lsl12(base_reg, upper), irec);
-        if (lower) gen->add_instr(IGen::ARM64::sub_gpr64_imm8s(base_reg, (int64_t)lower), irec);
-      }
+      // Large offset: materialise it in X17 (IP1) and add. An ADD/SUB imm12 pair would cap the
+      // offset at 24 bits. X17, not X16: X16 may already hold the private base copy above, and
+      // neither is ever allocated by GOAL (see translate_x86_reg_to_arm64).
+      auto imm_scratch = emitter::Register(emitter::X17);
+      load_constant((u64)(s64)off, gen, irec, imm_scratch);
+      gen->add_instr(IGen::add_gpr64_gpr64(*gen, base_reg, imm_scratch), irec);
     }
   }
 
@@ -1611,16 +1598,10 @@ void IR_StoreConstOffset::do_codegen_arm64(emitter::ObjectGenerator* gen,
     if (off >= -4095 && off <= 4095) {
       gen->add_instr(IGen::lea_reg_plus_off32(*gen, base_reg, base_reg, -off), irec);
     } else {
-      const u32 abs_off = (u32)(off >= 0 ? off : -off);
-      const u32 upper = abs_off >> 12;
-      const u32 lower = abs_off & 0xFFF;
-      if (off >= 0) {
-        if (lower) gen->add_instr(IGen::ARM64::sub_gpr64_imm8s(base_reg, (int64_t)lower), irec);
-        if (upper) gen->add_instr(IGen::ARM64::sub_gpr64_imm_lsl12(base_reg, upper), irec);
-      } else {
-        if (lower) gen->add_instr(IGen::ARM64::add_gpr64_imm8s(base_reg, (int64_t)lower), irec);
-        if (upper) gen->add_instr(IGen::ARM64::add_gpr64_imm_lsl12(base_reg, upper), irec);
-      }
+      // Mirror of the adjustment above: the same offset in X17, subtracted back out.
+      auto imm_scratch = emitter::Register(emitter::X17);
+      load_constant((u64)(s64)off, gen, irec, imm_scratch);
+      gen->add_instr(IGen::sub_gpr64_gpr64(*gen, base_reg, imm_scratch), irec);
     }
   }
 }

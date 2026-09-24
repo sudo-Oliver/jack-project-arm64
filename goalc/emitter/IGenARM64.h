@@ -752,6 +752,16 @@ InstructionARM64 umov_gpr32_vf_element(Register gpr_dst, Register vf_src, u8 idx
 
 InstructionARM64 ins_vf_element_from_gpr32(Register vf_dst, u8 idx, Register gpr_src);
 
+/*!
+ * Insert a GPR doubleword into a 64-bit SIMD lane (INS Vd.D[idx], Xn).
+ */
+InstructionARM64 ins_vf_d_gpr(Register vf_dst, u8 idx, Register gpr_src);
+
+/*!
+ * Extract a 64-bit SIMD lane into a GPR (UMOV Xd, Vn.D[idx]).
+ */
+InstructionARM64 umov_gpr64_vf_d(Register gpr_dst, Register vf_src, u8 idx);
+
 InstructionARM64 rev64_4s(Register dst, Register src);
 
 /*

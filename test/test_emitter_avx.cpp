@@ -784,6 +784,14 @@ TEST(RegisterClassification, XMM8_is_xmm_arg_reg) {
 }
 
 TEST(RegisterClassification, XMM0_not_xmm_arg_reg) {
+#if defined(__aarch64__)
+  // On ARM64 XMM0 (q0) is deliberately in the SIMD argument list: q2-q7 alias the GOAL context
+  // registers and q3/q7 inherit a wrong is_saved flag, so the eight argument slots are made up of
+  // q1, q8-q12, q15 and q0 (see Register.cpp). q0 being both return and argument register is the
+  // x86 convention, not ours.
+  EXPECT_TRUE(gRegInfo.is_xmm_arg_reg(Register(XMM0)));
+#else
   // XMM0 is the return register, not an argument register.
   EXPECT_FALSE(gRegInfo.is_xmm_arg_reg(Register(XMM0)));
+#endif
 }
