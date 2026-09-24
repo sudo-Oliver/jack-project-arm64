@@ -3,7 +3,10 @@
 #include "third-party/imgui/imgui.h"
 
 OceanMidAndFar::OceanMidAndFar(const std::string& name, int my_id)
-    : BucketRenderer(name, my_id), m_direct(name, my_id, 4096), m_texture_renderer(true) {}
+    : BucketRenderer(name, my_id),
+      m_direct(name, my_id, 4096),
+      m_texture_renderer(true),
+      m_mid_renderer(m_common_ocean_renderer) {}
 
 void OceanMidAndFar::draw_debug_window() {
   m_texture_renderer.draw_debug_window();
@@ -171,15 +174,17 @@ void OceanMidAndFar::handle_ocean_mid(DmaFollower& dma,
                                       SharedRenderState* render_state,
                                       ScopedProfilerNode& prof) {
   if (dma.current_tag_vifcode0().kind == VifCode::Kind::BASE) {
+    m_common_ocean_renderer.set_frame_context(render_state, &prof);
     switch (render_state->version) {
       case GameVersion::Jak1:
-        m_mid_renderer.run(dma, render_state, prof);
+        m_mid_renderer.run(dma);
         break;
       case GameVersion::Jak2:
       case GameVersion::Jak3:
       case GameVersion::JakX:
-        m_mid_renderer.run_jak2(dma, render_state, prof);
+        m_mid_renderer.run_jak2(dma);
     }
+    m_common_ocean_renderer.set_frame_context(nullptr, nullptr);
   } else {
     // not drawing
     return;

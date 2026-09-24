@@ -65,11 +65,12 @@ set(RUNTIME_SOURCE
         graphics/opengl_renderer/loader/Loader.cpp
         graphics/opengl_renderer/loader/LoaderStages.cpp
         graphics/opengl_renderer/ocean/CommonOceanRenderer.cpp
-        graphics/opengl_renderer/ocean/OceanMid_PS2.cpp
-        graphics/opengl_renderer/ocean/OceanMid.cpp
+        graphics/ocean/OceanMidCore_PS2.cpp
+        graphics/ocean/OceanMidCore.cpp
         graphics/opengl_renderer/ocean/OceanMidAndFar.cpp
-        graphics/opengl_renderer/ocean/OceanNear_PS2.cpp
+        graphics/ocean/OceanNearCore_PS2.cpp
         graphics/opengl_renderer/ocean/OceanNear.cpp
+        graphics/ocean/OceanNearCore.cpp
         graphics/opengl_renderer/ocean/OceanTexture.cpp
         graphics/opengl_renderer/opengl_utils.cpp
         graphics/opengl_renderer/OpenGLRenderer.cpp

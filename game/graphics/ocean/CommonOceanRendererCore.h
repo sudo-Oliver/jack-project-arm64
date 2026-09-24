@@ -32,6 +32,7 @@ class CommonOceanRendererCore {
 
   void init_for_near();
   void kick_from_near(const u8* data);
+  void flush_near() { flush_near_draws(); }
 
   void init_for_mid();
   void kick_from_mid(const u8* data);

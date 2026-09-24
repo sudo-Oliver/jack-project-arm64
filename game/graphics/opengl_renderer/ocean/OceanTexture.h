@@ -26,6 +26,12 @@ class OceanTexture : public OceanTextureCore {
   void init_textures(TexturePool& pool, GameVersion version);
   void draw_debug_window();
 
+  // Held for the length of a call into the core, which does not carry a render state.
+  void set_frame_context(SharedRenderState* render_state, ScopedProfilerNode* prof) {
+    m_current_render_state = render_state;
+    m_current_prof = prof;
+  }
+
  protected:
   void backend_begin_pass(bool to_temp) override;
   void backend_end_pass() override;

@@ -1,4 +1,4 @@
-#include "OceanMid.h"
+#include "OceanMidCore.h"
 
 #include "common/log/log.h"
 
@@ -7,14 +7,14 @@ static bool is_end_tag(const DmaTag& tag, const VifCode& v0, const VifCode& v1) 
          v1.kind == VifCode::Kind::DIRECT;
 }
 
-OceanMid::OceanMid() {
+OceanMidCore::OceanMidCore(CommonOceanRendererCore& common) : m_common_ocean_renderer(common) {
   for (auto& x : m_vu_data) {
     x.fill(999.);
   }
   vu.vf25 = Vf(1, 1, 1, 1);
 }
 
-void OceanMid::run(DmaFollower& dma, SharedRenderState* render_state, ScopedProfilerNode& prof) {
+void OceanMidCore::run(DmaFollower& dma) {
   m_common_ocean_renderer.init_for_mid();
   // first is setting base and offset
   {
@@ -130,12 +130,10 @@ void OceanMid::run(DmaFollower& dma, SharedRenderState* render_state, ScopedProf
       ASSERT_MSG(false, fmt::format("{} {}", data.vifcode0().print(), data.vifcode1().print()));
     }
   }
-  m_common_ocean_renderer.flush_mid(render_state, prof);
+  m_common_ocean_renderer.flush_mid();
 }
 
-void OceanMid::run_jak2(DmaFollower& dma,
-                        SharedRenderState* render_state,
-                        ScopedProfilerNode& prof) {
+void OceanMidCore::run_jak2(DmaFollower& dma) {
   m_common_ocean_renderer.init_for_mid();
   // first is setting base and offset
   {
@@ -251,13 +249,13 @@ void OceanMid::run_jak2(DmaFollower& dma,
       ASSERT_MSG(false, fmt::format("{} {}", data.vifcode0().print(), data.vifcode1().print()));
     }
   }
-  m_common_ocean_renderer.flush_mid(render_state, prof);
+  m_common_ocean_renderer.flush_mid();
 }
 
-void OceanMid::run_call0() {
+void OceanMidCore::run_call0() {
   run_call0_vu2c();
 }
 
-void OceanMid::xgkick(u16 addr) {
+void OceanMidCore::xgkick(u16 addr) {
   m_common_ocean_renderer.kick_from_mid((const u8*)&m_vu_data[addr]);
 }

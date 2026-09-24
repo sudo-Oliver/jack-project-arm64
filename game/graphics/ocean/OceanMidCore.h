@@ -1,15 +1,21 @@
 #pragma once
 
-#include "game/common/vu.h"
-#include "game/graphics/opengl_renderer/BucketRenderer.h"
-#include "game/graphics/opengl_renderer/DirectRenderer.h"
-#include "game/graphics/opengl_renderer/ocean/CommonOceanRenderer.h"
+/*!
+ * @file OceanMidCore.h
+ * The mid ocean's VU1 emulation. There is no graphics API in it: the vertices it produces go to a
+ * CommonOceanRendererCore, and a backend's subclass of that is what draws them.
+ */
 
-class OceanMid {
+#include "common/dma/dma_chain_read.h"
+
+#include "game/common/vu.h"
+#include "game/graphics/ocean/CommonOceanRendererCore.h"
+
+class OceanMidCore {
  public:
-  OceanMid();
-  void run(DmaFollower& dma, SharedRenderState* render_state, ScopedProfilerNode& prof);
-  void run_jak2(DmaFollower& dma, SharedRenderState* render_state, ScopedProfilerNode& prof);
+  explicit OceanMidCore(CommonOceanRendererCore& common);
+  void run(DmaFollower& dma);
+  void run_jak2(DmaFollower& dma);
 
  private:
   void run_call0();
@@ -33,7 +39,7 @@ class OceanMid {
   void run_L43_vu2c();
   void run_L45_vu2c();
 
-  CommonOceanRenderer m_common_ocean_renderer;
+  CommonOceanRendererCore& m_common_ocean_renderer;
   bool m_buffer_toggle = false;
   static constexpr int VU1_INPUT_BUFFER_BASE = 0;
   static constexpr int VU1_INPUT_BUFFER_OFFSET = 0x76;

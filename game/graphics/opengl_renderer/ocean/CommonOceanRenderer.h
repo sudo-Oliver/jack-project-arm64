@@ -19,6 +19,12 @@ class CommonOceanRenderer : public CommonOceanRendererCore {
   void flush_near(SharedRenderState* render_state, ScopedProfilerNode& prof);
   void flush_mid(SharedRenderState* render_state, ScopedProfilerNode& prof);
 
+  // Held for the length of a call into the core, which does not carry a render state.
+  void set_frame_context(SharedRenderState* render_state, ScopedProfilerNode* prof) {
+    m_current_render_state = render_state;
+    m_current_prof = prof;
+  }
+
  protected:
   void flush_near_draws() override;
   void flush_mid_draws() override;
