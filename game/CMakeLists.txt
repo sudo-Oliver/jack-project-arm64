@@ -353,7 +353,9 @@ add_subdirectory(sound)
 # The Metal backend is Objective-C++ and only exists on Apple platforms.
 # It sits alongside the OpenGL backend; the renderer is chosen at runtime (see Gfx::GetRenderer).
 if(APPLE)
-    list(APPEND RUNTIME_SOURCE graphics/pipelines/metal.mm)
+    list(APPEND RUNTIME_SOURCE graphics/pipelines/metal.mm
+                              graphics/metal_renderer/MetalShaderLibrary.cpp)
+
 endif()
 
 # we build the runtime as a static library.
@@ -364,6 +366,7 @@ if(APPLE)
     target_link_libraries(runtime "-framework Metal" "-framework QuartzCore" "-framework Foundation")
     set_source_files_properties(graphics/pipelines/metal.mm PROPERTIES
         COMPILE_FLAGS "-fobjc-arc")
+    target_include_directories(runtime PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/graphics/metal_renderer/shaders)
 endif()
 if(WIN32)
     target_link_libraries(runtime mman)

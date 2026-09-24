@@ -12,13 +12,19 @@
 #include "common/log/log.h"
 
 #include "game/graphics/gfx.h"
+#include "game/graphics/metal_renderer/MetalShaderLibrary.h"
 #include "game/system/hid/sdl_util.h"
+
+#include "metal_shader_types.h"
 
 // Holds the Objective-C objects so metal.h can stay plain C++.
 struct MetalContext {
   id<MTLDevice> device = nil;
   id<MTLCommandQueue> queue = nil;
   CAMetalLayer* layer = nil;
+  id<MTLLibrary> library = nil;
+  // First ported shader. Proves source -> MTLLibrary -> pipeline state -> draw end to end.
+  id<MTLRenderPipelineState> solid_color_pso = nil;
 };
 
 namespace {
@@ -86,6 +92,50 @@ std::shared_ptr<GfxDisplay> metal_make_display(int width,
   ctx->layer.framebufferOnly = YES;
 
   lg::info("[Metal] device: {}", [[ctx->device name] UTF8String]);
+
+  // Compile the MSL shaders. Runtime compilation keeps the shader edit loop fast and avoids
+  // requiring the Metal Toolchain; see MetalShaderLibrary.h.
+  {
+    std::string combined;
+    try {
+      for (const auto& def : metal_shaders::all_shaders()) {
+        combined += metal_shaders::load_source_with_includes(def.file);
+        combined += "\n";
+      }
+    } catch (const std::exception& e) {
+      lg::error("[Metal] could not read shader sources: {}", e.what());
+      SDL_Metal_DestroyView(view);
+      SDL_DestroyWindow(window);
+      return nullptr;
+    }
+
+    NSError* err = nil;
+    MTLCompileOptions* opts = [MTLCompileOptions new];
+    ctx->library = [ctx->device newLibraryWithSource:[NSString stringWithUTF8String:combined.c_str()]
+                                             options:opts
+                                               error:&err];
+    if (!ctx->library) {
+      lg::error("[Metal] shader compilation failed: {}",
+                err ? [[err localizedDescription] UTF8String] : "unknown error");
+      SDL_Metal_DestroyView(view);
+      SDL_DestroyWindow(window);
+      return nullptr;
+    }
+    lg::info("[Metal] compiled {} shader file(s)", metal_shaders::all_shaders().size());
+
+    MTLRenderPipelineDescriptor* desc = [MTLRenderPipelineDescriptor new];
+    desc.vertexFunction = [ctx->library newFunctionWithName:@"solid_color_vert"];
+    desc.fragmentFunction = [ctx->library newFunctionWithName:@"solid_color_frag"];
+    desc.colorAttachments[0].pixelFormat = ctx->layer.pixelFormat;
+    ctx->solid_color_pso = [ctx->device newRenderPipelineStateWithDescriptor:desc error:&err];
+    if (!ctx->solid_color_pso) {
+      lg::error("[Metal] solid_color pipeline failed: {}",
+                err ? [[err localizedDescription] UTF8String] : "unknown error");
+      SDL_Metal_DestroyView(view);
+      SDL_DestroyWindow(window);
+      return nullptr;
+    }
+  }
   g_metal_inited = true;
 
   return std::make_shared<MetalDisplay>(window, view, std::move(ctx), is_main);
@@ -186,6 +236,23 @@ void MetalDisplay::render() {
 
     id<MTLCommandBuffer> cmd = [m_ctx->queue commandBuffer];
     id<MTLRenderCommandEncoder> enc = [cmd renderCommandEncoderWithDescriptor:pass];
+
+    // Smoke test for the shader path: draws a triangle with the ported solid_color shader.
+    // It is the proof that source -> MTLLibrary -> pipeline state -> draw works before any
+    // bucket renderer depends on it. Delete once tfrag3 draws here.
+    if (m_ctx->solid_color_pso) {
+      struct Vert2 {
+        float x, y;
+      };  // matches MSL float2
+      const Vert2 verts[3] = {{-0.5f, -0.5f}, {0.5f, -0.5f}, {0.0f, 0.5f}};
+      SolidColorUniforms uniforms{};
+      uniforms.fragment_color = {1.0f, 0.4f, 0.1f, 1.0f};
+      [enc setRenderPipelineState:m_ctx->solid_color_pso];
+      [enc setVertexBytes:verts length:sizeof(verts) atIndex:MetalBufferIndexVertex];
+      [enc setFragmentBytes:&uniforms length:sizeof(uniforms) atIndex:MetalBufferIndexUniforms];
+      [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    }
+
     // Bucket renderers get ported in here.
     [enc endEncoding];
     [cmd presentDrawable:drawable];

@@ -38,10 +38,15 @@ passed the whole time.
 
 ### Metal status
 
-The Metal backend exists and runs: it owns the window, `MTLDevice`, command queue and
-`CAMetalLayer`, and presents a cleared frame (`Using renderer: Metal`, `[Metal] device: Apple M4`,
-exit 0). **A solid blue window is the expected output right now** -- that is the clear colour in
-`metal.mm`; no bucket renderer has been ported yet.
+The Metal backend exists and draws with a real ported shader: it owns the window, `MTLDevice`,
+command queue and `CAMetalLayer`, compiles MSL at runtime, builds a pipeline state and issues a
+draw (`Using renderer: Metal`, `[Metal] device: Apple M4`, `[Metal] compiled 1 shader file(s)`,
+exit 0).
+
+**An orange triangle on a dark blue background is the expected output right now.** The blue is the
+clear colour in `metal.mm`, the triangle is the ported `solid_color` shader. It is a deliberate
+smoke test proving source -> `MTLLibrary` -> pipeline state -> draw works end to end; no bucket
+renderer has been ported yet, so no game geometry appears.
 
 OpenGL remains the default and stays fully working. Pick a backend at runtime:
 
@@ -455,19 +460,42 @@ back, the margin is too small for some new call depth, not a reason to ignore th
 - `game/graphics/pipelines/metal.mm` -- Objective-C++, Apple-only, built with `-fobjc-arc` and
   linked against Metal / QuartzCore / Foundation (see `game/CMakeLists.txt`).
 - `MetalDisplay : GfxDisplay` -- window, display manager, input manager, SDL event pump, and a
-  clear-and-present frame.
+  clear-draw-present frame.
 - `GfxPipeline::Metal` plus selection in `Gfx::GetRenderer` / `Gfx::Init`, opt-in through
   `OPENGOAL_RENDERER=metal`.
+- `game/graphics/metal_renderer/shaders/` -- MSL sources. `solid_color.metal` is ported;
+  `metal_shader_types.h` holds the layouts shared with C++.
+- `game/graphics/metal_renderer/MetalShaderLibrary.{h,cpp}` -- reads the sources and compiles
+  them at runtime.
 
 The renderer module's data entry points (`send_chain`, `texture_upload_now`, `texture_relocate`,
 `set_levels`, `set_active_levels`, `set_pmode_alp`) are deliberate no-ops for now -- the DMA chain
 still drives the OpenGL bucket renderers.
 
+### Shaders are compiled at runtime, not into a .metallib
+
+An offline `.metallib` needs the Metal Toolchain (`xcodebuild -downloadComponent MetalToolchain`),
+which is not installed here -- `xcrun metal` fails with *"cannot execute tool 'metal' due to
+missing Metal Toolchain"*. Runtime compilation via `newLibraryWithSource:` avoids that entirely
+and matches how the OpenGL backend already loads GLSL, so editing a shader does not require a
+rebuild. Switch to an offline `.metallib` later if startup cost becomes a problem.
+
+`MTLCompileOptions` has no include search path, so `MetalShaderLibrary` expands
+`#include "..."` itself. It is a **textual** expander and does not evaluate `#ifdef`, so it only
+expands includes that exist in the shader folder and leaves every other include line untouched
+for Metal's own preprocessor. That is what makes the `#ifdef __METAL_VERSION__` split in
+`metal_shader_types.h` work -- without it, startup fails with
+`Metal shader file not found: .../shaders/common/common_types.h`, `metal_make_display` returns
+null, and you get **no window at all while the game keeps running headless**. If the Metal window
+does not appear, check the log for `[Metal]` errors first.
+
 ### Remaining work, in order
 
-1. **Shaders.** Port the 92 GLSL files in `game/graphics/opengl_renderer/shaders/` to MSL and
-   replace `Shader.cpp`'s compile/link path with `MTLLibrary` / `MTLRenderPipelineState`. Compile
-   the `.metal` files via `xcrun metal`/`metallib` from CMake.
+1. **Shaders.** Port the remaining GLSL pairs in `game/graphics/opengl_renderer/shaders/`
+   (44 `ShaderId`s, 88 files) to MSL and register them in `metal_shaders::all_shaders()`.
+   GLSL uniforms become fields in a struct in `metal_shader_types.h`, since MSL has no
+   free-floating uniforms. Replace `Shader.cpp`'s compile/link path with `MTLLibrary` /
+   `MTLRenderPipelineState`.
 2. **First bucket: `tfrag3`.** It covers most of the world and is the easiest to eyeball against
    the OpenGL reference. This is where `metal_send_chain` starts doing real work.
 3. **Textures.** `game/graphics/texture/` to `MTLTexture`, keeping the existing PS2 format
