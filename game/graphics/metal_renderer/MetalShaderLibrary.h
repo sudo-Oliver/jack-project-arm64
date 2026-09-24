@@ -47,6 +47,7 @@ inline const std::vector<ShaderDef>& all_shaders() {
       {"tfrag3.metal", "tfrag3_vert", "tfrag3_frag"},
       {"shrub.metal", "shrub_vert", "shrub_frag"},
       {"direct2.metal", "direct2_vert", "direct2_frag"},
+      {"merc2.metal", "merc2_vert", "merc2_frag"},
   };
   return shaders;
 }

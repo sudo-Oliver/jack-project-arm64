@@ -24,8 +24,9 @@ void MetalDrawStateCache::init(id<MTLDevice> device,
   m_depth_format = depth_format;
 }
 
-id<MTLRenderPipelineState> MetalDrawStateCache::pipeline(DrawMode mode) {
-  const u32 key = mode.as_int();
+id<MTLRenderPipelineState> MetalDrawStateCache::pipeline(DrawMode mode,
+                                                         MTLColorWriteMask write_mask) {
+  const u64 key = mode.as_int() | ((u64)write_mask << 32);
   auto it = m_pipelines.find(key);
   if (it != m_pipelines.end()) {
     return it->second;
@@ -38,6 +39,7 @@ id<MTLRenderPipelineState> MetalDrawStateCache::pipeline(DrawMode mode) {
   desc.depthAttachmentPixelFormat = m_depth_format;
   auto* color = desc.colorAttachments[0];
   color.pixelFormat = m_color_format;
+  color.writeMask = write_mask;
 
   // Mirrors setup_opengl_from_draw_mode in background_common.cpp, which is the definition of what
   // each mode means. A divergence here is a visual difference.
@@ -89,7 +91,7 @@ id<MTLRenderPipelineState> MetalDrawStateCache::pipeline(DrawMode mode) {
   NSError* err = nil;
   id<MTLRenderPipelineState> pso = [m_device newRenderPipelineStateWithDescriptor:desc error:&err];
   if (!pso) {
-    lg::error("[Metal] pipeline for draw mode {} failed: {}", key,
+    lg::error("[Metal] pipeline for draw mode {} failed: {}", mode.as_int(),
               err ? [[err localizedDescription] UTF8String] : "unknown error");
   }
   m_pipelines[key] = pso;

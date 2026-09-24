@@ -185,6 +185,10 @@ class Merc2Core {
   // The skinning matrices for every draw about to be flushed, as raw vectors.
   virtual void backend_upload_bones(const math::Vector4f* data, u32 num_vectors) = 0;
 
+  // Called once at the end of a flush, after every level's draws have been issued. A backend that
+  // keeps per-flush state -- the core restarts its modifiable-vertex numbering here -- drops it.
+  virtual void backend_flush_finished() {}
+
   // Draw one level's worth of draws. `envmap` picks the emerc shader over merc2; `set_fade` goes
   // with it, and is what the envmap pass fades with.
   virtual void backend_do_draws(const Draw* draws,

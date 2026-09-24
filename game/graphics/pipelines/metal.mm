@@ -42,7 +42,6 @@ struct MetalContext {
   CAMetalLayer* layer = nil;
   id<MTLLibrary> library = nil;
   // First ported shader. Proves source -> MTLLibrary -> pipeline state -> draw end to end.
-  id<MTLRenderPipelineState> solid_color_pso = nil;
   // Depth buffer for the world geometry. Recreated whenever the drawable changes size.
   id<MTLTexture> depth_texture = nil;
   u32 depth_w = 0, depth_h = 0;
@@ -200,18 +199,6 @@ std::shared_ptr<GfxDisplay> metal_make_display(int width,
     }
     lg::info("[Metal] compiled {} shader file(s)", metal_shaders::all_shaders().size());
 
-    MTLRenderPipelineDescriptor* desc = [MTLRenderPipelineDescriptor new];
-    desc.vertexFunction = [ctx->library newFunctionWithName:@"solid_color_vert"];
-    desc.fragmentFunction = [ctx->library newFunctionWithName:@"solid_color_frag"];
-    desc.colorAttachments[0].pixelFormat = ctx->layer.pixelFormat;
-    ctx->solid_color_pso = [ctx->device newRenderPipelineStateWithDescriptor:desc error:&err];
-    if (!ctx->solid_color_pso) {
-      lg::error("[Metal] solid_color pipeline failed: {}",
-                err ? [[err localizedDescription] UTF8String] : "unknown error");
-      SDL_Metal_DestroyView(view);
-      SDL_DestroyWindow(window);
-      return nullptr;
-    }
   }
   if (!g_metal_gfx_data) {
     g_metal_gfx_data = std::make_unique<MetalGraphicsData>(EE_MAIN_MEM_SIZE, game_version);
@@ -457,23 +444,6 @@ void MetalDisplay::render() {
       }
     }
 
-    // Smoke test for the shader path: draws a triangle with the ported solid_color shader.
-    // It is the proof that source -> MTLLibrary -> pipeline state -> draw works before any
-    // bucket renderer depends on it. Delete once tfrag3 draws here.
-    if (m_ctx->solid_color_pso) {
-      struct Vert2 {
-        float x, y;
-      };  // matches MSL float2
-      const Vert2 verts[3] = {{-0.5f, -0.5f}, {0.5f, -0.5f}, {0.0f, 0.5f}};
-      SolidColorUniforms uniforms{};
-      uniforms.fragment_color = {1.0f, 0.4f, 0.1f, 1.0f};
-      [enc setRenderPipelineState:m_ctx->solid_color_pso];
-      [enc setVertexBytes:verts length:sizeof(verts) atIndex:MetalBufferIndexVertex];
-      [enc setFragmentBytes:&uniforms length:sizeof(uniforms) atIndex:MetalBufferIndexUniforms];
-      [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
-    }
-
-    // Bucket renderers get ported in here.
     [enc endEncoding];
 
     // Debug readback: OPENGOAL_METAL_SCREENSHOT=<path> writes the first fully-drawn frame to a
@@ -486,6 +456,10 @@ void MetalDisplay::render() {
     const char* level_env = std::getenv("OPENGOAL_SCREENSHOT_LEVEL");
     const char* delay_env = std::getenv("OPENGOAL_SCREENSHOT_DELAY");
     const int want_delay = delay_env ? atoi(delay_env) : 0;
+    // A frame during a fade or a menu draws a handful of triangles and is not worth capturing.
+    // OPENGOAL_SCREENSHOT_MIN_TRIS says how much of a frame has to be there.
+    const char* min_tris_env = std::getenv("OPENGOAL_SCREENSHOT_MIN_TRIS");
+    const u32 shot_min_tris = min_tris_env ? (u32)atoi(min_tris_env) : 0;
     static int frames_since_level = -1;
     if (screenshot_path && !screenshot_done && g_metal_gfx_data) {
       for (const auto* lev : g_metal_gfx_data->loader->get_in_use_levels()) {
@@ -502,7 +476,7 @@ void MetalDisplay::render() {
     }
     const bool want_screenshot = screenshot_path && !screenshot_done && g_metal_gfx_data &&
                                  frames_since_level >= want_delay && frames_since_level >= 0 &&
-                                 g_metal_gfx_data->renderer->last_frame_tris() > 0;
+                                 g_metal_gfx_data->renderer->last_frame_tris() > shot_min_tris;
     id<MTLBuffer> screenshot_buffer = nil;
     u32 shot_w = 0, shot_h = 0, shot_stride = 0;
     if (want_screenshot) {

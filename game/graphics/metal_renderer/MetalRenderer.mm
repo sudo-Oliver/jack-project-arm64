@@ -10,6 +10,7 @@
 #include "common/log/log.h"
 
 #include "game/graphics/metal_renderer/MetalDirect2.h"
+#include "game/graphics/metal_renderer/MetalMerc2.h"
 #include "game/graphics/metal_renderer/MetalShrub.h"
 #include "game/graphics/metal_renderer/MetalTFragment.h"
 #include "game/graphics/metal_renderer/MetalTextureUploadHandler.h"
@@ -92,6 +93,24 @@ void MetalRenderer::init_bucket_table() {
   };
   for (const auto& [name, id] : texture_buckets) {
     m_bucket_renderers[(int)id] = std::make_unique<MetalTextureUploadHandler>(name, (int)id);
+  }
+
+  // The merc buckets: the characters. All eight share one MetalMerc2, the way the OpenGL table
+  // shares one Merc2 -- the draws are pooled per level, not per bucket.
+  m_merc2 = std::make_shared<MetalMerc2>();
+  const std::pair<const char*, BucketId> merc_buckets[] = {
+      {"l0-tfrag-merc", BucketId::MERC_TFRAG_TEX_LEVEL0},
+      {"l1-tfrag-merc", BucketId::MERC_TFRAG_TEX_LEVEL1},
+      {"common-alpha-merc", BucketId::MERC_AFTER_ALPHA},
+      {"l0-pris-merc", BucketId::MERC_PRIS_LEVEL0},
+      {"l1-pris-merc", BucketId::MERC_PRIS_LEVEL1},
+      {"common-pris-merc", BucketId::MERC_AFTER_PRIS},
+      {"l0-water-merc", BucketId::MERC_WATER_LEVEL0},
+      {"l1-water-merc", BucketId::MERC_WATER_LEVEL1},
+  };
+  for (const auto& [name, id] : merc_buckets) {
+    m_bucket_renderers[(int)id] =
+        std::make_unique<MetalMerc2BucketRenderer>(name, (int)id, m_merc2);
   }
 
   // The GIF buckets: debug draws and the subtitle text. Batch sizes are the OpenGL table's.
@@ -192,6 +211,9 @@ void MetalRenderer::render(DmaFollower dma, id<MTLRenderCommandEncoder> encoder)
     return;
   }
   m_last_frame_tris = 0;
+  if (m_merc2) {
+    m_merc2->reset_tri_count();
+  }
   m_render_state.encoder = encoder;
   m_render_state.ee_main_memory = g_ee_main_mem;
   m_render_state.offset_of_s7 = offset_of_s7();
@@ -245,6 +267,9 @@ void MetalRenderer::render(DmaFollower dma, id<MTLRenderCommandEncoder> encoder)
     } else if (auto* direct = dynamic_cast<MetalDirectBucketRenderer*>(renderer.get())) {
       m_last_frame_tris += direct->last_frame_tris();
     }
+  }
+  if (m_merc2) {
+    m_last_frame_tris += m_merc2->last_frame_tris();
   }
   m_render_state.encoder = nil;
 }

@@ -50,8 +50,11 @@ class MetalDrawStateCache {
             MTLPixelFormat color_format,
             MTLPixelFormat depth_format);
 
-  // Returns nil and logs if the pipeline cannot be built.
-  id<MTLRenderPipelineState> pipeline(DrawMode mode);
+  // Returns nil and logs if the pipeline cannot be built. `write_mask` is for renderers that
+  // draw colour and alpha in separate passes; on OpenGL that is glColorMask, on Metal it belongs
+  // to the pipeline, so each mask needs its own object.
+  id<MTLRenderPipelineState> pipeline(DrawMode mode,
+                                      MTLColorWriteMask write_mask = MTLColorWriteMaskAll);
   // `force_no_depth_write` is for the second half of an alpha-fail double draw.
   id<MTLDepthStencilState> depth_state(DrawMode mode, bool force_no_depth_write);
   id<MTLSamplerState> sampler(DrawMode mode);
@@ -63,7 +66,7 @@ class MetalDrawStateCache {
   MTLVertexDescriptor* m_vertex_desc = nil;
   MTLPixelFormat m_color_format = MTLPixelFormatInvalid;
   MTLPixelFormat m_depth_format = MTLPixelFormatInvalid;
-  std::unordered_map<u32, id<MTLRenderPipelineState>> m_pipelines;
+  std::unordered_map<u64, id<MTLRenderPipelineState>> m_pipelines;
   std::unordered_map<u32, id<MTLDepthStencilState>> m_depth_states;
   std::unordered_map<u32, id<MTLSamplerState>> m_samplers;
 };

@@ -46,6 +46,8 @@ class MetalRenderer {
   void scan_frame_state(DmaFollower dma);
 
   MetalRenderState m_render_state;
+  // Shared by all eight merc buckets, like the OpenGL table's single Merc2.
+  std::shared_ptr<class MetalMerc2> m_merc2;
   std::vector<std::unique_ptr<MetalBucketRenderer>> m_bucket_renderers;
   bool m_ready = false;
   u32 m_last_frame_tris = 0;

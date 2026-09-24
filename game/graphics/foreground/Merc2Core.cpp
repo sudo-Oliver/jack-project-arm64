@@ -970,6 +970,8 @@ void Merc2Core::flush_draw_buckets(MercDebugStats* stats) {
     }
   }
 
+  backend_flush_finished();
+
   m_next_free_light = 0;
   m_next_free_bone_vector = 0;
   m_next_free_level_bucket = 0;
