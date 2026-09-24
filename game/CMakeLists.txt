@@ -356,6 +356,7 @@ add_subdirectory(sound)
 if(APPLE)
     list(APPEND RUNTIME_SOURCE graphics/pipelines/metal.mm
                               graphics/metal_renderer/MetalGpuResources.mm
+                              graphics/metal_renderer/MetalTFragment.mm
                               graphics/metal_renderer/MetalShaderLibrary.cpp)
 
 endif()
@@ -367,7 +368,8 @@ target_link_libraries(runtime common fmt SDL3::SDL3 imgui discord-rpc sound stb_
 if(APPLE)
     target_link_libraries(runtime "-framework Metal" "-framework QuartzCore" "-framework Foundation")
     set_source_files_properties(graphics/pipelines/metal.mm
-                                graphics/metal_renderer/MetalGpuResources.mm PROPERTIES
+                                graphics/metal_renderer/MetalGpuResources.mm
+                              graphics/metal_renderer/MetalTFragment.mm PROPERTIES
         COMPILE_FLAGS "-fobjc-arc")
     target_include_directories(runtime PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/graphics/metal_renderer/shaders)
 endif()

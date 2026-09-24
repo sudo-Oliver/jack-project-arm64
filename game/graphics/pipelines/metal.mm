@@ -11,6 +11,8 @@
 #include <condition_variable>
 #include <mutex>
 
+#include <cstdlib>
+
 #include "common/dma/dma_copy.h"
 #include "common/goal_constants.h"
 
@@ -20,11 +22,13 @@
 
 #include "common/util/FileUtil.h"
 
+
 #include "game/graphics/gfx.h"
 #include "game/runtime.h"
 #include "game/graphics/opengl_renderer/loader/Loader.h"
 #include "game/graphics/texture/TexturePool.h"
 #include "game/graphics/metal_renderer/MetalGpuResources.h"
+#include "game/graphics/metal_renderer/MetalTFragment.h"
 #include "game/graphics/metal_renderer/MetalShaderLibrary.h"
 #include "game/system/hid/sdl_util.h"
 
@@ -38,7 +42,14 @@ struct MetalContext {
   id<MTLLibrary> library = nil;
   // First ported shader. Proves source -> MTLLibrary -> pipeline state -> draw end to end.
   id<MTLRenderPipelineState> solid_color_pso = nil;
+  // Depth buffer for the world geometry. Recreated whenever the drawable changes size.
+  id<MTLTexture> depth_texture = nil;
+  u32 depth_w = 0, depth_h = 0;
 };
+
+// Pixel formats the render pass and every pipeline state must agree on.
+constexpr MTLPixelFormat kMetalColorFormat = MTLPixelFormatBGRA8Unorm;
+constexpr MTLPixelFormat kMetalDepthFormat = MTLPixelFormatDepth32Float;
 
 namespace {
 
@@ -76,6 +87,14 @@ struct MetalGraphicsData {
   std::shared_ptr<TexturePool> texture_pool;
   std::shared_ptr<Loader> loader;
   GameVersion version;
+
+  // The first ported bucket renderer.
+  MetalTFragment tfrag;
+  bool tfrag_ready = false;
+  // Camera for the current frame, lifted out of the tfrag bucket's DMA.
+  GoalBackgroundCameraData camera{};
+  bool have_camera = false;
+  std::string camera_level_name;
 };
 
 std::unique_ptr<MetalGraphicsData> g_metal_gfx_data;
@@ -160,10 +179,7 @@ std::shared_ptr<GfxDisplay> metal_make_display(int width,
   {
     std::string combined;
     try {
-      for (const auto& def : metal_shaders::all_shaders()) {
-        combined += metal_shaders::load_source_with_includes(def.file);
-        combined += "\n";
-      }
+      combined = metal_shaders::load_all_sources();
     } catch (const std::exception& e) {
       lg::error("[Metal] could not read shader sources: {}", e.what());
       SDL_Metal_DestroyView(view);
@@ -383,9 +399,22 @@ void MetalDisplay::render() {
     if (dma.current_tag_offset() == next_bucket) {
       next_bucket += 16;
       for (int bucket_id = 0; bucket_id < kMetalBucketCount; bucket_id++) {
-        // Skip everything this bucket holds; a real renderer would consume it instead.
+        // Walk this bucket's data. The ported renderers do not consume the chain yet; what they
+        // need from it is the camera, which the game sends once per tfrag bucket as a
+        // TfragPcPortData transfer. Picking it out by size avoids replicating the VIF unpack
+        // sequence that TFragment::render walks before reaching it.
+        const bool is_tfrag_bucket = bucket_id == (int)jak1::BucketId::TFRAG_LEVEL0 ||
+                                     bucket_id == (int)jak1::BucketId::TFRAG_LEVEL1;
         while (dma.current_tag_offset() != next_bucket && !dma.ended()) {
-          dma.read_and_advance();
+          auto transfer = dma.read_and_advance();
+          if (is_tfrag_bucket && transfer.size_bytes == sizeof(TfragPcPortData)) {
+            TfragPcPortData port_data;
+            memcpy(&port_data, transfer.data, sizeof(TfragPcPortData));
+            port_data.level_name[sizeof(port_data.level_name) - 1] = '\0';
+            g_metal_gfx_data->camera = port_data.camera;
+            g_metal_gfx_data->camera_level_name = port_data.level_name;
+            g_metal_gfx_data->have_camera = true;
+          }
         }
         buckets_walked++;
         if (dma.ended()) {
@@ -431,15 +460,58 @@ void MetalDisplay::render() {
       return;
     }
 
+    // Depth buffer, sized to the drawable. The world geometry needs one; the clear-and-present
+    // frame did not.
+    const u32 dw = (u32)drawable.texture.width;
+    const u32 dh = (u32)drawable.texture.height;
+    if (!m_ctx->depth_texture || m_ctx->depth_w != dw || m_ctx->depth_h != dh) {
+      MTLTextureDescriptor* dd =
+          [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:kMetalDepthFormat
+                                                             width:dw
+                                                            height:dh
+                                                         mipmapped:NO];
+      dd.usage = MTLTextureUsageRenderTarget;
+      dd.storageMode = MTLStorageModePrivate;
+      m_ctx->depth_texture = [m_ctx->device newTextureWithDescriptor:dd];
+      m_ctx->depth_w = dw;
+      m_ctx->depth_h = dh;
+    }
+
     MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
     pass.colorAttachments[0].texture = drawable.texture;
     pass.colorAttachments[0].loadAction = MTLLoadActionClear;
     pass.colorAttachments[0].storeAction = MTLStoreActionStore;
     // Distinctive clear colour: proof the Metal path is what is on screen, not OpenGL.
     pass.colorAttachments[0].clearColor = MTLClearColorMake(0.1, 0.1, 0.25, 1.0);
+    pass.depthAttachment.texture = m_ctx->depth_texture;
+    pass.depthAttachment.loadAction = MTLLoadActionClear;
+    pass.depthAttachment.storeAction = MTLStoreActionDontCare;
+    // The game's projection makes nearer geometry compare greater, so the far value is 0.
+    pass.depthAttachment.clearDepth = 0.0;
 
     id<MTLCommandBuffer> cmd = [m_ctx->queue commandBuffer];
     id<MTLRenderCommandEncoder> enc = [cmd renderCommandEncoderWithDescriptor:pass];
+
+    // tfrag3: the world geometry, and the first bucket that draws its own contents.
+    if (g_metal_gfx_data && g_metal_gfx_data->have_camera) {
+      if (!g_metal_gfx_data->tfrag_ready) {
+        g_metal_gfx_data->tfrag_ready = g_metal_gfx_data->tfrag.init(
+            m_ctx->device, m_ctx->library, kMetalColorFormat, kMetalDepthFormat);
+      }
+      if (g_metal_gfx_data->tfrag_ready) {
+        const auto* level =
+            g_metal_gfx_data->loader->get_tfrag3_level(g_metal_gfx_data->camera_level_name);
+        if (level) {
+          g_metal_gfx_data->tfrag.render(enc, *level, g_metal_gfx_data->camera);
+          static u32 logged_tris = 0;
+          if (g_metal_gfx_data->tfrag.last_frame_tris() != logged_tris) {
+            logged_tris = g_metal_gfx_data->tfrag.last_frame_tris();
+            lg::info("[Metal] tfrag3 drew {} triangles from {}", logged_tris,
+                     g_metal_gfx_data->camera_level_name);
+          }
+        }
+      }
+    }
 
     // Smoke test for the shader path: draws a triangle with the ported solid_color shader.
     // It is the proof that source -> MTLLibrary -> pipeline state -> draw works before any
@@ -459,8 +531,54 @@ void MetalDisplay::render() {
 
     // Bucket renderers get ported in here.
     [enc endEncoding];
+
+    // Debug readback: OPENGOAL_METAL_SCREENSHOT=<path> writes the first fully-drawn frame to a
+    // PNG and stops. Metal draws into a drawable the window server owns, so there is no way to
+    // capture this from outside the process while the window is on another Space -- and looking
+    // at the frame is the only way to tell a wrong matrix from a wrong texture.
+    static bool screenshot_done = false;
+    const char* screenshot_path = std::getenv("OPENGOAL_METAL_SCREENSHOT");
+    const bool want_screenshot =
+        screenshot_path && !screenshot_done && g_metal_gfx_data &&
+        g_metal_gfx_data->tfrag.last_frame_tris() > 0;
+    id<MTLBuffer> screenshot_buffer = nil;
+    u32 shot_w = 0, shot_h = 0, shot_stride = 0;
+    if (want_screenshot) {
+      shot_w = (u32)drawable.texture.width;
+      shot_h = (u32)drawable.texture.height;
+      shot_stride = shot_w * 4;
+      screenshot_buffer = [m_ctx->device newBufferWithLength:shot_stride * shot_h
+                                                     options:MTLResourceStorageModeShared];
+      id<MTLBlitCommandEncoder> blit = [cmd blitCommandEncoder];
+      [blit copyFromTexture:drawable.texture
+                sourceSlice:0
+                sourceLevel:0
+               sourceOrigin:MTLOriginMake(0, 0, 0)
+                 sourceSize:MTLSizeMake(shot_w, shot_h, 1)
+                   toBuffer:screenshot_buffer
+          destinationOffset:0
+     destinationBytesPerRow:shot_stride
+   destinationBytesPerImage:shot_stride * shot_h];
+      [blit endEncoding];
+    }
     [cmd presentDrawable:drawable];
     [cmd commit];
+
+    if (screenshot_buffer) {
+      [cmd waitUntilCompleted];
+      // BGRA8 from the drawable; write_rgba_png wants RGBA.
+      std::vector<u8> rgba(shot_stride * shot_h);
+      const u8* src = (const u8*)[screenshot_buffer contents];
+      for (u32 i = 0; i < shot_w * shot_h; i++) {
+        rgba[i * 4 + 0] = src[i * 4 + 2];
+        rgba[i * 4 + 1] = src[i * 4 + 1];
+        rgba[i * 4 + 2] = src[i * 4 + 0];
+        rgba[i * 4 + 3] = 255;
+      }
+      file_util::write_rgba_png(screenshot_path, rgba.data(), shot_w, shot_h);
+      lg::info("[Metal] wrote screenshot {} ({}x{})", screenshot_path, shot_w, shot_h);
+      screenshot_done = true;
+    }
   }
 
   // Release the game thread: it blocks in metal_sync_path/metal_vsync until the frame is done.

@@ -27,6 +27,12 @@ inline constexpr char kShaderFolder[] = "game/graphics/metal_renderer/shaders/";
 // Throws std::runtime_error if a file is missing.
 std::string load_source_with_includes(const std::string& name);
 
+// Every shader in all_shaders(), concatenated into the one source the library is compiled from.
+// Shared headers are expanded once for the whole program, not once per file: `#pragma once` is
+// useless here because the expansion is textual, and a second copy of metal_shader_types.h is a
+// redefinition error rather than a no-op.
+std::string load_all_sources();
+
 // Every shader that gets compiled into the library, and the entry points it provides.
 struct ShaderDef {
   const char* file;        // .metal file name, without the folder

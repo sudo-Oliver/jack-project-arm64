@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+
 #include "common/math/Vector.h"
 
 #include "game/graphics/opengl_renderer/BucketRenderer.h"
@@ -46,6 +48,14 @@ DoubleDraw setup_opengl_from_draw_mode(DrawMode mode, u32 tex_unit, bool mipmap)
 void first_tfrag_draw_setup(const GoalBackgroundCameraData& settings,
                             SharedRenderState* render_state,
                             ShaderId shader);
+
+// The camera matrix the background shaders use: the game's rotation matrix scaled by the
+// perspective values, with the PC depth-range shift folded in. Declared here because the Metal
+// renderers need it too; the definition stays in background_common.cpp.
+std::array<math::Vector4f, 4> make_new_cam_mat(const math::Vector4f cam_T_w[4],
+                                               const math::Vector4f persp[4],
+                                               float fog_constant,
+                                               float hvdf_z);
 
 void interp_time_of_day(const math::Vector<s32, 4> itimes[4],
                         const tfrag3::PackedTimeOfDay& packed_colors,

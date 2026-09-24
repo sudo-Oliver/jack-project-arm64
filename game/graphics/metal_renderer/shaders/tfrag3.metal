@@ -9,6 +9,9 @@
 //   - Every former `uniform` is a field in Tfrag3Uniforms (metal_shader_types.h). Metal has no
 //     free-floating uniforms.
 //
+// All types here are prefixed: every shader is compiled into one library from one concatenated
+// source, so a plain `VertexOut` would collide with the next shader's.
+//
 // The vertex layout is tfrag3::PreloadedVertex, unpacked from the .fr3 by the shared loader, so
 // the attribute offsets here have to match that struct.
 //
@@ -18,23 +21,23 @@ using namespace metal;
 
 #include "metal_shader_types.h"
 
-struct VertexIn {
+struct Tfrag3VertexIn {
   float3 position [[attribute(0)]];
   float2 tex_coord [[attribute(1)]];
   ushort color_index [[attribute(2)]];
 };
 
-struct VertexOut {
+struct Tfrag3VertexOut {
   float4 position [[position]];
   float4 fragment_color;
   float2 tex_coord;
   float fogginess;
 };
 
-vertex VertexOut tfrag3_vert(VertexIn in [[stage_in]],
+vertex Tfrag3VertexOut tfrag3_vert(Tfrag3VertexIn in [[stage_in]],
                              constant Tfrag3Uniforms& u [[buffer(MetalBufferIndexUniforms)]],
                              const device float4* time_of_day [[buffer(MetalBufferIndexTimeOfDay)]]) {
-  VertexOut out;
+  Tfrag3VertexOut out;
 
   // The camera transform, same as the GLSL: the PS2 did this on VU1 with the matrix already
   // negated, which is why every term is subtracted.
@@ -48,9 +51,13 @@ vertex VertexOut tfrag3_vert(VertexIn in [[stage_in]],
 
   out.fogginess = 255.0 - clamp(-transformed.w + u.hvdf_offset.w, u.fog_min, u.fog_max);
 
-  // Scissoring area adjust. Metal's clip space matches OpenGL's in x and y; the depth range
-  // difference is handled by the projection the game already hands us.
+  // Scissoring area adjust.
   transformed.y *= u.scissor_adjust * u.height_scale;
+  // Metal's clip space matches OpenGL's in x and y, but its depth range is [0, w] where OpenGL's
+  // is [-w, w]. The camera matrix make_new_cam_mat builds targets OpenGL, so remap here rather
+  // than fork the matrix: this preserves the ordering, so the GREATER_EQUAL depth test the game's
+  // reversed projection needs still holds.
+  transformed.z = (transformed.z + transformed.w) * 0.5;
   out.position = transformed;
 
   float4 color = time_of_day[in.color_index];
@@ -65,7 +72,7 @@ vertex VertexOut tfrag3_vert(VertexIn in [[stage_in]],
   return out;
 }
 
-fragment float4 tfrag3_frag(VertexOut in [[stage_in]],
+fragment float4 tfrag3_frag(Tfrag3VertexOut in [[stage_in]],
                             constant Tfrag3Uniforms& u [[buffer(MetalBufferIndexUniforms)]],
                             texture2d<float> tex [[texture(0)]],
                             sampler samp [[sampler(0)]]) {

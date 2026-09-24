@@ -34,9 +34,11 @@ TextureTable& table() {
   return t;
 }
 
-// The PS2 textures arrive as GL_UNSIGNED_INT_8_8_8_8_REV over GL_RGBA, which is the same byte
-// order as Metal's BGRA8Unorm.
-constexpr MTLPixelFormat kTextureFormat = MTLPixelFormatBGRA8Unorm;
+// The converted textures arrive as GL_RGBA with GL_UNSIGNED_INT_8_8_8_8_REV. That packs the first
+// component into the low byte of each 32-bit word, so on a little-endian machine the bytes in
+// memory are R, G, B, A -- RGBA8Unorm, not BGRA8Unorm. Getting this backwards swaps red and blue:
+// Sandover Village came out purple and its grass came out teal.
+constexpr MTLPixelFormat kTextureFormat = MTLPixelFormatRGBA8Unorm;
 
 u32 mip_level_count(u16 w, u16 h) {
   u32 levels = 1;

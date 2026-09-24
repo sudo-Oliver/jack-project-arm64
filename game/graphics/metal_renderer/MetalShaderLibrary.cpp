@@ -57,4 +57,14 @@ std::string load_source_with_includes(const std::string& name) {
   return expand(name, seen);
 }
 
+std::string load_all_sources() {
+  std::unordered_set<std::string> seen;
+  std::string out;
+  for (const auto& def : all_shaders()) {
+    out += expand(def.file, seen);
+    out += '\n';
+  }
+  return out;
+}
+
 }  // namespace metal_shaders
