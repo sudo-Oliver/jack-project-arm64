@@ -502,6 +502,60 @@ for Metal's own preprocessor. That is what makes the `#ifdef __METAL_VERSION__` 
 null, and you get **no window at all while the game keeps running headless**. If the Metal window
 does not appear, check the log for `[Metal]` errors first.
 
+### How this port is kept honest
+
+Comparing screenshots does not scale, and it is not the method. The method is that **anything
+which decides how a pixel looks lives in exactly one place, shared by both backends.** A second
+copy is a second chance to disagree, and the disagreement shows up as a wrong picture somewhere
+nobody is looking.
+
+What is already shared, and therefore cannot diverge:
+
+| Shared | Where |
+|---|---|
+| `.fr3` level data, level load/unload | `loader/Loader.cpp`, both backends hold one |
+| PS2 texture conversion, texture pool bookkeeping | `texture/TexturePool.cpp` |
+| GPU allocation (textures, vertex/index buffers) | `game/graphics/gpu_resources.h` -- one interface, a backend installs itself |
+| Time-of-day colour interpolation | `interp_time_of_day` |
+| Camera matrix, including the PC depth-range shift | `make_new_cam_mat` |
+| Frustum + occlusion culling, index lists from vis strings | `cull_check_all_slow`, `make_index_list_from_vis_string` |
+| What a GS alpha test means | `alpha_test_double_draw` |
+
+What cannot be shared, and is therefore written **once as a translation table** rather than
+decided per renderer: `DrawMode` to Metal state. Blend belongs to a pipeline state, depth test and
+write to a depth-stencil state, clamp and filter to a sampler, so each distinct mode gets its
+objects built once and cached by the mode's integer value. That lives in `MetalTFragment.mm`
+today and moves out the moment a second renderer needs it.
+
+What is left is the bucket list. The OpenGL backend is a table of 70 buckets, 16 distinct renderer
+classes for Jak 1. That table is the port's checklist, not a search problem:
+
+| Renderer | Buckets (jak1) | Metal |
+|---|---|---|
+| `TFragment` | 6 | **done** for NORMAL/LOWRES; TRANS, DIRT, ICE and the near variants still owed |
+| `TextureUploadHandler` | 11 | needed next -- without it, animated and uploaded textures never reach the pool |
+| `Generic2BucketRenderer` | 10 | |
+| `Merc2BucketRenderer` | 8 | the characters |
+| `DirectRenderer` | 3 | also the fallback path several others use |
+| `Tie3WithEnvmapJak1` | 2 | the props: cliffs, huts, fences. Biggest single visual gap |
+| `SkyBlendHandler` | 2 | |
+| `Shrub` | 2 | closest in shape to tfrag3, so cheapest after it |
+| `SkyRenderer`, `Sprite3`, `ShadowRenderer`, `OceanNear`, `OceanMidAndFar`, `EyeRenderer`, `DepthCue`, `EmptyBucketRenderer` | 1 each | |
+
+Screenshots are the acceptance step at the end of a bucket, not the way the work is found. Both
+backends write one at the same point in the game:
+
+```sh
+OPENGOAL_SCREENSHOT_LEVEL=village1 OPENGOAL_SCREENSHOT_DELAY=150 \
+  OPENGOAL_GL_SCREENSHOT=/tmp/gl.png ./build/game/gk -v --game jak1 -- -boot -debug -fakeiso
+OPENGOAL_SCREENSHOT_LEVEL=village1 OPENGOAL_SCREENSHOT_DELAY=150 \
+  OPENGOAL_METAL_SCREENSHOT=/tmp/metal.png OPENGOAL_RENDERER=metal ./build/game/gk ...
+```
+
+The delay counts frames from when the named level comes into use, not absolute frame numbers: the
+two backends do not pace identically during the boot, so the same absolute frame is a different
+moment in the game.
+
 ### Remaining work, in order
 
 1. **Shaders.** Port the remaining GLSL pairs in `game/graphics/opengl_renderer/shaders/`
