@@ -88,8 +88,6 @@ before starting anything non-trivial. `.claude/CLAUDE.md` holds the same rules i
 
 - [open-goal/jak-project](https://github.com/open-goal/jak-project) -- the decompilation, the GOAL
   compiler and the runtime. Everything here is downstream of that work.
-- [DiMiTriFrog/jak2-macos-arm64](https://github.com/DiMiTriFrog/jak2-macos-arm64) -- the original
-  ARM64 backend work that made native Apple Silicon possible at all.
 - [nikolasburns/jak-arm64-macos](https://github.com/nikolasburns/jak-arm64-macos) -- an
   independent ARM64 fork (ISC). `test/goalc/test_arm64_*.cpp` and `common/jit_memory.h` are
   imported from it, with the differences from our implementation documented in place. Importing
