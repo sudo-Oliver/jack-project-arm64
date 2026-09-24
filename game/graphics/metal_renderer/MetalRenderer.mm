@@ -9,6 +9,7 @@
 
 #include "common/log/log.h"
 
+#include "game/graphics/metal_renderer/MetalShrub.h"
 #include "game/graphics/metal_renderer/MetalTFragment.h"
 #include "game/graphics/opengl_renderer/buckets.h"
 
@@ -40,6 +41,11 @@ void MetalRenderer::init_bucket_table() {
       "l0-tfrag-tfrag", (int)BucketId::TFRAG_LEVEL0, normal_tfrags, 0);
   m_bucket_renderers[(int)BucketId::TFRAG_LEVEL1] = std::make_unique<MetalTFragment>(
       "l1-tfrag-tfrag", (int)BucketId::TFRAG_LEVEL1, normal_tfrags, 1);
+
+  m_bucket_renderers[(int)BucketId::SHRUB_NORMAL_LEVEL0] =
+      std::make_unique<MetalShrub>("l0-shrub", (int)BucketId::SHRUB_NORMAL_LEVEL0, 0);
+  m_bucket_renderers[(int)BucketId::SHRUB_NORMAL_LEVEL1] =
+      std::make_unique<MetalShrub>("l1-shrub", (int)BucketId::SHRUB_NORMAL_LEVEL1, 1);
 }
 
 bool MetalRenderer::init(id<MTLDevice> device,
@@ -174,6 +180,8 @@ void MetalRenderer::render(DmaFollower dma, id<MTLRenderCommandEncoder> encoder)
   for (auto& renderer : m_bucket_renderers) {
     if (auto* tfrag = dynamic_cast<MetalTFragment*>(renderer.get())) {
       m_last_frame_tris += tfrag->last_frame_tris();
+    } else if (auto* shrub = dynamic_cast<MetalShrub*>(renderer.get())) {
+      m_last_frame_tris += shrub->last_frame_tris();
     }
   }
   m_render_state.encoder = nil;
