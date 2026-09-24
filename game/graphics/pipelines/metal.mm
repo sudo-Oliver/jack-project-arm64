@@ -43,6 +43,7 @@ struct MetalContext {
   id<MTLLibrary> library = nil;
   // First ported shader. Proves source -> MTLLibrary -> pipeline state -> draw end to end.
   // Depth buffer for the world geometry. Recreated whenever the drawable changes size.
+  id<MTLTexture> frame_texture = nil;
   id<MTLTexture> depth_texture = nil;
   u32 depth_w = 0, depth_h = 0;
 };
@@ -50,6 +51,9 @@ struct MetalContext {
 // Pixel formats the render pass and every pipeline state must agree on.
 constexpr MTLPixelFormat kMetalColorFormat = MTLPixelFormatBGRA8Unorm;
 constexpr MTLPixelFormat kMetalDepthFormat = MTLPixelFormatDepth32Float;
+
+// See kMetalFramesInFlight in MetalRenderState.h for what this is holding back and why.
+dispatch_semaphore_t g_metal_frame_semaphore = dispatch_semaphore_create(kMetalFramesInFlight);
 
 namespace {
 
@@ -164,7 +168,9 @@ std::shared_ptr<GfxDisplay> metal_make_display(int width,
   ctx->layer.device = ctx->device;
   ctx->layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
   // The renderer draws every frame, so no need to keep the previous drawable contents.
-  ctx->layer.framebufferOnly = YES;
+  // NO, because the finished frame is blitted into the drawable rather than rendered into it,
+  // and the debug screenshot reads it back.
+  ctx->layer.framebufferOnly = NO;
 
   lg::info("[Metal] device: {}", [[ctx->device name] UTF8String]);
 
@@ -389,10 +395,17 @@ void MetalDisplay::render() {
     }
   }
 
+  // Hold the CPU back so it is never more than kMetalFramesInFlight frames ahead of the GPU.
+  // Every renderer's per-frame buffers are sized for that many frames: without this the CPU runs
+  // ahead and rewrites a buffer the GPU is still reading, which shows up as a flicker over the
+  // whole picture rather than as an error.
+  dispatch_semaphore_wait(g_metal_frame_semaphore, DISPATCH_TIME_FOREVER);
+
   @autoreleasepool {
     id<CAMetalDrawable> drawable = [m_ctx->layer nextDrawable];
     if (!drawable) {
       // The layer can legitimately run out of drawables (e.g. the window is occluded).
+      dispatch_semaphore_signal(g_metal_frame_semaphore);
       return;
     }
 
@@ -400,6 +413,21 @@ void MetalDisplay::render() {
     // frame did not.
     const u32 dw = (u32)drawable.texture.width;
     const u32 dh = (u32)drawable.texture.height;
+    // The frame is drawn into a texture we own rather than straight into the drawable, and that
+    // texture is blitted to the drawable afterwards. This display loop runs more often than the
+    // game produces frames; drawing into the drawable would clear it on every one of those calls,
+    // so a frame with no new data would come out blank -- a flicker over the whole picture.
+    // Keeping the last frame in a texture of our own means those calls re-present it instead.
+    if (!m_ctx->frame_texture || m_ctx->depth_w != dw || m_ctx->depth_h != dh) {
+      MTLTextureDescriptor* fd =
+          [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:kMetalColorFormat
+                                                             width:dw
+                                                            height:dh
+                                                         mipmapped:NO];
+      fd.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+      fd.storageMode = MTLStorageModePrivate;
+      m_ctx->frame_texture = [m_ctx->device newTextureWithDescriptor:fd];
+    }
     if (!m_ctx->depth_texture || m_ctx->depth_w != dw || m_ctx->depth_h != dh) {
       MTLTextureDescriptor* dd =
           [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:kMetalDepthFormat
@@ -414,8 +442,11 @@ void MetalDisplay::render() {
     }
 
     MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
-    pass.colorAttachments[0].texture = drawable.texture;
-    pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+    pass.colorAttachments[0].texture = m_ctx->frame_texture;
+    // Only a real frame clears. Without one there is nothing to draw, and the texture already
+    // holds the last frame.
+    pass.colorAttachments[0].loadAction =
+        have_frame ? MTLLoadActionClear : MTLLoadActionLoad;
     pass.colorAttachments[0].storeAction = MTLStoreActionStore;
     // Distinctive clear colour: proof the Metal path is what is on screen, not OpenGL.
     pass.colorAttachments[0].clearColor = MTLClearColorMake(0.1, 0.1, 0.25, 1.0);
@@ -446,6 +477,21 @@ void MetalDisplay::render() {
 
     [enc endEncoding];
 
+    // Hand the finished frame to the drawable.
+    {
+      id<MTLBlitCommandEncoder> present_blit = [cmd blitCommandEncoder];
+      [present_blit copyFromTexture:m_ctx->frame_texture
+                        sourceSlice:0
+                        sourceLevel:0
+                       sourceOrigin:MTLOriginMake(0, 0, 0)
+                         sourceSize:MTLSizeMake(dw, dh, 1)
+                          toTexture:drawable.texture
+                   destinationSlice:0
+                   destinationLevel:0
+                  destinationOrigin:MTLOriginMake(0, 0, 0)];
+      [present_blit endEncoding];
+    }
+
     // Debug readback: OPENGOAL_METAL_SCREENSHOT=<path> writes the first fully-drawn frame to a
     // PNG and stops. Metal draws into a drawable the window server owns, so there is no way to
     // capture this from outside the process while the window is on another Space -- and looking
@@ -474,7 +520,8 @@ void MetalDisplay::render() {
         frames_since_level++;
       }
     }
-    const bool want_screenshot = screenshot_path && !screenshot_done && g_metal_gfx_data &&
+    const bool want_screenshot = screenshot_path && !screenshot_done && have_frame &&
+                                 g_metal_gfx_data &&
                                  frames_since_level >= want_delay && frames_since_level >= 0 &&
                                  g_metal_gfx_data->renderer->last_frame_tris() > shot_min_tris;
     id<MTLBuffer> screenshot_buffer = nil;
@@ -497,6 +544,9 @@ void MetalDisplay::render() {
    destinationBytesPerImage:shot_stride * shot_h];
       [blit endEncoding];
     }
+    [cmd addCompletedHandler:^(id<MTLCommandBuffer>) {
+      dispatch_semaphore_signal(g_metal_frame_semaphore);
+    }];
     [cmd presentDrawable:drawable];
     [cmd commit];
 

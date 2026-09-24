@@ -225,9 +225,14 @@ void MetalRenderer::render(DmaFollower dma, id<MTLRenderCommandEncoder> encoder)
   // then one 16-byte slot per bucket. Each renderer must leave the cursor exactly at the next
   // bucket boundary.
   u32 next_bucket = dma.current_tag_offset() + 16;
-  dma.read_and_advance();
-  dma.read_and_advance();
-  dma.read_and_advance();
+  dma.read_and_advance();  // the call into the default-regs chain
+  // The default register data. Its 145th byte onwards is the frame's fog colour, which every
+  // renderer that fogs needs and no bucket carries.
+  auto default_data = dma.read_and_advance();
+  if (default_data.size_bytes > 148) {
+    memcpy(m_render_state.fog_color.data(), default_data.data + 144, 4);
+  }
+  dma.read_and_advance();  // its ret tag
   if (dma.current_tag_offset() != next_bucket) {
     lg::error("[Metal] frame did not start with the default-register chain");
     return;

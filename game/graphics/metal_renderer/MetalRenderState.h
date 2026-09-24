@@ -31,6 +31,12 @@
 
 #ifdef __OBJC__
 
+// How many frames the CPU may be ahead of the GPU. Every renderer that writes GPU-visible memory
+// per frame keeps this many copies, and the display holds the CPU back to match (see the
+// semaphore in metal.mm). Both halves have to agree, or a buffer gets rewritten while the GPU is
+// still reading it -- which looks like a flicker, not like an error.
+constexpr int kMetalFramesInFlight = 3;
+
 /*!
  * Blend, depth and sampler state for a GS DrawMode.
  *

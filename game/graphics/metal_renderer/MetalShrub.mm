@@ -20,11 +20,10 @@
 
 namespace {
 
-constexpr int kFramesInFlight = 3;
 
 struct ShrubTreeCache {
   id<MTLBuffer> index_buffer = nil;  // static: shrub has no per-frame visibility
-  std::array<id<MTLBuffer>, kFramesInFlight> time_of_day = {nil, nil, nil};
+  std::array<id<MTLBuffer>, kMetalFramesInFlight> time_of_day = {nil, nil, nil};
   std::vector<math::Vector<u8, 4>> color_scratch;
 };
 
@@ -42,7 +41,7 @@ struct MetalShrub::Impl {
   void release_trees() {
     for (auto& tree : trees) {
       tree.index_buffer = nil;
-      for (int i = 0; i < kFramesInFlight; i++) {
+      for (int i = 0; i < kMetalFramesInFlight; i++) {
         tree.time_of_day[i] = nil;
       }
     }
@@ -137,7 +136,7 @@ void MetalShrub::draw_level(MetalRenderState* render_state, const LevelData& lev
           [m_impl->device newBufferWithBytes:in_tree.indices.data()
                                       length:in_tree.indices.size() * sizeof(u32)
                                      options:MTLResourceStorageModeShared];
-      for (int f = 0; f < kFramesInFlight; f++) {
+      for (int f = 0; f < kMetalFramesInFlight; f++) {
         cache.time_of_day[f] = [m_impl->device
             newBufferWithLength:in_tree.time_of_day_colors.color_count * sizeof(float) * 4
                         options:MTLResourceStorageModeShared];
@@ -163,8 +162,11 @@ void MetalShrub::draw_level(MetalRenderState* render_state, const LevelData& lev
   uniforms.hvdf_offset = {camera.hvdf_off[0], camera.hvdf_off[1], camera.hvdf_off[2],
                           camera.hvdf_off[3]};
   uniforms.cam_trans = {camera.trans[0], camera.trans[1], camera.trans[2], camera.trans[3]};
+  // Same values setup_tfrag_shader passes: the colour from the frame's default registers, the
+  // intensity as the alpha.
   uniforms.fog_color = {render_state->fog_color[0] / 255.f, render_state->fog_color[1] / 255.f,
-                        render_state->fog_color[2] / 255.f, 0.f};
+                        render_state->fog_color[2] / 255.f,
+                        render_state->fog_intensity / 255.f};
   uniforms.fog_min = camera.fog.y();
   uniforms.fog_max = camera.fog.z();
   uniforms.scissor_adjust = 512.f / 448.f;
@@ -174,7 +176,7 @@ void MetalShrub::draw_level(MetalRenderState* render_state, const LevelData& lev
   [encoder setBlendColorRed:0.5f green:0.5f blue:0.5f alpha:0.5f];
 
   const int frame = m_impl->frame;
-  m_impl->frame = (m_impl->frame + 1) % kFramesInFlight;
+  m_impl->frame = (m_impl->frame + 1) % kMetalFramesInFlight;
 
   for (size_t tree_idx = 0; tree_idx < in_trees.size(); tree_idx++) {
     const auto& in_tree = in_trees[tree_idx];
