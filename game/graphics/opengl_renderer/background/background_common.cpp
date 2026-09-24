@@ -106,9 +106,26 @@ DoubleDraw setup_opengl_from_draw_mode(DrawMode mode, u32 tex_unit, bool mipmap)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
   }
 
-  // for some reason, they set atest NEVER + FB_ONLY to disable depth writes
-  bool alpha_hack_to_disable_z_write = false;
+  const auto alpha = alpha_test_double_draw(mode);
+  double_draw.kind = alpha.kind;
+  double_draw.aref_first = alpha.aref_first;
+  double_draw.aref_second = alpha.aref_second;
 
+  // for some reason, they set atest NEVER + FB_ONLY to disable depth writes
+  const bool alpha_hack_to_disable_z_write =
+      mode.get_at_enable() && mode.get_alpha_test() == DrawMode::AlphaTest::NEVER &&
+      mode.get_alpha_fail() == GsTest::AlphaFail::FB_ONLY;
+
+  if (mode.get_depth_write_enable() && !alpha_hack_to_disable_z_write) {
+    glDepthMask(GL_TRUE);
+  } else {
+    glDepthMask(GL_FALSE);
+  }
+  return double_draw;
+}
+
+DoubleDraw alpha_test_double_draw(DrawMode mode) {
+  DoubleDraw result;
   float alpha_min = 0.;
   if (mode.get_at_enable()) {
     switch (mode.get_alpha_test()) {
@@ -123,8 +140,8 @@ DoubleDraw setup_opengl_from_draw_mode(DrawMode mode, u32 tex_unit, bool mipmap)
           case GsTest::AlphaFail::FB_ONLY:
             if (mode.get_depth_write_enable()) {
               // darn, we need to draw twice
-              double_draw.kind = DoubleDrawKind::AFAIL_NO_DEPTH_WRITE;
-              double_draw.aref_second = alpha_min;
+              result.kind = DoubleDrawKind::AFAIL_NO_DEPTH_WRITE;
+              result.aref_second = alpha_min;
             } else {
               alpha_min = 0.f;
             }
@@ -134,24 +151,14 @@ DoubleDraw setup_opengl_from_draw_mode(DrawMode mode, u32 tex_unit, bool mipmap)
         }
         break;
       case DrawMode::AlphaTest::NEVER:
-        if (mode.get_alpha_fail() == GsTest::AlphaFail::FB_ONLY) {
-          alpha_hack_to_disable_z_write = true;
-        } else {
-          ASSERT(false);
-        }
+        // handled by the caller: this disables depth writes rather than discarding
         break;
       default:
         ASSERT(false);
     }
   }
-
-  if (mode.get_depth_write_enable() && !alpha_hack_to_disable_z_write) {
-    glDepthMask(GL_TRUE);
-  } else {
-    glDepthMask(GL_FALSE);
-  }
-  double_draw.aref_first = alpha_min;
-  return double_draw;
+  result.aref_first = alpha_min;
+  return result;
 }
 
 DoubleDraw setup_tfrag_shader(SharedRenderState* render_state, DrawMode mode, ShaderId shader) {

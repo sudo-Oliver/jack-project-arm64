@@ -61,6 +61,11 @@ void interp_time_of_day(const math::Vector<s32, 4> itimes[4],
                         const tfrag3::PackedTimeOfDay& packed_colors,
                         math::Vector<u8, 4>* out);
 
+// The alpha-test half of a DrawMode: the alpha reference the shader should use, and whether the
+// draw has to be repeated without depth writes. Backend-neutral, so the OpenGL and Metal paths
+// cannot disagree about what a mode means.
+DoubleDraw alpha_test_double_draw(DrawMode mode);
+
 void cull_check_all_slow(const math::Vector4f* planes,
                          const std::vector<tfrag3::VisNode>& nodes,
                          const u8* level_occlusion_string,

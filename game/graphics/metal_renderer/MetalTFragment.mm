@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <unordered_map>
 
 #include "common/log/log.h"
 
@@ -35,10 +36,19 @@ struct TreeCache {
 }  // namespace
 
 struct MetalTFragment::Impl {
-  id<MTLRenderPipelineState> pso = nil;
-  id<MTLDepthStencilState> depth_state = nil;
-  id<MTLSamplerState> sampler = nil;
   id<MTLDevice> device = nil;
+  // Blend state is baked into the pipeline on Metal, and depth test/write into a depth-stencil
+  // state, where OpenGL sets both with calls between draws. So each distinct DrawMode needs its
+  // own objects; they are built once and cached by the mode's integer value.
+  id<MTLFunction> vert_fn = nil;
+  id<MTLFunction> frag_fn = nil;
+  MTLVertexDescriptor* vertex_desc = nil;
+  MTLPixelFormat color_format = MTLPixelFormatInvalid;
+  MTLPixelFormat depth_format = MTLPixelFormatInvalid;
+  std::unordered_map<u32, id<MTLRenderPipelineState>> pipelines;
+  std::unordered_map<u32, id<MTLDepthStencilState>> depth_states;
+  std::unordered_map<u32, id<MTLSamplerState>> samplers;
+  bool ready = false;
 
   // Keyed by the loader's load id, so a level that is unloaded and loaded again is rebuilt rather
   // than drawn from buffers that no longer exist.
@@ -50,6 +60,148 @@ struct MetalTFragment::Impl {
   std::vector<std::pair<int, int>> draw_idx_temp;
   std::vector<u32> index_temp;
   int frame = 0;
+
+  // Everything below mirrors setup_opengl_from_draw_mode in background_common.cpp, which is the
+  // definition of what each DrawMode means. Any divergence here is a visual difference.
+  id<MTLRenderPipelineState> pipeline_for(DrawMode mode) {
+    const u32 key = mode.as_int();
+    auto it = pipelines.find(key);
+    if (it != pipelines.end()) {
+      return it->second;
+    }
+
+    MTLRenderPipelineDescriptor* desc = [[MTLRenderPipelineDescriptor alloc] init];
+    desc.vertexFunction = vert_fn;
+    desc.fragmentFunction = frag_fn;
+    desc.vertexDescriptor = vertex_desc;
+    desc.depthAttachmentPixelFormat = depth_format;
+    auto* color = desc.colorAttachments[0];
+    color.pixelFormat = color_format;
+
+    bool blend = mode.get_ab_enable() && mode.get_alpha_blend() != DrawMode::AlphaBlend::DISABLED;
+    if (blend) {
+      color.rgbBlendOperation = MTLBlendOperationAdd;
+      color.alphaBlendOperation = MTLBlendOperationAdd;
+      color.sourceAlphaBlendFactor = MTLBlendFactorOne;
+      color.destinationAlphaBlendFactor = MTLBlendFactorZero;
+      switch (mode.get_alpha_blend()) {
+        case DrawMode::AlphaBlend::SRC_SRC_SRC_SRC:
+          // (SRC - SRC) * alpha + SRC = SRC: nothing to blend.
+          blend = false;
+          break;
+        case DrawMode::AlphaBlend::SRC_DST_SRC_DST:
+          color.sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+          color.destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+          break;
+        case DrawMode::AlphaBlend::SRC_0_SRC_DST:
+          color.sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+          color.destinationRGBBlendFactor = MTLBlendFactorOne;
+          break;
+        case DrawMode::AlphaBlend::SRC_0_FIX_DST:
+          color.sourceRGBBlendFactor = MTLBlendFactorOne;
+          color.destinationRGBBlendFactor = MTLBlendFactorOne;
+          break;
+        case DrawMode::AlphaBlend::SRC_DST_FIX_DST:
+          // Cv = (Cs - Cd) * FIX + Cd, with FIX = 0.5. GL uses a blend constant; Metal takes it
+          // from the encoder, which render() sets to 0.5 once.
+          color.sourceRGBBlendFactor = MTLBlendFactorBlendColor;
+          color.destinationRGBBlendFactor = MTLBlendFactorBlendColor;
+          break;
+        case DrawMode::AlphaBlend::ZERO_SRC_SRC_DST:
+          color.sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+          color.destinationRGBBlendFactor = MTLBlendFactorOne;
+          color.rgbBlendOperation = MTLBlendOperationReverseSubtract;
+          break;
+        case DrawMode::AlphaBlend::SRC_0_DST_DST:
+          color.sourceRGBBlendFactor = MTLBlendFactorDestinationAlpha;
+          color.destinationRGBBlendFactor = MTLBlendFactorOne;
+          break;
+        default:
+          blend = false;
+          break;
+      }
+    }
+    color.blendingEnabled = blend;
+
+    NSError* err = nil;
+    id<MTLRenderPipelineState> pso = [device newRenderPipelineStateWithDescriptor:desc error:&err];
+    if (!pso) {
+      lg::error("[Metal] tfrag3 pipeline for mode {} failed: {}", key,
+                err ? [[err localizedDescription] UTF8String] : "unknown error");
+    }
+    pipelines[key] = pso;
+    return pso;
+  }
+
+  id<MTLDepthStencilState> depth_state_for(DrawMode mode, bool force_no_depth_write) {
+    const u32 key = mode.as_int() ^ (force_no_depth_write ? 0x80000000u : 0u);
+    auto it = depth_states.find(key);
+    if (it != depth_states.end()) {
+      return it->second;
+    }
+
+    MTLDepthStencilDescriptor* ds = [[MTLDepthStencilDescriptor alloc] init];
+    if (mode.get_zt_enable()) {
+      switch (mode.get_depth_test()) {
+        case GsTest::ZTest::NEVER:
+          ds.depthCompareFunction = MTLCompareFunctionNever;
+          break;
+        case GsTest::ZTest::ALWAYS:
+          ds.depthCompareFunction = MTLCompareFunctionAlways;
+          break;
+        case GsTest::ZTest::GEQUAL:
+          ds.depthCompareFunction = MTLCompareFunctionGreaterEqual;
+          break;
+        case GsTest::ZTest::GREATER:
+          ds.depthCompareFunction = MTLCompareFunctionGreater;
+          break;
+        default:
+          ds.depthCompareFunction = MTLCompareFunctionAlways;
+          break;
+      }
+    } else {
+      ds.depthCompareFunction = MTLCompareFunctionAlways;
+    }
+
+    // The game disables depth writes by setting alpha test NEVER with FB_ONLY, which is why this
+    // looks at the alpha test to decide a depth question.
+    const bool alpha_hack_disables_z_write =
+        mode.get_at_enable() && mode.get_alpha_test() == DrawMode::AlphaTest::NEVER &&
+        mode.get_alpha_fail() == GsTest::AlphaFail::FB_ONLY;
+    ds.depthWriteEnabled =
+        (mode.get_depth_write_enable() && !alpha_hack_disables_z_write && !force_no_depth_write);
+
+    id<MTLDepthStencilState> state = [device newDepthStencilStateWithDescriptor:ds];
+    depth_states[key] = state;
+    return state;
+  }
+
+  id<MTLSamplerState> sampler_for(DrawMode mode) {
+    const u32 key = (mode.get_clamp_s_enable() ? 1 : 0) | (mode.get_clamp_t_enable() ? 2 : 0) |
+                    (mode.get_filt_enable() ? 4 : 0);
+    auto it = samplers.find(key);
+    if (it != samplers.end()) {
+      return it->second;
+    }
+
+    MTLSamplerDescriptor* sd = [[MTLSamplerDescriptor alloc] init];
+    sd.sAddressMode = mode.get_clamp_s_enable() ? MTLSamplerAddressModeClampToEdge
+                                                : MTLSamplerAddressModeRepeat;
+    sd.tAddressMode = mode.get_clamp_t_enable() ? MTLSamplerAddressModeClampToEdge
+                                                : MTLSamplerAddressModeRepeat;
+    if (mode.get_filt_enable()) {
+      sd.minFilter = MTLSamplerMinMagFilterLinear;
+      sd.magFilter = MTLSamplerMinMagFilterLinear;
+      sd.mipFilter = MTLSamplerMipFilterLinear;
+    } else {
+      sd.minFilter = MTLSamplerMinMagFilterNearest;
+      sd.magFilter = MTLSamplerMinMagFilterNearest;
+      sd.mipFilter = MTLSamplerMipFilterNotMipmapped;
+    }
+    id<MTLSamplerState> sampler = [device newSamplerStateWithDescriptor:sd];
+    samplers[key] = sampler;
+    return sampler;
+  }
 
   void release_trees() {
     for (auto& tree : trees) {
@@ -98,35 +250,20 @@ bool MetalTFragment::init(id<MTLDevice> device,
   vd.layouts[MetalBufferIndexVertex].stride = sizeof(tfrag3::PreloadedVertex);
   vd.layouts[MetalBufferIndexVertex].stepFunction = MTLVertexStepFunctionPerVertex;
 
-  MTLRenderPipelineDescriptor* desc = [[MTLRenderPipelineDescriptor alloc] init];
-  desc.vertexFunction = vert;
-  desc.fragmentFunction = frag;
-  desc.vertexDescriptor = vd;
-  desc.colorAttachments[0].pixelFormat = color_format;
-  desc.depthAttachmentPixelFormat = depth_format;
+  m_impl->vert_fn = vert;
+  m_impl->frag_fn = frag;
+  m_impl->vertex_desc = vd;
+  m_impl->color_format = color_format;
+  m_impl->depth_format = depth_format;
 
-  NSError* err = nil;
-  m_impl->pso = [device newRenderPipelineStateWithDescriptor:desc error:&err];
-  if (!m_impl->pso) {
-    lg::error("[Metal] tfrag3 pipeline state failed: {}",
-              err ? [[err localizedDescription] UTF8String] : "unknown error");
+  // Build one now, so a broken shader or vertex layout is reported here rather than on the first
+  // frame that happens to use that draw mode.
+  DrawMode probe;
+  probe.set_depth_write_enable(true);
+  if (!m_impl->pipeline_for(probe)) {
     return false;
   }
-
-  MTLDepthStencilDescriptor* ds = [[MTLDepthStencilDescriptor alloc] init];
-  // The game's projection puts nearer geometry at a greater depth value, which is why the OpenGL
-  // renderer uses GL_GEQUAL rather than GL_LEQUAL.
-  ds.depthCompareFunction = MTLCompareFunctionGreaterEqual;
-  ds.depthWriteEnabled = YES;
-  m_impl->depth_state = [device newDepthStencilStateWithDescriptor:ds];
-
-  MTLSamplerDescriptor* sd = [[MTLSamplerDescriptor alloc] init];
-  sd.minFilter = MTLSamplerMinMagFilterLinear;
-  sd.magFilter = MTLSamplerMinMagFilterLinear;
-  sd.mipFilter = MTLSamplerMipFilterLinear;
-  sd.sAddressMode = MTLSamplerAddressModeRepeat;
-  sd.tAddressMode = MTLSamplerAddressModeRepeat;
-  m_impl->sampler = [device newSamplerStateWithDescriptor:sd];
+  m_impl->ready = true;
 
   lg::info("[Metal] tfrag3 pipeline ready");
   return true;
@@ -137,7 +274,7 @@ void MetalTFragment::render(id<MTLRenderCommandEncoder> encoder,
                             const GoalBackgroundCameraData& camera,
                             const u8* occlusion) {
   m_last_frame_tris = 0;
-  if (!m_impl->pso || !level.level) {
+  if (!m_impl->ready || !level.level) {
     return;
   }
 
@@ -194,19 +331,13 @@ void MetalTFragment::render(id<MTLRenderCommandEncoder> encoder,
   uniforms.fog_color = {0.f, 0.f, 0.f, 0.f};
   uniforms.fog_min = camera.fog.y();
   uniforms.fog_max = camera.fog.z();
-  // No alpha test yet: the per-draw modes come with the draw loop below.
-  uniforms.alpha_min = -1.f;
-  uniforms.alpha_max = 2.f;
+  // alpha_min/max and decal are per draw; set in the loop below.
   uniforms.scissor_adjust = 512.f / 448.f;  // Jak 1; 416 for Jak 2 and 3
   uniforms.height_scale = 1.f;
-  uniforms.decal = 0;
   uniforms.gfx_hack_no_tex = 0;
 
-  [encoder setRenderPipelineState:m_impl->pso];
-  [encoder setDepthStencilState:m_impl->depth_state];
-  [encoder setFragmentSamplerState:m_impl->sampler atIndex:0];
-  [encoder setVertexBytes:&uniforms length:sizeof(uniforms) atIndex:MetalBufferIndexUniforms];
-  [encoder setFragmentBytes:&uniforms length:sizeof(uniforms) atIndex:MetalBufferIndexUniforms];
+  // SRC_DST_FIX_DST blends against a constant of 0.5; GL sets it with glBlendColor.
+  [encoder setBlendColorRed:0.5f green:0.5f blue:0.5f alpha:0.5f];
 
   const int frame = m_impl->frame;
   m_impl->frame = (m_impl->frame + 1) % kFramesInFlight;
@@ -273,13 +404,52 @@ void MetalTFragment::render(id<MTLRenderCommandEncoder> encoder,
       if (!texture) {
         continue;
       }
+
+      // The per-draw GS state. alpha_max stays at 10 to match setup_tfrag_shader, which only ever
+      // constrains the low end.
+      const DoubleDraw double_draw = alpha_test_double_draw(draw.mode);
+      uniforms.alpha_min = double_draw.aref_first;
+      uniforms.alpha_max = 10.f;
+      uniforms.decal = draw.mode.get_decal() ? 1 : 0;
+
+      id<MTLRenderPipelineState> pso = m_impl->pipeline_for(draw.mode);
+      if (!pso) {
+        continue;
+      }
+      [encoder setRenderPipelineState:pso];
+      [encoder setDepthStencilState:m_impl->depth_state_for(draw.mode, false)];
+      [encoder setFragmentSamplerState:m_impl->sampler_for(draw.mode) atIndex:0];
       [encoder setFragmentTexture:texture atIndex:0];
+      [encoder setVertexBytes:&uniforms length:sizeof(uniforms) atIndex:MetalBufferIndexUniforms];
+      [encoder setFragmentBytes:&uniforms
+                         length:sizeof(uniforms)
+                        atIndex:MetalBufferIndexUniforms];
 
       [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangleStrip
                           indexCount:visible.second
                            indexType:MTLIndexTypeUInt32
                          indexBuffer:index_buffer
                    indexBufferOffset:visible.first * sizeof(u32)];
+
+      // A draw whose alpha test fails to framebuffer-only, with depth writes on, is two draws:
+      // the first writes depth for the pixels that pass, the second fills in the rest without
+      // touching depth.
+      if (double_draw.kind == DoubleDrawKind::AFAIL_NO_DEPTH_WRITE) {
+        uniforms.alpha_min = -10.f;
+        uniforms.alpha_max = double_draw.aref_second;
+        [encoder setDepthStencilState:m_impl->depth_state_for(draw.mode, true)];
+        [encoder setVertexBytes:&uniforms
+                         length:sizeof(uniforms)
+                        atIndex:MetalBufferIndexUniforms];
+        [encoder setFragmentBytes:&uniforms
+                           length:sizeof(uniforms)
+                          atIndex:MetalBufferIndexUniforms];
+        [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangleStrip
+                            indexCount:visible.second
+                             indexType:MTLIndexTypeUInt32
+                           indexBuffer:index_buffer
+                     indexBufferOffset:visible.first * sizeof(u32)];
+      }
     }
     m_last_frame_tris += total_tris;
   }
