@@ -467,10 +467,23 @@ back, the margin is too small for some new call depth, not a reason to ignore th
   `metal_shader_types.h` holds the layouts shared with C++.
 - `game/graphics/metal_renderer/MetalShaderLibrary.{h,cpp}` -- reads the sources and compiles
   them at runtime.
+- The DMA path: `metal_send_chain` / `metal_vsync` / `metal_sync_path` with a `MetalGraphicsData`
+  mirroring the OpenGL backend's `GraphicsData`, and a bucket walk in `MetalDisplay::render`.
+  Verified: `[Metal] first frame from GOAL: walked 70 of 70 buckets`.
 
-The renderer module's data entry points (`send_chain`, `texture_upload_now`, `texture_relocate`,
-`set_levels`, `set_active_levels`, `set_pmode_alp`) are deliberate no-ops for now -- the DMA chain
-still drives the OpenGL bucket renderers.
+`texture_upload_now`, `texture_relocate`, `set_levels` and `set_active_levels` are still no-ops --
+they need the Metal texture pool and loader, which do not exist yet.
+
+### The bucket loop is the hook point
+
+`MetalDisplay::render` walks the chain exactly as `OpenGLRenderer::dispatch_buckets_jak1` does: a
+call into the default-registers chain, then one 16-byte slot per bucket, `jak1::BucketId::MAX_BUCKETS`
+(70) of them. Right now each bucket's data is skipped; a ported renderer consumes its own bucket
+instead, and must leave the DMA cursor exactly at the next bucket boundary -- the OpenGL version
+asserts on that, and getting it wrong desynchronises every later bucket.
+
+Note the Metal build currently paces slower than OpenGL (dispatch ~#1600 vs ~#8700 over the same
+wall time). Not investigated yet; expected to change once real rendering replaces the skip loop.
 
 ### Shaders are compiled at runtime, not into a .metallib
 
@@ -497,7 +510,10 @@ does not appear, check the log for `[Metal]` errors first.
    free-floating uniforms. Replace `Shader.cpp`'s compile/link path with `MTLLibrary` /
    `MTLRenderPipelineState`.
 2. **First bucket: `tfrag3`.** It covers most of the world and is the easiest to eyeball against
-   the OpenGL reference. This is where `metal_send_chain` starts doing real work.
+   the OpenGL reference. Be aware this is not just the renderer class: `TFragment.cpp` pulls in
+   `background_common`, `Loader` (level geometry from the `.fr3` files, not from DMA),
+   `TexturePool` and `SharedRenderState`. Those need Metal equivalents first, and that is the
+   bulk of the work -- the bucket dispatch itself is already in place.
 3. **Textures.** `game/graphics/texture/` to `MTLTexture`, keeping the existing PS2 format
    conversions.
 4. **Render targets.** `Fbo.h` to `MTLRenderPassDescriptor` / offscreen `MTLTexture`, needed for

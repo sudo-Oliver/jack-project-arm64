@@ -8,6 +8,13 @@
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
 
+#include <condition_variable>
+#include <mutex>
+
+#include "common/dma/dma_copy.h"
+#include "common/goal_constants.h"
+
+#include "game/graphics/opengl_renderer/buckets.h"
 #include "common/global_profiler/GlobalProfiler.h"
 #include "common/log/log.h"
 
@@ -31,6 +38,32 @@ namespace {
 
 bool g_metal_inited = false;
 
+// Mirrors GraphicsData in the OpenGL backend: the game thread hands a DMA chain over here and
+// waits, the render thread consumes it. Kept separate so the two backends cannot interfere.
+struct MetalGraphicsData {
+  explicit MetalGraphicsData(u32 main_memory_size) : dma_copier(main_memory_size) {}
+
+  std::mutex sync_mutex;
+  std::condition_variable sync_cv;
+
+  std::mutex dma_mutex;
+  std::condition_variable dma_cv;
+  u64 frame_idx = 0;
+  u64 frame_idx_of_input_data = 0;
+  bool has_data_to_render = false;
+  FixedChunkDmaCopier dma_copier;
+};
+
+std::unique_ptr<MetalGraphicsData> g_metal_gfx_data;
+
+// Matches the OpenGL backend: the renderers read the game's DMA buffer directly rather than a
+// copy. Flip to true to get a snapshot that survives a corrupt buffer.
+constexpr bool metal_run_dma_copy = false;
+
+// Jak 1 bucket count. Checked against the real chain at runtime; the log line reports how many
+// were actually walked, so a mismatch is visible rather than silent.
+constexpr int kMetalBucketCount = (int)jak1::BucketId::MAX_BUCKETS;
+
 int metal_init(GfxGlobalSettings& /*settings*/) {
   prof().instant_event("ROOT");
   SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
@@ -44,6 +77,7 @@ int metal_init(GfxGlobalSettings& /*settings*/) {
 }
 
 void metal_exit() {
+  g_metal_gfx_data.reset();
   g_metal_inited = false;
 }
 
@@ -136,21 +170,56 @@ std::shared_ptr<GfxDisplay> metal_make_display(int width,
       return nullptr;
     }
   }
+  if (!g_metal_gfx_data) {
+    g_metal_gfx_data = std::make_unique<MetalGraphicsData>(EE_MAIN_MEM_SIZE);
+  }
   g_metal_inited = true;
 
   return std::make_shared<MetalDisplay>(window, view, std::move(ctx), is_main);
 }
 
 u32 metal_vsync() {
-  return 0;
+  if (!g_metal_gfx_data) {
+    return 0;
+  }
+  std::unique_lock<std::mutex> lock(g_metal_gfx_data->sync_mutex);
+  auto init_frame = g_metal_gfx_data->frame_idx_of_input_data;
+  g_metal_gfx_data->sync_cv.wait(lock, [=] {
+    return (MasterExit != RuntimeExitStatus::RUNNING) || g_metal_gfx_data->frame_idx > init_frame;
+  });
+  return g_metal_gfx_data->frame_idx & 1;
 }
 
 u32 metal_sync_path() {
+  if (!g_metal_gfx_data) {
+    return 0;
+  }
+  std::unique_lock<std::mutex> lock(g_metal_gfx_data->sync_mutex);
+  if (!g_metal_gfx_data->has_data_to_render) {
+    return 0;
+  }
+  g_metal_gfx_data->sync_cv.wait(lock,
+                                 [=] { return !g_metal_gfx_data->has_data_to_render; });
   return 0;
 }
 
-// The DMA chain still targets the OpenGL bucket renderers; nothing consumes it here yet.
-void metal_send_chain(const void* /*data*/, u32 /*offset*/) {}
+/*!
+ * Hand a DMA chain to the render thread. Called from the game thread, on a GOAL stack.
+ */
+void metal_send_chain(const void* data, u32 offset) {
+  if (!g_metal_gfx_data) {
+    return;
+  }
+  std::unique_lock<std::mutex> lock(g_metal_gfx_data->dma_mutex);
+  if (g_metal_gfx_data->has_data_to_render) {
+    lg::error("[Metal] send_chain called while a frame is still pending");
+    return;
+  }
+  g_metal_gfx_data->dma_copier.set_input_data(data, offset, metal_run_dma_copy);
+  g_metal_gfx_data->frame_idx_of_input_data = g_metal_gfx_data->frame_idx;
+  g_metal_gfx_data->has_data_to_render = true;
+  g_metal_gfx_data->dma_cv.notify_all();
+}
 void metal_texture_upload_now(const u8* /*tpage*/, int /*mode*/, u32 /*s7_ptr*/) {}
 void metal_texture_relocate(u32 /*destination*/, u32 /*source*/, u32 /*format*/) {}
 void metal_set_levels(const std::vector<std::string>& /*levels*/) {}
@@ -220,6 +289,65 @@ void MetalDisplay::render() {
     m_ctx->layer.drawableSize = CGSizeMake(w, h);
   }
 
+  // Take the frame the game thread handed us, if there is one. The bucket loop below is where
+  // the ported renderers will be dispatched from; right now it only walks the chain so the data
+  // path can be verified before anything depends on it.
+  bool have_frame = false;
+  DmaFollower dma_for_frame(nullptr, 0);
+  {
+    std::unique_lock<std::mutex> lock(g_metal_gfx_data->dma_mutex);
+    if (g_metal_gfx_data->has_data_to_render) {
+      have_frame = true;
+      if constexpr (metal_run_dma_copy) {
+        const auto& chain = g_metal_gfx_data->dma_copier.get_last_result();
+        dma_for_frame = DmaFollower(chain.data.data(), chain.start_offset);
+      } else {
+        dma_for_frame = DmaFollower(g_metal_gfx_data->dma_copier.get_last_input_data(),
+                                    g_metal_gfx_data->dma_copier.get_last_input_offset());
+      }
+    }
+  }
+
+  if (have_frame) {
+    // Same shape as OpenGLRenderer::dispatch_buckets_jak1: a call to the default-registers chain,
+    // then one fixed-size slot per bucket. Each bucket slot is 16 bytes on from the last, and a
+    // renderer is expected to consume exactly its own bucket.
+    //
+    // Nothing is rendered yet -- this walks the chain and skips each bucket's data so the frame
+    // structure can be verified before a ported renderer depends on it. Bucket renderers get
+    // dispatched from this loop.
+    DmaFollower dma = dma_for_frame;
+    u32 buckets_base = dma.current_tag_offset() + 16;  // 1 qw for the initial call
+    u32 next_bucket = buckets_base;
+
+    dma.read_and_advance();  // the call into the default-regs chain
+    dma.read_and_advance();  // the default register data itself
+    dma.read_and_advance();  // its ret tag
+
+    int buckets_walked = 0;
+    if (dma.current_tag_offset() == next_bucket) {
+      next_bucket += 16;
+      for (int bucket_id = 0; bucket_id < kMetalBucketCount; bucket_id++) {
+        // Skip everything this bucket holds; a real renderer would consume it instead.
+        while (dma.current_tag_offset() != next_bucket && !dma.ended()) {
+          dma.read_and_advance();
+        }
+        buckets_walked++;
+        if (dma.ended()) {
+          break;
+        }
+        next_bucket += 16;
+      }
+    }
+
+    static bool logged_first = false;
+    if (!logged_first) {
+      lg::info("[Metal] first frame from GOAL: walked {} of {} buckets", buckets_walked,
+               kMetalBucketCount);
+      logged_first = true;
+    }
+  }
+
   @autoreleasepool {
     id<CAMetalDrawable> drawable = [m_ctx->layer nextDrawable];
     if (!drawable) {
@@ -257,6 +385,17 @@ void MetalDisplay::render() {
     [enc endEncoding];
     [cmd presentDrawable:drawable];
     [cmd commit];
+  }
+
+  // Release the game thread: it blocks in metal_sync_path/metal_vsync until the frame is done.
+  if (have_frame) {
+    std::unique_lock<std::mutex> lock(g_metal_gfx_data->dma_mutex);
+    g_metal_gfx_data->has_data_to_render = false;
+  }
+  {
+    std::unique_lock<std::mutex> lock(g_metal_gfx_data->sync_mutex);
+    g_metal_gfx_data->frame_idx++;
+    g_metal_gfx_data->sync_cv.notify_all();
   }
 
   if (m_should_quit) {
