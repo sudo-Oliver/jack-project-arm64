@@ -535,9 +535,26 @@ void GlowRenderer::blit_depth(SharedRenderState* render_state) {
                  GL_UNSIGNED_BYTE, NULL);
     glBindTexture(GL_TEXTURE_2D, 0);
 
+    // GL_DEPTH24_STENCIL8, matching both the format the constructor creates this texture with
+    // (validated there by glCheckFramebufferStatus) and the depth attachment of the framebuffer
+    // this blits FROM: render_fb's depth renderbuffer is GL_DEPTH24_STENCIL8.
+    //
+    // glBlitFramebuffer with GL_DEPTH_BUFFER_BIT requires the source and destination depth
+    // formats to match exactly -- 24-bit depth alone is a different format from 24-bit depth plus
+    // stencil -- so a DEPTH_COMPONENT destination made every one of these blits
+    // GL_INVALID_OPERATION. Nothing was copied, no error surfaced anywhere the game could see,
+    // and the glow probes read whatever the depth texture already held, which reads as a glow
+    // occlusion artifact rather than as a dropped call.
+    //
+    // This branch fires on the first frame, because the probe FBO's initial dimensions never
+    // match the render framebuffer's, so the correct format was overwritten before it was ever
+    // used.
+    //
+    // Fix from https://github.com/nikolasburns/jak-arm64-macos (b4a188888), measured there at
+    // 100% failure (900 of 900 calls in a Jak 2 boot) at both msaa 1 and msaa 4.
     glBindTexture(GL_TEXTURE_2D, m_ogl.probe_fbo_depth_tex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, m_ogl.probe_fbo_w, m_ogl.probe_fbo_h, 0,
-                 GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, NULL);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8, m_ogl.probe_fbo_w, m_ogl.probe_fbo_h, 0,
+                 GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, NULL);
     glBindTexture(GL_TEXTURE_2D, 0);
   }
 

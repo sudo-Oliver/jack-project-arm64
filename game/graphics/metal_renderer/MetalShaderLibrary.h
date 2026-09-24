@@ -38,6 +38,7 @@ struct ShaderDef {
 inline const std::vector<ShaderDef>& all_shaders() {
   static const std::vector<ShaderDef> shaders = {
       {"solid_color.metal", "solid_color_vert", "solid_color_frag"},
+      {"tfrag3.metal", "tfrag3_vert", "tfrag3_frag"},
   };
   return shaders;
 }

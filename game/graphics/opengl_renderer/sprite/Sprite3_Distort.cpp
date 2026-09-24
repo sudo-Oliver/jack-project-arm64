@@ -24,8 +24,24 @@ void Sprite3::opengl_setup_distort() {
   glGenTextures(1, &m_distort_ogl.fbo_texture);
   glBindTexture(GL_TEXTURE_2D, m_distort_ogl.fbo_texture);
 
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, m_distort_ogl.fbo_width, m_distort_ogl.fbo_height, 0,
-               GL_RGB, GL_UNSIGNED_BYTE, NULL);
+  // GL_RGBA8, not GL_RGB: distort_draw_common resolves the render framebuffer into this texture
+  // with glBlitFramebuffer, and at msaa != 1 that read is multisampled. A multisample resolve
+  // requires the source and destination colour formats to match, so an RGB destination against
+  // the RGBA8 render buffer is GL_INVALID_OPERATION: the blit is dropped and the shader samples a
+  // stale texture.
+  //
+  // The alpha channel is load-bearing. The distort shader computes
+  // out_color = color * texture(framebuffer_tex, ...) under
+  // glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, ...), so the sampled alpha is the
+  // blend weight; an RGB texture returns alpha = 1.0 by GL component expansion and silently pins
+  // that weight even at msaa 1, where the blit does succeed.
+  //
+  // distort_setup_framebuffer_dims() reallocates this on resize and must use the same format --
+  // fixing only one site reintroduces the fault on the first resize.
+  //
+  // Fix from https://github.com/nikolasburns/jak-arm64-macos (f0e09e0d9).
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, m_distort_ogl.fbo_width, m_distort_ogl.fbo_height, 0,
+               GL_RGBA, GL_UNSIGNED_BYTE, NULL);
 
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -632,8 +648,9 @@ void Sprite3::distort_setup_framebuffer_dims(SharedRenderState* render_state) {
 
     glBindTexture(GL_TEXTURE_2D, m_distort_ogl.fbo_texture);
 
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, m_distort_ogl.fbo_width, m_distort_ogl.fbo_height, 0,
-                 GL_RGB, GL_UNSIGNED_BYTE, NULL);
+    // Must match opengl_setup_distort()'s format exactly -- see the comment there.
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, m_distort_ogl.fbo_width, m_distort_ogl.fbo_height, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, NULL);
 
     glBindTexture(GL_TEXTURE_2D, 0);
   }
