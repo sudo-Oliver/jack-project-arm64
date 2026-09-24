@@ -73,6 +73,22 @@ struct DirectUniforms {
   int pad0, pad1;
 };
 
+// ocean_common.metal. `bucket` picks which of the ocean's passes this draw is; the numbers match
+// the OpenGL shader's.
+struct OceanCommonUniforms {
+  METAL_FLOAT4 fog_color;
+  float scissor_adjust;
+  float height_scale;
+  int bucket;
+  int pad0;
+};
+
+// ocean_texture_mipmap.metal.
+struct OceanMipmapUniforms {
+  float alpha_intensity;
+  float pad0, pad1, pad2;
+};
+
 // sky_blend.metal.
 struct SkyBlendUniforms {
   float intensity;

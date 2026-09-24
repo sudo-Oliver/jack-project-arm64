@@ -11,6 +11,7 @@
 
 #include "game/graphics/metal_renderer/MetalDirect.h"
 #include "game/graphics/metal_renderer/MetalMerc2.h"
+#include "game/graphics/metal_renderer/MetalOcean.h"
 #include "game/graphics/metal_renderer/MetalShrub.h"
 #include "game/graphics/metal_renderer/MetalSky.h"
 #include "game/graphics/metal_renderer/MetalTFragment.h"
@@ -96,6 +97,13 @@ void MetalRenderer::init_bucket_table() {
     m_bucket_renderers[(int)id] = std::make_unique<MetalTextureUploadHandler>(name, (int)id);
   }
 
+  // The ocean: the first bucket builds the water texture and draws the far and mid water, the
+  // second draws the near water.
+  m_bucket_renderers[(int)BucketId::OCEAN_MID_AND_FAR] =
+      std::make_unique<MetalOceanMidAndFar>("ocean-mid-far", (int)BucketId::OCEAN_MID_AND_FAR);
+  m_bucket_renderers[(int)BucketId::OCEAN_NEAR] =
+      std::make_unique<MetalOceanNear>("ocean-near", (int)BucketId::OCEAN_NEAR);
+
   // The sky: the blend that builds its textures, then the geometry that draws them.
   m_sky_blend = std::make_shared<MetalSkyBlend>();
   m_bucket_renderers[(int)BucketId::SKY_DRAW] =
@@ -151,6 +159,18 @@ bool MetalRenderer::init(id<MTLDevice> device,
   // address, and they are created once, not per bucket.
   if (m_sky_blend && m_render_state.texture_pool) {
     m_sky_blend->init_textures(*m_render_state.texture_pool, GameVersion::Jak1);
+  }
+
+  // The ocean's water texture has to be in the pool before anything looks it up by its VRAM
+  // address.
+  if (m_render_state.texture_pool) {
+    for (auto& renderer : m_bucket_renderers) {
+      if (auto* mid = dynamic_cast<MetalOceanMidAndFar*>(renderer.get())) {
+        mid->init_textures(*m_render_state.texture_pool, GameVersion::Jak1);
+      } else if (auto* near_ocean = dynamic_cast<MetalOceanNear*>(renderer.get())) {
+        near_ocean->init_textures(*m_render_state.texture_pool, GameVersion::Jak1);
+      }
+    }
   }
 
   int ported = 0;
@@ -302,6 +322,10 @@ void MetalRenderer::render(DmaFollower dma,
       m_last_frame_tris += sky->last_frame_tris();
     } else if (auto* sky_blend = dynamic_cast<MetalSkyBlendHandler*>(renderer.get())) {
       m_last_frame_tris += sky_blend->last_frame_tris();
+    } else if (auto* mid = dynamic_cast<MetalOceanMidAndFar*>(renderer.get())) {
+      m_last_frame_tris += mid->last_frame_tris();
+    } else if (auto* near_ocean = dynamic_cast<MetalOceanNear*>(renderer.get())) {
+      m_last_frame_tris += near_ocean->last_frame_tris();
     }
   }
   if (m_merc2) {
