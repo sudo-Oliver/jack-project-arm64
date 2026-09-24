@@ -12,6 +12,7 @@
 #include "game/graphics/metal_renderer/MetalDirect2.h"
 #include "game/graphics/metal_renderer/MetalMerc2.h"
 #include "game/graphics/metal_renderer/MetalShrub.h"
+#include "game/graphics/metal_renderer/MetalSky.h"
 #include "game/graphics/metal_renderer/MetalTFragment.h"
 #include "game/graphics/metal_renderer/MetalTextureUploadHandler.h"
 #include "game/graphics/metal_renderer/MetalTie3.h"
@@ -95,6 +96,19 @@ void MetalRenderer::init_bucket_table() {
     m_bucket_renderers[(int)id] = std::make_unique<MetalTextureUploadHandler>(name, (int)id);
   }
 
+  // The sky: the blend that builds its textures, then the geometry that draws them.
+  m_sky_blend = std::make_shared<MetalSkyBlend>();
+  m_bucket_renderers[(int)BucketId::SKY_DRAW] =
+      std::make_unique<MetalSkyRenderer>("sky", (int)BucketId::SKY_DRAW);
+  m_bucket_renderers[(int)BucketId::TFRAG_TRANS0_AND_SKY_BLEND_LEVEL0] =
+      std::make_unique<MetalSkyBlendHandler>(
+          "l0-alpha-sky-blend-and-tfrag-trans",
+          (int)BucketId::TFRAG_TRANS0_AND_SKY_BLEND_LEVEL0, 0, m_sky_blend);
+  m_bucket_renderers[(int)BucketId::TFRAG_TRANS1_AND_SKY_BLEND_LEVEL1] =
+      std::make_unique<MetalSkyBlendHandler>(
+          "l1-alpha-sky-blend-and-tfrag-trans",
+          (int)BucketId::TFRAG_TRANS1_AND_SKY_BLEND_LEVEL1, 1, m_sky_blend);
+
   // The merc buckets: the characters. All eight share one MetalMerc2, the way the OpenGL table
   // shares one Merc2 -- the draws are pooled per level, not per bucket.
   m_merc2 = std::make_shared<MetalMerc2>();
@@ -132,6 +146,12 @@ bool MetalRenderer::init(id<MTLDevice> device,
   m_render_state.depth_format = depth_format;
 
   init_bucket_table();
+
+  // The sky-blend textures have to exist in the pool before anything looks them up by their VRAM
+  // address, and they are created once, not per bucket.
+  if (m_sky_blend && m_render_state.texture_pool) {
+    m_sky_blend->init_textures(*m_render_state.texture_pool, GameVersion::Jak1);
+  }
 
   int ported = 0;
   for (auto& renderer : m_bucket_renderers) {
@@ -206,7 +226,9 @@ void MetalRenderer::scan_frame_state(DmaFollower dma) {
   }
 }
 
-void MetalRenderer::render(DmaFollower dma, id<MTLRenderCommandEncoder> encoder) {
+void MetalRenderer::render(DmaFollower dma,
+                           id<MTLRenderCommandEncoder> encoder,
+                           id<MTLCommandBuffer> offscreen_cmd) {
   if (!m_ready) {
     return;
   }
@@ -215,6 +237,7 @@ void MetalRenderer::render(DmaFollower dma, id<MTLRenderCommandEncoder> encoder)
     m_merc2->reset_tri_count();
   }
   m_render_state.encoder = encoder;
+  m_render_state.offscreen_cmd = offscreen_cmd;
   m_render_state.ee_main_memory = g_ee_main_mem;
   m_render_state.offset_of_s7 = offset_of_s7();
   m_render_state.frame_index++;
@@ -271,10 +294,15 @@ void MetalRenderer::render(DmaFollower dma, id<MTLRenderCommandEncoder> encoder)
       m_last_frame_tris += tie->last_frame_tris();
     } else if (auto* direct = dynamic_cast<MetalDirectBucketRenderer*>(renderer.get())) {
       m_last_frame_tris += direct->last_frame_tris();
+    } else if (auto* sky = dynamic_cast<MetalSkyRenderer*>(renderer.get())) {
+      m_last_frame_tris += sky->last_frame_tris();
+    } else if (auto* sky_blend = dynamic_cast<MetalSkyBlendHandler*>(renderer.get())) {
+      m_last_frame_tris += sky_blend->last_frame_tris();
     }
   }
   if (m_merc2) {
     m_last_frame_tris += m_merc2->last_frame_tris();
   }
   m_render_state.encoder = nil;
+  m_render_state.offscreen_cmd = nil;
 }

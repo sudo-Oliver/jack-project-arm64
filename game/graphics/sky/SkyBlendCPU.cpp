@@ -3,21 +3,25 @@
 #include "common/util/os.h"
 #include "common/util/simd_util.h"
 
+#include "game/graphics/gpu_resources.h"
 #include "game/graphics/opengl_renderer/AdgifHandler.h"
 
 SkyBlendCPU::SkyBlendCPU() {
   for (int i = 0; i < 2; i++) {
-    glGenTextures(1, &m_textures[i].gl);
-    glBindTexture(GL_TEXTURE_2D, m_textures[i].gl);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, m_sizes[i], m_sizes[i], 0, GL_RGBA,
-                 GL_UNSIGNED_INT_8_8_8_8_REV, 0);
     m_texture_data[i].resize(4 * m_sizes[i] * m_sizes[i]);
+    gpu::TextureCreateInfo info;
+    info.w = m_sizes[i];
+    info.h = m_sizes[i];
+    info.data = nullptr;
+    info.mipmap = false;
+    info.anisotropic = false;
+    m_textures[i].handle = gpu::create_texture_rgba8(info);
   }
 }
 
 SkyBlendCPU::~SkyBlendCPU() {
   for (auto& tex : m_textures) {
-    glDeleteTextures(1, &tex.gl);
+    gpu::destroy_texture(tex.handle);
   }
 }
 
@@ -109,9 +113,7 @@ void blend_sky_fast(u8 intensity, u8* out, const u8* in, u32 size) {
 #endif
 }
 
-SkyBlendStats SkyBlendCPU::do_sky_blends(DmaFollower& dma,
-                                         SharedRenderState* render_state,
-                                         ScopedProfilerNode& /*prof*/) {
+SkyBlendStats SkyBlendCPU::do_sky_blends(DmaFollower& dma, TexturePool* texture_pool) {
   SkyBlendStats stats;
 
   while (dma.current_tag().qwc == 6) {
@@ -151,7 +153,7 @@ SkyBlendStats SkyBlendCPU::do_sky_blends(DmaFollower& dma,
     }
 
     // look up the source texture
-    auto tex = render_state->texture_pool->lookup_gpu_texture(adgif.tex0().tbp0());
+    auto tex = texture_pool->lookup_gpu_texture(adgif.tex0().tbp0());
     ASSERT(tex);
 
     // slow version
@@ -194,12 +196,10 @@ SkyBlendStats SkyBlendCPU::do_sky_blends(DmaFollower& dma,
           stats.cloud_blends++;
         }
       }
-      glBindTexture(GL_TEXTURE_2D, m_textures[buffer_idx].gl);
-      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, m_sizes[buffer_idx], m_sizes[buffer_idx], 0, GL_RGBA,
-                   GL_UNSIGNED_INT_8_8_8_8_REV, m_texture_data[buffer_idx].data());
+      gpu::update_texture_rgba8(m_textures[buffer_idx].handle, m_sizes[buffer_idx],
+                                m_sizes[buffer_idx], m_texture_data[buffer_idx].data());
 
-      render_state->texture_pool->move_existing_to_vram(m_textures[buffer_idx].tex,
-                                                        m_textures[buffer_idx].tbp);
+      texture_pool->move_existing_to_vram(m_textures[buffer_idx].tex, m_textures[buffer_idx].tbp);
     }
   }
 
@@ -209,12 +209,11 @@ SkyBlendStats SkyBlendCPU::do_sky_blends(DmaFollower& dma,
 void SkyBlendCPU::init_textures(TexturePool& tex_pool, GameVersion version) {
   for (int i = 0; i < 2; i++) {
     // update it
-    glBindTexture(GL_TEXTURE_2D, m_textures[i].gl);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, m_sizes[i], m_sizes[i], 0, GL_RGBA,
-                 GL_UNSIGNED_INT_8_8_8_8_REV, m_texture_data[i].data());
+    gpu::update_texture_rgba8(m_textures[i].handle, m_sizes[i], m_sizes[i],
+                              m_texture_data[i].data());
     TextureInput in;
 
-    in.gpu_texture = m_textures[i].gl;
+    in.gpu_texture = m_textures[i].handle;
     in.w = m_sizes[i];
     in.h = m_sizes[i];
     in.debug_name = fmt::format("PC-SKY-CPU-{}", i);

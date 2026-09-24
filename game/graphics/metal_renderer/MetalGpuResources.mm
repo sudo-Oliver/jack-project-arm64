@@ -65,6 +65,9 @@ u64 metal_create_texture_rgba8(const gpu::TextureCreateInfo& info) {
                                                      mipmapped:(levels > 1)];
   desc.mipmapLevelCount = levels;
   desc.usage = MTLTextureUsageShaderRead;
+  if (info.render_target) {
+    desc.usage |= MTLTextureUsageRenderTarget;
+  }
   desc.storageMode = MTLStorageModeShared;
 
   id<MTLTexture> tex = [t.device newTextureWithDescriptor:desc];
@@ -103,6 +106,20 @@ u64 metal_create_texture_rgba8(const gpu::TextureCreateInfo& info) {
     t.textures[handle] = tex;
   }
   return handle;
+}
+
+void metal_update_texture_rgba8(u64 handle, u16 w, u16 h, const void* data) {
+  if (handle == gpu::kInvalidHandle || !data || w == 0 || h == 0) {
+    return;
+  }
+  id<MTLTexture> tex = metal_texture_from_handle(handle);
+  if (!tex) {
+    return;
+  }
+  [tex replaceRegion:MTLRegionMake2D(0, 0, w, h)
+         mipmapLevel:0
+           withBytes:data
+         bytesPerRow:(NSUInteger)w * 4];
 }
 
 void metal_destroy_texture(u64 handle) {
@@ -191,6 +208,7 @@ void metal_install_gpu_resource_backend(void* mtl_device, void* mtl_queue) {
   t.queue = (__bridge id<MTLCommandQueue>)mtl_queue;
   gpu::Backend backend;
   backend.create_texture_rgba8 = metal_create_texture_rgba8;
+  backend.update_texture_rgba8 = metal_update_texture_rgba8;
   backend.destroy_texture = metal_destroy_texture;
   backend.create_buffer = metal_create_buffer;
   backend.update_buffer = metal_update_buffer;

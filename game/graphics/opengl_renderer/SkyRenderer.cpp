@@ -51,7 +51,7 @@ void SkyBlendHandler::handle_sky_copies(DmaFollower& dma,
     return;
   } else {
     if (render_state->use_sky_cpu) {
-      m_gpu_stats = m_shared_cpu_blender->do_sky_blends(dma, render_state, prof);
+      m_gpu_stats = m_shared_cpu_blender->do_sky_blends(dma, render_state->texture_pool.get());
 
     } else {
       m_gpu_stats = m_shared_gpu_blender->do_sky_blends(dma, render_state, prof);

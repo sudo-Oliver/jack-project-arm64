@@ -24,14 +24,12 @@ void ProgressRenderer::init_textures(TexturePool& texture_pool, GameVersion vers
   m_minimap_gpu_tex = texture_pool.give_texture_and_load_to_vram(in, kMinimapVramAddr);
 }
 
-void ProgressRenderer::handle_frame(u64 val,
-                                    SharedRenderState* render_state,
-                                    ScopedProfilerNode& prof) {
+void ProgressRenderer::handle_frame(u64 val) {
   GsFrame f(val);
   u32 fbp = f.fbp();
   bool flushed = false;
   if (fbp != m_current_fbp) {
-    flush_pending(render_state, prof);
+    flush();
     flushed = true;
     m_prim_gl_state_needs_gl_update = true;
     m_current_fbp = fbp;
@@ -44,7 +42,7 @@ void ProgressRenderer::handle_frame(u64 val,
         m_fb_ctxt.emplace(m_minimap_fb);
         // replace any other texture that the game loaded to this slot with our PC with the GPU
         // one that we assume will get written to now.
-        render_state->texture_pool->move_existing_to_vram(m_minimap_gpu_tex, kMinimapVramAddr);
+        m_context.texture_pool->move_existing_to_vram(m_minimap_gpu_tex, kMinimapVramAddr);
         m_offscreen_mode = true;
         break;
       default:
@@ -57,7 +55,7 @@ void ProgressRenderer::handle_frame(u64 val,
   if (write_rgb != m_test_state.write_rgb) {
     if (!flushed) {
       m_stats.flush_from_test++;
-      flush_pending(render_state, prof);
+      flush();
     }
 
     m_test_state.write_rgb = write_rgb;

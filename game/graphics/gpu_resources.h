@@ -37,6 +37,8 @@ struct TextureCreateInfo {
   // Sets clamp-to-edge + linear filtering on the texture object itself. The level textures leave
   // this off: their sampler state is set by the renderer at bind time.
   bool clamp_and_linear = false;
+  // The texture will be rendered into, not only sampled. Metal has to be told at creation time.
+  bool render_target = false;
 };
 
 // Which binding point a buffer is used through. OpenGL needs this at creation time; Metal does
@@ -47,6 +49,8 @@ enum class BufferKind { Vertex, Index };
 // Function table for one backend. Every entry must be set.
 struct Backend {
   u64 (*create_texture_rgba8)(const TextureCreateInfo& info) = nullptr;
+  // Replace the whole contents of an existing texture. Same size it was created with.
+  void (*update_texture_rgba8)(u64 handle, u16 w, u16 h, const void* data) = nullptr;
   void (*destroy_texture)(u64 handle) = nullptr;
   // `data` may be null to allocate without initialising; the loader fills those in chunks.
   u64 (*create_buffer)(BufferKind kind, size_t size, const void* data) = nullptr;
@@ -59,6 +63,7 @@ struct Backend {
 void set_backend(const Backend& backend);
 
 u64 create_texture_rgba8(const TextureCreateInfo& info);
+void update_texture_rgba8(u64 handle, u16 w, u16 h, const void* data);
 void destroy_texture(u64 handle);
 
 u64 create_buffer(BufferKind kind, size_t size, const void* data);

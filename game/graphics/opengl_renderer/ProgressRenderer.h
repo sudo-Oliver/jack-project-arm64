@@ -16,7 +16,7 @@ class ProgressRenderer : public DirectRenderer {
   static constexpr int kMinimapFbp = 126;
   ProgressRenderer(const std::string& name, int my_id, int batch_size);
   void init_textures(TexturePool& texture_pool, GameVersion) override;
-  void handle_frame(u64 val, SharedRenderState* render_state, ScopedProfilerNode& prof) override;
+  void handle_frame(u64 val) override;
   void pre_render() override;
   void post_render() override;
 

@@ -84,6 +84,14 @@ struct MetalRenderState {
   id<MTLDevice> device = nil;
   id<MTLLibrary> library = nil;
   id<MTLRenderCommandEncoder> encoder = nil;
+
+  // A command buffer for work that cannot go in the frame's render pass: rendering into a texture
+  // that a later bucket samples. It is committed before the frame's own command buffer, and
+  // command buffers run in the order they are committed, so everything recorded here has finished
+  // before the first bucket draws. A renderer that used the frame's encoder for this would have
+  // to end it and start another, which costs a full store and load of the colour and depth
+  // buffers on a tile-based GPU.
+  id<MTLCommandBuffer> offscreen_cmd = nil;
   MTLPixelFormat color_format = MTLPixelFormatInvalid;
   MTLPixelFormat depth_format = MTLPixelFormatInvalid;
 

@@ -66,6 +66,12 @@ struct Direct2Uniforms {
   float pad;
 };
 
+// sky_blend.metal.
+struct SkyBlendUniforms {
+  float intensity;
+  float pad0, pad1, pad2;
+};
+
 // merc2.metal. The lights are per draw, the camera constants per frame; both live here because
 // Metal has no free-floating uniforms and one struct per shader is cheaper to set than two.
 struct Merc2Uniforms {

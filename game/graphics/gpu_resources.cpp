@@ -44,6 +44,15 @@ u64 gl_create_texture_rgba8(const TextureCreateInfo& info) {
   return tex_id;
 }
 
+void gl_update_texture_rgba8(u64 handle, u16 w, u16 h, const void* data) {
+  GLint old_tex;
+  glGetIntegerv(GL_ACTIVE_TEXTURE, &old_tex);
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_2D, (GLuint)handle);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_INT_8_8_8_8_REV, data);
+  glActiveTexture(old_tex);
+}
+
 void gl_destroy_texture(u64 handle) {
   GLuint tex_id = (GLuint)handle;
   glDeleteTextures(1, &tex_id);
@@ -71,8 +80,9 @@ void gl_destroy_buffer(u64 handle) {
   glDeleteBuffers(1, &buffer);
 }
 
-const Backend kOpenGLBackend = {gl_create_texture_rgba8, gl_destroy_texture, gl_create_buffer,
-                                gl_update_buffer, gl_destroy_buffer};
+const Backend kOpenGLBackend = {gl_create_texture_rgba8, gl_update_texture_rgba8,
+                                gl_destroy_texture,      gl_create_buffer,
+                                gl_update_buffer,        gl_destroy_buffer};
 
 Backend g_backend = kOpenGLBackend;
 
@@ -80,6 +90,7 @@ Backend g_backend = kOpenGLBackend;
 
 void set_backend(const Backend& backend) {
   ASSERT(backend.create_texture_rgba8);
+  ASSERT(backend.update_texture_rgba8);
   ASSERT(backend.destroy_texture);
   ASSERT(backend.create_buffer);
   ASSERT(backend.update_buffer);
@@ -89,6 +100,10 @@ void set_backend(const Backend& backend) {
 
 u64 create_texture_rgba8(const TextureCreateInfo& info) {
   return g_backend.create_texture_rgba8(info);
+}
+
+void update_texture_rgba8(u64 handle, u16 w, u16 h, const void* data) {
+  g_backend.update_texture_rgba8(handle, w, h, data);
 }
 
 void destroy_texture(u64 handle) {

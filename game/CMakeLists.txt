@@ -47,6 +47,7 @@ set(RUNTIME_SOURCE
         graphics/opengl_renderer/DepthCue.cpp
         graphics/opengl_renderer/DirectRenderer.cpp
         graphics/direct/DirectRenderer2Core.cpp
+        graphics/direct/DirectRendererCore.cpp
         graphics/foreground/Merc2Core.cpp
         graphics/opengl_renderer/DirectRenderer2.cpp
         graphics/opengl_renderer/dma_helpers.cpp
@@ -76,7 +77,7 @@ set(RUNTIME_SOURCE
         graphics/opengl_renderer/Shader.cpp
         graphics/opengl_renderer/Shadow_PS2.cpp
         graphics/opengl_renderer/ShadowRenderer.cpp
-        graphics/opengl_renderer/SkyBlendCPU.cpp
+        graphics/sky/SkyBlendCPU.cpp
         graphics/opengl_renderer/SkyBlendGPU.cpp
         graphics/opengl_renderer/SkyRenderer.cpp
         graphics/opengl_renderer/SlowTimeEffect.cpp
@@ -365,6 +366,7 @@ if(APPLE)
                             graphics/metal_renderer/MetalTie3.mm
                             graphics/metal_renderer/MetalDirect2.mm
                             graphics/metal_renderer/MetalMerc2.mm
+                            graphics/metal_renderer/MetalSky.mm
                             graphics/metal_renderer/MetalRenderer.mm
                             graphics/metal_renderer/MetalTextureUploadHandler.mm
                             graphics/metal_renderer/MetalTFragment.mm)

@@ -456,6 +456,9 @@ void MetalDisplay::render() {
     // The game's projection makes nearer geometry compare greater, so the far value is 0.
     pass.depthAttachment.clearDepth = 0.0;
 
+    // Offscreen work goes in its own command buffer, committed first. See offscreen_cmd in
+    // MetalRenderState.h.
+    id<MTLCommandBuffer> offscreen_cmd = [m_ctx->queue commandBuffer];
     id<MTLCommandBuffer> cmd = [m_ctx->queue commandBuffer];
     id<MTLRenderCommandEncoder> enc = [cmd renderCommandEncoderWithDescriptor:pass];
 
@@ -466,7 +469,7 @@ void MetalDisplay::render() {
             m_ctx->device, m_ctx->library, kMetalColorFormat, kMetalDepthFormat);
       }
       if (g_metal_gfx_data->renderer_ready) {
-        g_metal_gfx_data->renderer->render(dma_for_frame, enc);
+        g_metal_gfx_data->renderer->render(dma_for_frame, enc, offscreen_cmd);
         static u32 logged_tris = 0;
         if (g_metal_gfx_data->renderer->last_frame_tris() != logged_tris) {
           logged_tris = g_metal_gfx_data->renderer->last_frame_tris();
@@ -476,6 +479,7 @@ void MetalDisplay::render() {
     }
 
     [enc endEncoding];
+    [offscreen_cmd commit];
 
     // Hand the finished frame to the drawable.
     {

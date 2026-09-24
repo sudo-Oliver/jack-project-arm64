@@ -48,6 +48,7 @@ inline const std::vector<ShaderDef>& all_shaders() {
       {"shrub.metal", "shrub_vert", "shrub_frag"},
       {"direct2.metal", "direct2_vert", "direct2_frag"},
       {"merc2.metal", "merc2_vert", "merc2_frag"},
+      {"sky_blend.metal", "sky_blend_vert", "sky_blend_frag"},
   };
   return shaders;
 }

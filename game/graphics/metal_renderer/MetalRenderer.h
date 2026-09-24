@@ -34,7 +34,9 @@ class MetalRenderer {
             MTLPixelFormat depth_format);
 
   // Walks one frame's DMA chain and draws it into `encoder`.
-  void render(DmaFollower dma, id<MTLRenderCommandEncoder> encoder);
+  void render(DmaFollower dma,
+              id<MTLRenderCommandEncoder> encoder,
+              id<MTLCommandBuffer> offscreen_cmd);
 
   // Triangles drawn on the last frame, summed over every bucket that counts them.
   u32 last_frame_tris() const { return m_last_frame_tris; }
@@ -48,6 +50,8 @@ class MetalRenderer {
   MetalRenderState m_render_state;
   // Shared by all eight merc buckets, like the OpenGL table's single Merc2.
   std::shared_ptr<class MetalMerc2> m_merc2;
+  // Shared by the two sky-blend buckets, which build the same pair of textures.
+  std::shared_ptr<class MetalSkyBlend> m_sky_blend;
   std::vector<std::unique_ptr<MetalBucketRenderer>> m_bucket_renderers;
   bool m_ready = false;
   u32 m_last_frame_tris = 0;
