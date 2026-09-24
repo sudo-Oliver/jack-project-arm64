@@ -350,10 +350,21 @@ set(RUNTIME_SOURCE
 
 add_subdirectory(sound)
 
+# The Metal backend is Objective-C++ and only exists on Apple platforms.
+# It sits alongside the OpenGL backend; the renderer is chosen at runtime (see Gfx::GetRenderer).
+if(APPLE)
+    list(APPEND RUNTIME_SOURCE graphics/pipelines/metal.mm)
+endif()
+
 # we build the runtime as a static library.
 add_library(runtime STATIC ${RUNTIME_SOURCE} "../third-party/glad/src/glad.c")
 
 target_link_libraries(runtime common fmt SDL3::SDL3 imgui discord-rpc sound stb_image libco libcurl)
+if(APPLE)
+    target_link_libraries(runtime "-framework Metal" "-framework QuartzCore" "-framework Foundation")
+    set_source_files_properties(graphics/pipelines/metal.mm PROPERTIES
+        COMPILE_FLAGS "-fobjc-arc")
+endif()
 if(WIN32)
     target_link_libraries(runtime mman)
 else()

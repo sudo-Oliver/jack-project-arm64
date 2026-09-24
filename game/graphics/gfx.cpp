@@ -22,6 +22,9 @@
 #include "game/kernel/common/kscheme.h"
 #include "game/runtime.h"
 #include "pipelines/opengl.h"
+#ifdef __APPLE__
+#include "pipelines/metal.h"
+#endif
 
 namespace Gfx {
 
@@ -37,6 +40,10 @@ const GfxRendererModule* GetRenderer(GfxPipeline pipeline) {
       return NULL;
     case GfxPipeline::OpenGL:
       return &gRendererOpenGL;
+#ifdef __APPLE__
+    case GfxPipeline::Metal:
+      return &gRendererMetal;
+#endif
     default:
       lg::error("Requested unknown renderer {}", fmt::underlying(pipeline));
       return NULL;
@@ -59,7 +66,16 @@ u32 Init(GameVersion version) {
   g_debug_settings.load_settings();
   {
     auto p = scoped_prof("startup::gfx::get_renderer");
-    g_global_settings.renderer = GetRenderer(GfxPipeline::OpenGL);
+    // The Metal backend is still being brought up, so OpenGL stays the default. Opt in with
+    // OPENGOAL_RENDERER=metal to compare the two on the same build.
+    GfxPipeline pipeline = GfxPipeline::OpenGL;
+#ifdef __APPLE__
+    if (const char* want = getenv("OPENGOAL_RENDERER"); want && std::string(want) == "metal") {
+      pipeline = GfxPipeline::Metal;
+    }
+#endif
+    g_global_settings.renderer = GetRenderer(pipeline);
+    lg::info("Using renderer: {}", GetRenderer(pipeline) ? GetRenderer(pipeline)->name : "none");
   }
 
   {
