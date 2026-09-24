@@ -525,9 +525,78 @@ does not appear, check the log for `[Metal]` errors first.
 build is the only cheap way to tell a Metal bug from yet another codegen bug -- and given the
 history in this file, assume there are more codegen bugs.
 
+## The imported ARM64 differential suite
+
+`test/goalc/test_arm64_*.cpp` (12 files, ~690 cases together with the rest of `goalc-test`) come
+from [nikolasburns/jak-arm64-macos](https://github.com/nikolasburns/jak-arm64-macos), ISC
+licensed, itself built on [DiMiTriFrog/jak2-macos-arm64](https://github.com/DiMiTriFrog/jak2-macos-arm64).
+That fork implements the ARM64 backend **independently of this one** -- the two share no commits
+-- which is exactly what makes the tests worth having: they describe ARM64 semantics, not our
+implementation of it. A failure there is a difference that has to be explained.
+
+`test/goalc/arm64_test_compat.h` bridges the naming: they spell the callee-saved GOAL registers
+`X19`-`X22` where we use `x19`-`x22`, call the SIMD registers `V0`-`V15` where we use the x86 XMM
+id range, and name a few emitters after the ARM64 mnemonic where ours are named after the x86
+instruction they replace.
+
+Importing them found three silent defects, all fixed in `fa2aeb068`: `vpsubd` subtracting 64-bit
+lanes instead of 32-bit, `parallel_compare_e_*` emitting CMTST instead of CMEQ, and a constant
+shift of 64 asserting where x86 masks with `& 63`.
+
+### What did not come across, and why
+
+Each removal is marked in the file it came from, with the reasoning. The short version:
+
+- **Literal-pool symbol tests** (5 in `test_arm64_ir_symbols.cpp`, 1 in `test_arm64_ir_asm_basic.cpp`).
+  They resolve a symbol by patching an 8-byte literal after the function. We patch MOVZ/MOVK
+  immediates instead. **Equivalents for our mechanism are still owed** -- they have to simulate the
+  linker before executing.
+- **Scratch-register exclusion tests** (2 in `test_arm64_ir_vector.cpp`, 2 in `test_arm64_ir_int128.cpp`).
+  Their vector helpers build results in a fixed X16/V16 pair, so those must be excluded per
+  register class, checked through `to_rai(InstructionSet)`. We have neither: our sequences are
+  scratch-free on the SIMD side, and our `RegAllocInstr` is x86-shaped with translation at emit
+  time.
+- **`test_arm64_trampolines.cpp` and `test_arm64_mips2c.cpp`**, which test their header-only
+  runtime trampoline encoder. We use hand-written `game/kernel/asm_funcs_arm64.s`.
+  `common/jit_memory.h` did come across -- it is theirs, and it is a better home for the W^X
+  protection flips than open-coded `mprotect`.
+- **The continuation-handoff lowering tests** (2 of 4 in `test_arm64_continuation_handoff.cpp`).
+  See the open item below.
+
+### Open items this import surfaced
+
+1. **`test_arm64_runtime_bridge.cpp` is not in the build.** It drives `_arg_call_arm64`,
+   `_stack_call_arm64`, `_mips2c_call_arm64` and `_call_goal*_asm_arm64` and checks that
+   callee-saved GPR and SIMD sentinels survive them. Five cases fail and one crashes the runner --
+   against **the same symbol names** in our `asm_funcs_arm64.s`, so this is a real suspicion about
+   our bridges, not a naming mismatch. This is the highest-value thread to pull next.
+2. **The `(.ret)` continuation handoff is guarded by hand, not by the lowering.** They lower
+   `IR_AsmPush` with an rax-role source to `mov x30, <src>`, so every site is handled
+   automatically. We instead write `#if ARM64_PORT (.mov lr temp)` next to the `(.push temp)` at
+   each site: `gkernel.gc:500`, `gkernel.gc:1650`, `gkernel.gc:2040`, `gstate.gc:463`. The
+   remaining `(.ret)` sites without such a guard -- `return-from-thread` (gkernel.gc:452),
+   `return-from-thread-dead` (:482), `thread-suspend` (:643) and `new catch-frame` (:1579) --
+   reach `ret` with x30 set by the caller or by the asm bridges. That holds today and is enforced
+   nowhere. Their lowering is the more robust design and is worth adopting.
+3. **An asm function can colour a callee-saved register here, which x86 rejects.**
+   `do_asm_function_x86` throws when `used_saved_regs` is non-empty without `allow-saved-regs`,
+   because an asm function gets no prologue to save it. Adding the same check to
+   `do_asm_function_arm64` immediately rejects `return-from-thread`, whose coloring uses `q15`. So
+   either that coloring is unsafe or our saved-register set is wrong; until that is settled the
+   ARM64 path keeps ignoring `allow_saved_regs`.
+4. **x26 is saved twice in every prologue that uses it.** SIMD and GPR ids share one space --
+   `XMM10` is also id 26 -- so the prologue cannot tell which the allocator meant and saves both
+   interpretations, 32 bytes where 16 would do. Correct, because restoring is symmetric, but it
+   costs a wasted pair of instructions. Separating the id spaces is the real fix.
+
+Their `PORTING-NOTES.md` §1 is also worth reading before touching any SSE-to-NEON translation:
+min/max NaN ordering, denormals, conversion rounding modes and shuffle lane order all produce
+plausible wrong numbers rather than crashes -- the same shape as the three defects above.
+
 ## Test coverage gap on ARM64
 
-`test/goalc/CMakeLists.txt` compiles only `test_CodeTester.cpp` on ARM64. Every execution-level
+`test/goalc/CMakeLists.txt` compiles `test_CodeTester.cpp` and the imported `test_arm64_*.cpp`
+files on ARM64. Every execution-level
 GOAL test is commented out, including `test_vector_float.cpp`, which exercises masked vector ops
 (`:mask`) directly -- that is why a no-op blend survived so long. Those fixtures need a booting
 game to host the test runner, so re-enabling them is gated on the boot work above.

@@ -34,6 +34,11 @@ exit 124, or run it without a timeout and close it yourself for exit 0.
 
 - Every `do_codegen_arm64` in `goalc/compiler/IR.cpp` **must** have semantic parity with its `do_codegen_x86` sibling. When adding a case to one, add it to the other.
 - The emitter (`goalc/emitter/IGenARM64.cpp`) contains single-instruction helpers. When an x86 idiom has no single ARM64 equivalent (e.g., 3-reg+offset addressing, PC-relative byte load), the **caller in `IR.cpp`** must emit the multi-instruction sequence — never silently ignore an offset.
+- `test/goalc/test_arm64_*.cpp` is an ARM64 differential suite imported from an independent ARM64
+  fork (see "The imported ARM64 differential suite" in CODEX.md). Run `./build/goalc-test` before
+  and after any emitter or codegen change; a failure there describes ARM64 semantics, not our
+  implementation, so fix the backend rather than the test unless the file explains why our design
+  differs.
 - Always add a `CodeTester.*_arm64` test in `test/goalc/test_CodeTester.cpp` for every new emitter function. **Prefer an executing test (`CodeTester.execute_*`) over an expected-hex-string test.** A wrong ARM64 encoding usually does not crash -- it computes a plausible wrong number and the engine carries on. Three separate shipped bugs (`splat_vf`, `ins_vf_element`, `ins_vf_element_from_gpr32`) were the same `imm5` element-index mistake, and hex-string tests passed for all of them.
 - **SIMD element index encoding:** in `imm5` the lowest set bit selects the element size and the bits above it hold the index. 32-bit (S) lanes need `imm5 = (index << 3) | 0b00100`, and `INS`'s `imm4 = srcIdx << 2`. Verify any new encoding against the system assembler: write the mnemonic to a `.s`, `clang -c -target arm64-apple-macos`, then `otool -t`.
 - **Platform dispatch:** grep for `__x86_64__` before trusting an `#if` chain. mips2c's `jalr` had no ARM64 branch and silently compiled to nothing, so GOAL callbacks never ran. Always end such chains with `#else #error`.
