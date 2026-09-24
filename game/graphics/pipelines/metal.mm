@@ -29,7 +29,7 @@
 #include "game/graphics/opengl_renderer/loader/Loader.h"
 #include "game/graphics/texture/TexturePool.h"
 #include "game/graphics/metal_renderer/MetalGpuResources.h"
-#include "game/graphics/metal_renderer/MetalTFragment.h"
+#include "game/graphics/metal_renderer/MetalRenderer.h"
 #include "game/graphics/metal_renderer/MetalShaderLibrary.h"
 #include "game/system/hid/sdl_util.h"
 
@@ -70,7 +70,9 @@ struct MetalGraphicsData {
         loader(std::make_shared<Loader>(
             file_util::get_jak_project_dir() / "out" / game_version_names[version] / "fr3",
             metal_fr3_level_count[version])),
-        version(version) {}
+        version(version) {
+    renderer = std::make_unique<MetalRenderer>(texture_pool, loader);
+  }
 
   std::mutex sync_mutex;
   std::condition_variable sync_cv;
@@ -89,23 +91,9 @@ struct MetalGraphicsData {
   std::shared_ptr<Loader> loader;
   GameVersion version;
 
-  // The first ported bucket renderer.
-  MetalTFragment tfrag;
-  bool tfrag_ready = false;
-  // Camera for the current frame, lifted out of the tfrag bucket's DMA.
-  GoalBackgroundCameraData camera{};
-  bool have_camera = false;
-  std::string camera_level_name;
-  int camera_level_id = 0;
-
-  // Occlusion visibility, one string per level slot, sent in the vis-copy bucket. Frustum culling
-  // alone leaves whole chunks of neighbouring areas floating in view; this is what the game uses
-  // to hide them.
-  struct LevelVis {
-    bool valid = false;
-    u8 data[128 * 16];
-  };
-  std::array<LevelVis, jak1::LEVEL_MAX> occlusion_vis;
+  // The bucket table: one entry per bucket, empty where a renderer is not ported yet.
+  std::unique_ptr<MetalRenderer> renderer;
+  bool renderer_ready = false;
 };
 
 std::unique_ptr<MetalGraphicsData> g_metal_gfx_data;
@@ -390,76 +378,8 @@ void MetalDisplay::render() {
     }
   }
 
-  if (have_frame) {
-    // Same shape as OpenGLRenderer::dispatch_buckets_jak1: a call to the default-registers chain,
-    // then one fixed-size slot per bucket. Each bucket slot is 16 bytes on from the last, and a
-    // renderer is expected to consume exactly its own bucket.
-    //
-    // Nothing is rendered yet -- this walks the chain and skips each bucket's data so the frame
-    // structure can be verified before a ported renderer depends on it. Bucket renderers get
-    // dispatched from this loop.
-    DmaFollower dma = dma_for_frame;
-    u32 buckets_base = dma.current_tag_offset() + 16;  // 1 qw for the initial call
-    u32 next_bucket = buckets_base;
-
-    dma.read_and_advance();  // the call into the default-regs chain
-    dma.read_and_advance();  // the default register data itself
-    dma.read_and_advance();  // its ret tag
-
-    int buckets_walked = 0;
-    if (dma.current_tag_offset() == next_bucket) {
-      next_bucket += 16;
-      for (int bucket_id = 0; bucket_id < kMetalBucketCount; bucket_id++) {
-        // Walk this bucket's data. The ported renderers do not consume the chain yet; what they
-        // need from it is the camera, which the game sends once per tfrag bucket as a
-        // TfragPcPortData transfer. Picking it out by size avoids replicating the VIF unpack
-        // sequence that TFragment::render walks before reaching it.
-        const bool is_tfrag_bucket = bucket_id == (int)jak1::BucketId::TFRAG_LEVEL0 ||
-                                     bucket_id == (int)jak1::BucketId::TFRAG_LEVEL1;
-        // The occlusion strings ride along in one bucket, one PC_PORT transfer per level slot, in
-        // slot order. A 16-byte transfer means that slot has no vis this frame.
-        const bool is_vis_copy_bucket = bucket_id == (int)jak1::BucketId::TFRAG_LEVEL0;
-        int vis_slot = 0;
-        while (dma.current_tag_offset() != next_bucket && !dma.ended()) {
-          auto transfer = dma.read_and_advance();
-          if (is_vis_copy_bucket && transfer.vifcode1().kind == VifCode::Kind::PC_PORT &&
-              vis_slot < (int)jak1::LEVEL_MAX) {
-            if (transfer.size_bytes == 128 * 16) {
-              auto& vis = g_metal_gfx_data->occlusion_vis[vis_slot];
-              memcpy(vis.data, transfer.data, sizeof(vis.data));
-              vis.valid = true;
-              vis_slot++;
-            } else if (transfer.size_bytes == 16) {
-              g_metal_gfx_data->occlusion_vis[vis_slot].valid = false;
-              vis_slot++;
-            }
-          }
-          if (is_tfrag_bucket && transfer.size_bytes == sizeof(TfragPcPortData)) {
-            TfragPcPortData port_data;
-            memcpy(&port_data, transfer.data, sizeof(TfragPcPortData));
-            port_data.level_name[sizeof(port_data.level_name) - 1] = '\0';
-            g_metal_gfx_data->camera = port_data.camera;
-            g_metal_gfx_data->camera_level_name = port_data.level_name;
-            g_metal_gfx_data->camera_level_id =
-                bucket_id == (int)jak1::BucketId::TFRAG_LEVEL0 ? 0 : 1;
-            g_metal_gfx_data->have_camera = true;
-          }
-        }
-        buckets_walked++;
-        if (dma.ended()) {
-          break;
-        }
-        next_bucket += 16;
-      }
-    }
-
-    static bool logged_first = false;
-    if (!logged_first) {
-      lg::info("[Metal] first frame from GOAL: walked {} of {} buckets", buckets_walked,
-               kMetalBucketCount);
-      logged_first = true;
-    }
-  }
+  // The frame's DMA chain is walked by MetalRenderer, inside the render pass below, so the
+  // buckets draw where they are dispatched.
 
   // Pump the level loader. It reads the .fr3 files on its own thread and does the GPU-side work
   // here, through gpu::, which is pointed at Metal. Same call the OpenGL backend makes once per
@@ -521,25 +441,18 @@ void MetalDisplay::render() {
     id<MTLCommandBuffer> cmd = [m_ctx->queue commandBuffer];
     id<MTLRenderCommandEncoder> enc = [cmd renderCommandEncoderWithDescriptor:pass];
 
-    // tfrag3: the world geometry, and the first bucket that draws its own contents.
-    if (g_metal_gfx_data && g_metal_gfx_data->have_camera) {
-      if (!g_metal_gfx_data->tfrag_ready) {
-        g_metal_gfx_data->tfrag_ready = g_metal_gfx_data->tfrag.init(
+    // Every bucket, in order, through the bucket table.
+    if (g_metal_gfx_data && have_frame) {
+      if (!g_metal_gfx_data->renderer_ready) {
+        g_metal_gfx_data->renderer_ready = g_metal_gfx_data->renderer->init(
             m_ctx->device, m_ctx->library, kMetalColorFormat, kMetalDepthFormat);
       }
-      if (g_metal_gfx_data->tfrag_ready) {
-        const auto* level =
-            g_metal_gfx_data->loader->get_tfrag3_level(g_metal_gfx_data->camera_level_name);
-        if (level) {
-          const auto& vis = g_metal_gfx_data->occlusion_vis[g_metal_gfx_data->camera_level_id];
-          g_metal_gfx_data->tfrag.render(enc, *level, g_metal_gfx_data->camera,
-                                         vis.valid ? vis.data : nullptr);
-          static u32 logged_tris = 0;
-          if (g_metal_gfx_data->tfrag.last_frame_tris() != logged_tris) {
-            logged_tris = g_metal_gfx_data->tfrag.last_frame_tris();
-            lg::info("[Metal] tfrag3 drew {} triangles from {}", logged_tris,
-                     g_metal_gfx_data->camera_level_name);
-          }
+      if (g_metal_gfx_data->renderer_ready) {
+        g_metal_gfx_data->renderer->render(dma_for_frame, enc);
+        static u32 logged_tris = 0;
+        if (g_metal_gfx_data->renderer->last_frame_tris() != logged_tris) {
+          logged_tris = g_metal_gfx_data->renderer->last_frame_tris();
+          lg::info("[Metal] drew {} triangles", logged_tris);
         }
       }
     }
@@ -589,7 +502,7 @@ void MetalDisplay::render() {
     }
     const bool want_screenshot = screenshot_path && !screenshot_done && g_metal_gfx_data &&
                                  frames_since_level >= want_delay && frames_since_level >= 0 &&
-                                 g_metal_gfx_data->tfrag.last_frame_tris() > 0;
+                                 g_metal_gfx_data->renderer->last_frame_tris() > 0;
     id<MTLBuffer> screenshot_buffer = nil;
     u32 shot_w = 0, shot_h = 0, shot_stride = 0;
     if (want_screenshot) {

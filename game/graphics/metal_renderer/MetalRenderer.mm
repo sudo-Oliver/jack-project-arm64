@@ -1,0 +1,180 @@
+/*!
+ * @file MetalRenderer.mm
+ * See MetalRenderer.h.
+ */
+
+#include "MetalRenderer.h"
+
+#import <Metal/Metal.h>
+
+#include "common/log/log.h"
+
+#include "game/graphics/metal_renderer/MetalTFragment.h"
+#include "game/graphics/opengl_renderer/buckets.h"
+
+MetalRenderer::MetalRenderer(std::shared_ptr<TexturePool> texture_pool,
+                             std::shared_ptr<Loader> loader) {
+  m_render_state.texture_pool = std::move(texture_pool);
+  m_render_state.loader = std::move(loader);
+}
+
+MetalRenderer::~MetalRenderer() = default;
+
+void MetalRenderer::init_bucket_table() {
+  using namespace jak1;
+  m_bucket_renderers.clear();
+  m_bucket_renderers.resize((int)BucketId::MAX_BUCKETS);
+
+  // Every bucket gets an entry. The ones without a renderer skip their data; leaving a hole would
+  // desynchronise every bucket after it.
+  for (int i = 0; i < (int)BucketId::MAX_BUCKETS; i++) {
+    m_bucket_renderers[i] = std::make_unique<MetalEmptyBucketRenderer>("empty", i);
+  }
+
+  // Same tree kinds the OpenGL bucket table assigns. Keep these in step: a kind drawn by the
+  // wrong bucket gets the wrong blend and alpha settings.
+  const std::vector<tfrag3::TFragmentTreeKind> normal_tfrags = {
+      tfrag3::TFragmentTreeKind::NORMAL, tfrag3::TFragmentTreeKind::LOWRES};
+
+  m_bucket_renderers[(int)BucketId::TFRAG_LEVEL0] = std::make_unique<MetalTFragment>(
+      "l0-tfrag-tfrag", (int)BucketId::TFRAG_LEVEL0, normal_tfrags, 0);
+  m_bucket_renderers[(int)BucketId::TFRAG_LEVEL1] = std::make_unique<MetalTFragment>(
+      "l1-tfrag-tfrag", (int)BucketId::TFRAG_LEVEL1, normal_tfrags, 1);
+}
+
+bool MetalRenderer::init(id<MTLDevice> device,
+                         id<MTLLibrary> library,
+                         MTLPixelFormat color_format,
+                         MTLPixelFormat depth_format) {
+  m_render_state.device = device;
+  m_render_state.library = library;
+  m_render_state.color_format = color_format;
+  m_render_state.depth_format = depth_format;
+
+  init_bucket_table();
+
+  int ported = 0;
+  for (auto& renderer : m_bucket_renderers) {
+    if (!renderer->init(&m_render_state)) {
+      lg::error("[Metal] bucket renderer {} failed to initialise", renderer->name());
+      return false;
+    }
+    if (renderer->name() != "empty") {
+      ported++;
+    }
+  }
+  lg::info("[Metal] bucket table ready: {} of {} buckets have a renderer", ported,
+           m_bucket_renderers.size());
+  m_ready = true;
+  return true;
+}
+
+void MetalRenderer::scan_frame_state(DmaFollower dma) {
+  // The camera and the occlusion strings arrive in specific buckets, but the renderers that need
+  // them run in others. The OpenGL backend passes them along its SharedRenderState as the buckets
+  // execute; doing it in one pass first is the same information, and keeps the bucket renderers
+  // from depending on each other's order.
+  for (auto& slot : m_render_state.level_slots) {
+    slot.has_camera = false;
+  }
+
+  u32 next_bucket = dma.current_tag_offset() + 16;
+  dma.read_and_advance();  // the call into the default-regs chain
+  dma.read_and_advance();  // the default register data itself
+  dma.read_and_advance();  // its ret tag
+  if (dma.current_tag_offset() != next_bucket) {
+    return;
+  }
+  next_bucket += 16;
+
+  for (int bucket_id = 0; bucket_id < (int)jak1::BucketId::MAX_BUCKETS; bucket_id++) {
+    const bool is_tfrag_bucket = bucket_id == (int)jak1::BucketId::TFRAG_LEVEL0 ||
+                                 bucket_id == (int)jak1::BucketId::TFRAG_LEVEL1;
+    // The occlusion strings ride along in one bucket, one PC_PORT transfer per level slot, in slot
+    // order. A 16-byte transfer means that slot has no vis this frame.
+    const bool is_vis_copy_bucket = bucket_id == (int)jak1::BucketId::TFRAG_LEVEL0;
+    int vis_slot = 0;
+
+    while (dma.current_tag_offset() != next_bucket && !dma.ended()) {
+      auto transfer = dma.read_and_advance();
+      if (is_vis_copy_bucket && transfer.vifcode1().kind == VifCode::Kind::PC_PORT &&
+          vis_slot < (int)jak1::LEVEL_MAX) {
+        if (transfer.size_bytes == 128 * 16) {
+          auto& vis = m_render_state.occlusion_vis[vis_slot];
+          memcpy(vis.data, transfer.data, sizeof(vis.data));
+          vis.valid = true;
+          vis_slot++;
+        } else if (transfer.size_bytes == 16) {
+          m_render_state.occlusion_vis[vis_slot].valid = false;
+          vis_slot++;
+        }
+      }
+      if (is_tfrag_bucket && transfer.size_bytes == sizeof(TfragPcPortData)) {
+        TfragPcPortData port_data;
+        memcpy(&port_data, transfer.data, sizeof(TfragPcPortData));
+        port_data.level_name[sizeof(port_data.level_name) - 1] = '\0';
+        const int slot = bucket_id == (int)jak1::BucketId::TFRAG_LEVEL0 ? 0 : 1;
+        m_render_state.level_slots[slot].camera = port_data.camera;
+        m_render_state.level_slots[slot].level_name = port_data.level_name;
+        m_render_state.level_slots[slot].has_camera = true;
+      }
+    }
+    if (dma.ended()) {
+      break;
+    }
+    next_bucket += 16;
+  }
+}
+
+void MetalRenderer::render(DmaFollower dma, id<MTLRenderCommandEncoder> encoder) {
+  if (!m_ready) {
+    return;
+  }
+  m_last_frame_tris = 0;
+  m_render_state.encoder = encoder;
+
+  scan_frame_state(dma);
+
+  // Same shape as OpenGLRenderer::dispatch_buckets_jak1: a call into the default-registers chain,
+  // then one 16-byte slot per bucket. Each renderer must leave the cursor exactly at the next
+  // bucket boundary.
+  u32 next_bucket = dma.current_tag_offset() + 16;
+  dma.read_and_advance();
+  dma.read_and_advance();
+  dma.read_and_advance();
+  if (dma.current_tag_offset() != next_bucket) {
+    lg::error("[Metal] frame did not start with the default-register chain");
+    return;
+  }
+  next_bucket += 16;
+
+  for (size_t bucket_id = 0; bucket_id < m_bucket_renderers.size(); bucket_id++) {
+    m_render_state.next_bucket = next_bucket;
+    m_bucket_renderers[bucket_id]->render(dma, &m_render_state);
+
+    // The OpenGL backend asserts on this. Log instead: a renderer that leaves the cursor short
+    // desynchronises every bucket after it, and that has to be visible rather than silent.
+    if (dma.current_tag_offset() != next_bucket && !dma.ended()) {
+      static int complaints = 0;
+      if (complaints < 8) {
+        lg::warn("[Metal] bucket {} ({}) left the DMA cursor at {}, expected {}", bucket_id,
+                 m_bucket_renderers[bucket_id]->name(), dma.current_tag_offset(), next_bucket);
+        complaints++;
+      }
+      while (dma.current_tag_offset() != next_bucket && !dma.ended()) {
+        dma.read_and_advance();
+      }
+    }
+    if (dma.ended()) {
+      break;
+    }
+    next_bucket += 16;
+  }
+
+  for (auto& renderer : m_bucket_renderers) {
+    if (auto* tfrag = dynamic_cast<MetalTFragment*>(renderer.get())) {
+      m_last_frame_tris += tfrag->last_frame_tris();
+    }
+  }
+  m_render_state.encoder = nil;
+}
