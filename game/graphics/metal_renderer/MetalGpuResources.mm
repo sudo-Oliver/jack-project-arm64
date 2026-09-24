@@ -85,14 +85,18 @@ u64 metal_create_texture_rgba8(const gpu::TextureCreateInfo& info) {
 
   if (levels > 1 && info.data) {
     // Metal has no glGenerateMipmap; the equivalent is a blit encoder, which needs a command
-    // buffer. Wait for it so the texture is complete by the time the handle is handed out -- this
-    // runs on the loader thread, not in a frame.
+    // buffer. It is committed and not waited on: this runs on the loader thread, once per
+    // texture, and a level is hundreds of textures -- waiting for each one turned the first
+    // seconds in a level into untextured grey while they trickled in.
+    //
+    // Not waiting is safe because this is the same queue the frames are submitted on, so the
+    // mipmaps are generated before any frame committed after this point. Level 0 is already
+    // there either way: replaceRegion above writes it on the CPU.
     id<MTLCommandBuffer> cmd = [t.queue commandBuffer];
     id<MTLBlitCommandEncoder> blit = [cmd blitCommandEncoder];
     [blit generateMipmapsForTexture:tex];
     [blit endEncoding];
     [cmd commit];
-    [cmd waitUntilCompleted];
   }
 
   std::lock_guard<std::mutex> lock(t.mutex);

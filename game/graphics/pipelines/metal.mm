@@ -19,6 +19,8 @@
 
 #include "game/graphics/opengl_renderer/buckets.h"
 #include "common/global_profiler/GlobalProfiler.h"
+#include <atomic>
+
 #include "common/log/log.h"
 
 #include "common/util/FileUtil.h"
@@ -279,7 +281,12 @@ void metal_set_active_levels(const std::vector<std::string>& levels) {
     g_metal_gfx_data->loader->set_active_levels(levels);
   }
 }
-void metal_set_pmode_alp(float /*val*/) {}
+// The PCRTC alpha register. Zero means the screen is blacked out, which is when the game loads a
+// level, and coming out of that is the moment everything has to be ready.
+std::atomic<float> g_metal_pmode_alp{1.f};
+void metal_set_pmode_alp(float val) {
+  g_metal_pmode_alp = val;
+}
 
 }  // namespace
 
@@ -379,7 +386,17 @@ void MetalDisplay::render() {
   // frame.
   {
     auto p = scoped_prof("loader");
-    g_metal_gfx_data->loader->update(*g_metal_gfx_data->texture_pool);
+    // During a blackout the screen shows nothing, so the loader can take as long as it likes.
+    // Coming out of one without having finished is what leaves a level untextured and grey for
+    // its first seconds, with the textures trickling in afterwards.
+    static float last_pmode_alp = 1.f;
+    const float pmode_alp = g_metal_pmode_alp;
+    if (last_pmode_alp == 0.f && pmode_alp != 0.f) {
+      g_metal_gfx_data->loader->update_blocking(*g_metal_gfx_data->texture_pool);
+    } else {
+      g_metal_gfx_data->loader->update(*g_metal_gfx_data->texture_pool);
+    }
+    last_pmode_alp = pmode_alp;
   }
 
   {
