@@ -36,10 +36,21 @@ different emitter functions. When something looks visually wrong, suspect the em
 **executing** test (`CodeTester.execute_*`), not an expected-hex-string test -- the hex tests
 passed the whole time.
 
-### Next: the Metal renderer
+### Metal status
 
-The OpenGL path now produces a correct picture, which is exactly the reference the Metal port
-needs. Start from `## Next up: Metal` below.
+The Metal backend exists and runs: it owns the window, `MTLDevice`, command queue and
+`CAMetalLayer`, and presents a cleared frame (`Using renderer: Metal`, `[Metal] device: Apple M4`,
+exit 0). **A solid blue window is the expected output right now** -- that is the clear colour in
+`metal.mm`; no bucket renderer has been ported yet.
+
+OpenGL remains the default and stays fully working. Pick a backend at runtime:
+
+```sh
+./build/game/gk -v --game jak1 -- -boot -fakeiso                        # OpenGL (default)
+OPENGOAL_RENDERER=metal ./build/game/gk -v --game jak1 -- -boot -fakeiso # Metal
+```
+
+Continue from `## Next up: Metal` below.
 
 Historical note, kept because older logs refer to it:
 
@@ -437,23 +448,38 @@ back, the margin is too small for some new call depth, not a reason to ignore th
 
 ## Next up: Metal
 
-The OpenGL renderer now produces a correct picture, so it is the reference to port against.
-Suggested order:
+### What exists
 
-1. Capture a reference: screenshots and `[EE-LINK]`/frame logs from the working OpenGL build,
-   so any Metal regression is obvious.
-2. Stand up the Metal device/queue/layer next to the existing `GLDisplay`
-   (`game/graphics/pipelines/opengl.cpp`), add `GfxPipeline::Metal` in `game/graphics/gfx.h`,
-   and get a cleared frame on screen.
-3. Port the 92 GLSL shaders in `game/graphics/opengl_renderer/shaders/` to MSL and replace
-   `Shader.cpp`'s compile/link path with `MTLLibrary`/`MTLRenderPipelineState`.
-4. Convert the renderer classes one bucket at a time (`tfrag3` first -- it covers most of the
-   world and is easy to eyeball), keeping OpenGL selectable so the two can be compared directly.
-5. Port `game/graphics/texture/` to `MTLTexture`, then `Fbo.h` to `MTLRenderPassDescriptor` for
+- `game/graphics/pipelines/metal.h` -- plain C++ so the runtime can include it. The Objective-C
+  objects live behind an opaque `MetalContext`.
+- `game/graphics/pipelines/metal.mm` -- Objective-C++, Apple-only, built with `-fobjc-arc` and
+  linked against Metal / QuartzCore / Foundation (see `game/CMakeLists.txt`).
+- `MetalDisplay : GfxDisplay` -- window, display manager, input manager, SDL event pump, and a
+  clear-and-present frame.
+- `GfxPipeline::Metal` plus selection in `Gfx::GetRenderer` / `Gfx::Init`, opt-in through
+  `OPENGOAL_RENDERER=metal`.
+
+The renderer module's data entry points (`send_chain`, `texture_upload_now`, `texture_relocate`,
+`set_levels`, `set_active_levels`, `set_pmode_alp`) are deliberate no-ops for now -- the DMA chain
+still drives the OpenGL bucket renderers.
+
+### Remaining work, in order
+
+1. **Shaders.** Port the 92 GLSL files in `game/graphics/opengl_renderer/shaders/` to MSL and
+   replace `Shader.cpp`'s compile/link path with `MTLLibrary` / `MTLRenderPipelineState`. Compile
+   the `.metal` files via `xcrun metal`/`metallib` from CMake.
+2. **First bucket: `tfrag3`.** It covers most of the world and is the easiest to eyeball against
+   the OpenGL reference. This is where `metal_send_chain` starts doing real work.
+3. **Textures.** `game/graphics/texture/` to `MTLTexture`, keeping the existing PS2 format
+   conversions.
+4. **Render targets.** `Fbo.h` to `MTLRenderPassDescriptor` / offscreen `MTLTexture`, needed for
    the multi-pass effects (glow probes, shadows, sky blend).
+5. **Remaining buckets** one at a time: `DirectRenderer`/`DirectRenderer2`, `merc2`/`emerc`,
+   `tie`/`etie`, `shrub`, `sky`, `ocean`, `shadow`, `sprite`, `TextureAnimator`.
 
-Keep the OpenGL backend working throughout. Being able to flip between the two is the only cheap
-way to tell a Metal bug from yet another codegen bug.
+**Keep OpenGL working and selectable throughout.** Being able to flip between the two on the same
+build is the only cheap way to tell a Metal bug from yet another codegen bug -- and given the
+history in this file, assume there are more codegen bugs.
 
 ## Test coverage gap on ARM64
 
