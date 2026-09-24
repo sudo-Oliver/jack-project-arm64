@@ -5,6 +5,8 @@
 
 #include "opengl.h"
 
+#include <cstdlib>
+
 #include <condition_variable>
 #include <memory>
 #include <mutex>
@@ -687,6 +689,55 @@ void GLDisplay::render() {
     g_gfx_data->frame_limiter.run(
         Gfx::g_global_settings.target_fps, Gfx::g_global_settings.experimental_accurate_lag,
         Gfx::g_global_settings.sleep_in_frame_limiter, g_gfx_data->last_engine_time);
+  }
+
+  // Debug readback, the OpenGL half of what OPENGOAL_METAL_SCREENSHOT does for Metal. Both fire
+  // on the same condition -- the first frame after a level is in use -- so the two images are
+  // taken at the same point in the boot and can be compared pixel for pixel.
+  {
+    static bool screenshot_done = false;
+    const char* screenshot_path = std::getenv("OPENGOAL_GL_SCREENSHOT");
+    // Frames counted from the moment the named level is in use, not absolute frame numbers: the
+    // two backends do not pace identically during the boot, so the same absolute frame is a
+    // different moment in the game.
+    const char* level_env = std::getenv("OPENGOAL_SCREENSHOT_LEVEL");
+    const char* delay_env = std::getenv("OPENGOAL_SCREENSHOT_DELAY");
+    const int want_delay = delay_env ? atoi(delay_env) : 0;
+    static int frames_since_level = -1;
+    if (screenshot_path && !screenshot_done) {
+      for (const auto* lev : g_gfx_data->loader->get_in_use_levels()) {
+        if (!level_env || lev->level->level_name == level_env) {
+          if (frames_since_level < 0) {
+            frames_since_level = 0;
+          }
+          break;
+        }
+      }
+      if (frames_since_level >= 0) {
+        frames_since_level++;
+      }
+    }
+    if (screenshot_path && !screenshot_done && frames_since_level >= want_delay &&
+        frames_since_level >= 0) {
+      int w = 0, h = 0;
+      SDL_GetWindowSizeInPixels(m_window, &w, &h);
+      if (w > 0 && h > 0) {
+        std::vector<u8> pixels((size_t)w * h * 4);
+        glReadBuffer(GL_BACK);
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+        // OpenGL reads bottom-up; the PNG writer wants top-down.
+        std::vector<u8> flipped((size_t)w * h * 4);
+        for (int row = 0; row < h; row++) {
+          memcpy(flipped.data() + (size_t)row * w * 4,
+                 pixels.data() + (size_t)(h - 1 - row) * w * 4, (size_t)w * 4);
+        }
+        file_util::write_rgba_png(screenshot_path, flipped.data(), w, h);
+        lg::info("[GL] wrote screenshot {} ({}x{}) at frame {}", screenshot_path, w, h,
+                 g_gfx_data->frame_idx);
+        screenshot_done = true;
+      }
+    }
   }
 
   {

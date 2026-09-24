@@ -8,6 +8,7 @@
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
 
+#include <array>
 #include <condition_variable>
 #include <mutex>
 
@@ -95,6 +96,16 @@ struct MetalGraphicsData {
   GoalBackgroundCameraData camera{};
   bool have_camera = false;
   std::string camera_level_name;
+  int camera_level_id = 0;
+
+  // Occlusion visibility, one string per level slot, sent in the vis-copy bucket. Frustum culling
+  // alone leaves whole chunks of neighbouring areas floating in view; this is what the game uses
+  // to hide them.
+  struct LevelVis {
+    bool valid = false;
+    u8 data[128 * 16];
+  };
+  std::array<LevelVis, jak1::LEVEL_MAX> occlusion_vis;
 };
 
 std::unique_ptr<MetalGraphicsData> g_metal_gfx_data;
@@ -405,14 +416,32 @@ void MetalDisplay::render() {
         // sequence that TFragment::render walks before reaching it.
         const bool is_tfrag_bucket = bucket_id == (int)jak1::BucketId::TFRAG_LEVEL0 ||
                                      bucket_id == (int)jak1::BucketId::TFRAG_LEVEL1;
+        // The occlusion strings ride along in one bucket, one PC_PORT transfer per level slot, in
+        // slot order. A 16-byte transfer means that slot has no vis this frame.
+        const bool is_vis_copy_bucket = bucket_id == (int)jak1::BucketId::TFRAG_LEVEL0;
+        int vis_slot = 0;
         while (dma.current_tag_offset() != next_bucket && !dma.ended()) {
           auto transfer = dma.read_and_advance();
+          if (is_vis_copy_bucket && transfer.vifcode1().kind == VifCode::Kind::PC_PORT &&
+              vis_slot < (int)jak1::LEVEL_MAX) {
+            if (transfer.size_bytes == 128 * 16) {
+              auto& vis = g_metal_gfx_data->occlusion_vis[vis_slot];
+              memcpy(vis.data, transfer.data, sizeof(vis.data));
+              vis.valid = true;
+              vis_slot++;
+            } else if (transfer.size_bytes == 16) {
+              g_metal_gfx_data->occlusion_vis[vis_slot].valid = false;
+              vis_slot++;
+            }
+          }
           if (is_tfrag_bucket && transfer.size_bytes == sizeof(TfragPcPortData)) {
             TfragPcPortData port_data;
             memcpy(&port_data, transfer.data, sizeof(TfragPcPortData));
             port_data.level_name[sizeof(port_data.level_name) - 1] = '\0';
             g_metal_gfx_data->camera = port_data.camera;
             g_metal_gfx_data->camera_level_name = port_data.level_name;
+            g_metal_gfx_data->camera_level_id =
+                bucket_id == (int)jak1::BucketId::TFRAG_LEVEL0 ? 0 : 1;
             g_metal_gfx_data->have_camera = true;
           }
         }
@@ -502,7 +531,9 @@ void MetalDisplay::render() {
         const auto* level =
             g_metal_gfx_data->loader->get_tfrag3_level(g_metal_gfx_data->camera_level_name);
         if (level) {
-          g_metal_gfx_data->tfrag.render(enc, *level, g_metal_gfx_data->camera);
+          const auto& vis = g_metal_gfx_data->occlusion_vis[g_metal_gfx_data->camera_level_id];
+          g_metal_gfx_data->tfrag.render(enc, *level, g_metal_gfx_data->camera,
+                                         vis.valid ? vis.data : nullptr);
           static u32 logged_tris = 0;
           if (g_metal_gfx_data->tfrag.last_frame_tris() != logged_tris) {
             logged_tris = g_metal_gfx_data->tfrag.last_frame_tris();
@@ -538,9 +569,27 @@ void MetalDisplay::render() {
     // at the frame is the only way to tell a wrong matrix from a wrong texture.
     static bool screenshot_done = false;
     const char* screenshot_path = std::getenv("OPENGOAL_METAL_SCREENSHOT");
-    const bool want_screenshot =
-        screenshot_path && !screenshot_done && g_metal_gfx_data &&
-        g_metal_gfx_data->tfrag.last_frame_tris() > 0;
+    // Same trigger as the OpenGL backend: N frames after the named level is in use.
+    const char* level_env = std::getenv("OPENGOAL_SCREENSHOT_LEVEL");
+    const char* delay_env = std::getenv("OPENGOAL_SCREENSHOT_DELAY");
+    const int want_delay = delay_env ? atoi(delay_env) : 0;
+    static int frames_since_level = -1;
+    if (screenshot_path && !screenshot_done && g_metal_gfx_data) {
+      for (const auto* lev : g_metal_gfx_data->loader->get_in_use_levels()) {
+        if (!level_env || lev->level->level_name == level_env) {
+          if (frames_since_level < 0) {
+            frames_since_level = 0;
+          }
+          break;
+        }
+      }
+      if (frames_since_level >= 0) {
+        frames_since_level++;
+      }
+    }
+    const bool want_screenshot = screenshot_path && !screenshot_done && g_metal_gfx_data &&
+                                 frames_since_level >= want_delay && frames_since_level >= 0 &&
+                                 g_metal_gfx_data->tfrag.last_frame_tris() > 0;
     id<MTLBuffer> screenshot_buffer = nil;
     u32 shot_w = 0, shot_h = 0, shot_stride = 0;
     if (want_screenshot) {
@@ -576,7 +625,8 @@ void MetalDisplay::render() {
         rgba[i * 4 + 3] = 255;
       }
       file_util::write_rgba_png(screenshot_path, rgba.data(), shot_w, shot_h);
-      lg::info("[Metal] wrote screenshot {} ({}x{})", screenshot_path, shot_w, shot_h);
+      lg::info("[Metal] wrote screenshot {} ({}x{}) at frame {}", screenshot_path, shot_w, shot_h,
+               g_metal_gfx_data->frame_idx);
       screenshot_done = true;
     }
   }

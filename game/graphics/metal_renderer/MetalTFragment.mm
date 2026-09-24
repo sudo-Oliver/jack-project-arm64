@@ -7,6 +7,9 @@
 
 #import <Metal/Metal.h>
 
+#include <algorithm>
+#include <cstring>
+
 #include "common/log/log.h"
 
 #include "game/graphics/gpu_resources.h"
@@ -16,12 +19,16 @@
 
 namespace {
 
-// One tree's GPU-side data. The vertex buffer comes from the shared loader; the index buffer and
-// the time-of-day colours are ours, because the OpenGL renderer builds both per frame out of the
-// visibility strings and we do not cull yet.
+// How many frames of index/colour buffers to rotate through. The GPU may still be reading last
+// frame's buffer when this frame writes, and Metal does no renaming behind our back the way the
+// OpenGL driver does for glBufferData.
+constexpr int kFramesInFlight = 3;
+
+// One tree's GPU-side data. The vertex buffer comes from the shared loader; the index list is
+// ours, because it is rebuilt every frame from the visibility strings.
 struct TreeCache {
-  u64 index_buffer = gpu::kInvalidHandle;
-  id<MTLBuffer> time_of_day = nil;
+  std::array<id<MTLBuffer>, kFramesInFlight> index_buffer = {nil, nil, nil};
+  std::array<id<MTLBuffer>, kFramesInFlight> time_of_day = {nil, nil, nil};
   std::vector<math::Vector<u8, 4>> color_scratch;
 };
 
@@ -38,12 +45,18 @@ struct MetalTFragment::Impl {
   u64 cached_load_id = UINT64_MAX;
   std::vector<TreeCache> trees;
 
+  // Scratch shared by every tree, sized for the largest. Mirrors TFragment's m_cache.
+  std::vector<u8> vis_temp;
+  std::vector<std::pair<int, int>> draw_idx_temp;
+  std::vector<u32> index_temp;
+  int frame = 0;
+
   void release_trees() {
     for (auto& tree : trees) {
-      if (tree.index_buffer != gpu::kInvalidHandle) {
-        gpu::destroy_buffer(tree.index_buffer);
+      for (int i = 0; i < kFramesInFlight; i++) {
+        tree.index_buffer[i] = nil;
+        tree.time_of_day[i] = nil;
       }
-      tree.time_of_day = nil;
     }
     trees.clear();
   }
@@ -121,7 +134,8 @@ bool MetalTFragment::init(id<MTLDevice> device,
 
 void MetalTFragment::render(id<MTLRenderCommandEncoder> encoder,
                             const LevelData& level,
-                            const GoalBackgroundCameraData& camera) {
+                            const GoalBackgroundCameraData& camera,
+                            const u8* occlusion) {
   m_last_frame_tris = 0;
   if (!m_impl->pso || !level.level) {
     return;
@@ -137,20 +151,29 @@ void MetalTFragment::render(id<MTLRenderCommandEncoder> encoder,
   if (m_impl->cached_load_id != level.load_id) {
     m_impl->release_trees();
     m_impl->trees.resize(in_trees.size());
+    size_t max_inds = 0, max_draws = 0, max_vis = 0;
     for (size_t i = 0; i < in_trees.size(); i++) {
       const auto& in_tree = in_trees[i];
       auto& cache = m_impl->trees[i];
-      // The whole index list, not a per-frame list built from the visibility strings. 0xFFFFFFFF
-      // is Metal's primitive-restart value for a 32-bit index buffer, which is the same sentinel
-      // the .fr3 already uses.
-      cache.index_buffer =
-          gpu::create_buffer(gpu::BufferKind::Index, in_tree.unpacked.indices.size() * sizeof(u32),
-                             in_tree.unpacked.indices.data());
-      cache.time_of_day =
-          [m_impl->device newBufferWithLength:in_tree.colors.color_count * sizeof(float) * 4
-                                      options:MTLResourceStorageModeShared];
+      for (int f = 0; f < kFramesInFlight; f++) {
+        // Sized for the whole index list: that is the worst case, when everything is visible.
+        // 0xFFFFFFFF is Metal's primitive-restart value for a 32-bit index buffer, which is the
+        // same sentinel the .fr3 already uses for its strips.
+        cache.index_buffer[f] =
+            [m_impl->device newBufferWithLength:in_tree.unpacked.indices.size() * sizeof(u32)
+                                        options:MTLResourceStorageModeShared];
+        cache.time_of_day[f] =
+            [m_impl->device newBufferWithLength:in_tree.colors.color_count * sizeof(float) * 4
+                                        options:MTLResourceStorageModeShared];
+      }
       cache.color_scratch.resize(in_tree.colors.color_count);
+      max_inds = std::max(max_inds, in_tree.unpacked.indices.size());
+      max_draws = std::max(max_draws, in_tree.draws.size());
+      max_vis = std::max(max_vis, in_tree.bvh.vis_nodes.size());
     }
+    m_impl->index_temp.resize(max_inds);
+    m_impl->draw_idx_temp.resize(max_draws);
+    m_impl->vis_temp.resize(max_vis);
     m_impl->cached_load_id = level.load_id;
     lg::info("[Metal] tfrag3: cached {} trees for load id {}", in_trees.size(), level.load_id);
   }
@@ -185,19 +208,44 @@ void MetalTFragment::render(id<MTLRenderCommandEncoder> encoder,
   [encoder setVertexBytes:&uniforms length:sizeof(uniforms) atIndex:MetalBufferIndexUniforms];
   [encoder setFragmentBytes:&uniforms length:sizeof(uniforms) atIndex:MetalBufferIndexUniforms];
 
+  const int frame = m_impl->frame;
+  m_impl->frame = (m_impl->frame + 1) % kFramesInFlight;
+
   for (size_t tree_idx = 0; tree_idx < in_trees.size(); tree_idx++) {
     const auto& in_tree = in_trees[tree_idx];
+    // Only the kinds the TFRAG_LEVEL0 bucket owns. TRANS, WATER, DIRT and ICE trees belong to
+    // other buckets with their own blend and alpha settings -- drawing them here put opaque
+    // slabs of a neighbouring area in mid-air.
+    if (in_tree.kind != tfrag3::TFragmentTreeKind::NORMAL &&
+        in_tree.kind != tfrag3::TFragmentTreeKind::LOWRES) {
+      continue;
+    }
     auto& cache = m_impl->trees[tree_idx];
-    id<MTLBuffer> index_buffer = metal_buffer_from_handle(cache.index_buffer);
+    id<MTLBuffer> index_buffer = cache.index_buffer[frame];
+    id<MTLBuffer> tod_buffer = cache.time_of_day[frame];
     id<MTLBuffer> vertex_buffer =
         metal_buffer_from_handle(level.tfrag_vertex_data[0].at(tree_idx));
-    if (!index_buffer || !vertex_buffer || !cache.time_of_day) {
+    if (!index_buffer || !vertex_buffer || !tod_buffer) {
       continue;
     }
 
+    // Frustum culling against the BVH, then an index list built from the visibility strings --
+    // the same two steps the OpenGL renderer's no_multidraw path takes. Without this, geometry the
+    // game has hidden is drawn anyway: whole chunks of a neighbouring area float in mid-air.
+    //
+    cull_check_all_slow(camera.planes, in_tree.bvh.vis_nodes, occlusion, m_impl->vis_temp.data());
+    u32 total_tris = 0;
+    const u32 index_count_total = make_index_list_from_vis_string(
+        m_impl->draw_idx_temp.data(), m_impl->index_temp.data(), in_tree.draws, m_impl->vis_temp,
+        in_tree.unpacked.indices.data(), &total_tris);
+    if (index_count_total == 0) {
+      continue;
+    }
+    memcpy([index_buffer contents], m_impl->index_temp.data(), index_count_total * sizeof(u32));
+
     interp_time_of_day(camera.itimes, in_tree.colors, cache.color_scratch.data());
     // The shader reads these as float4; the interpolation produces bytes.
-    auto* tod = (float*)[cache.time_of_day contents];
+    auto* tod = (float*)[tod_buffer contents];
     for (u32 i = 0; i < in_tree.colors.color_count; i++) {
       const auto& c = cache.color_scratch[i];
       tod[i * 4 + 0] = c[0] / 255.f;
@@ -207,14 +255,12 @@ void MetalTFragment::render(id<MTLRenderCommandEncoder> encoder,
     }
 
     [encoder setVertexBuffer:vertex_buffer offset:0 atIndex:MetalBufferIndexVertex];
-    [encoder setVertexBuffer:cache.time_of_day offset:0 atIndex:MetalBufferIndexTimeOfDay];
+    [encoder setVertexBuffer:tod_buffer offset:0 atIndex:MetalBufferIndexTimeOfDay];
 
-    for (const auto& draw : in_tree.draws) {
-      u32 index_count = 0;
-      for (const auto& group : draw.vis_groups) {
-        index_count += group.num_inds;
-      }
-      if (index_count == 0) {
+    for (size_t draw_idx = 0; draw_idx < in_tree.draws.size(); draw_idx++) {
+      const auto& draw = in_tree.draws[draw_idx];
+      const auto& visible = m_impl->draw_idx_temp[draw_idx];
+      if (visible.second == 0) {
         continue;
       }
 
@@ -230,11 +276,11 @@ void MetalTFragment::render(id<MTLRenderCommandEncoder> encoder,
       [encoder setFragmentTexture:texture atIndex:0];
 
       [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangleStrip
-                          indexCount:index_count
+                          indexCount:visible.second
                            indexType:MTLIndexTypeUInt32
                          indexBuffer:index_buffer
-                   indexBufferOffset:draw.unpacked.idx_of_first_idx_in_full_buffer * sizeof(u32)];
-      m_last_frame_tris += draw.num_triangles;
+                   indexBufferOffset:visible.first * sizeof(u32)];
     }
+    m_last_frame_tris += total_tris;
   }
 }

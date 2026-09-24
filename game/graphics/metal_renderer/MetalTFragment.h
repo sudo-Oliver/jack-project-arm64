@@ -42,10 +42,12 @@ class MetalTFragment {
   bool init(id<MTLDevice> device, id<MTLLibrary> library, MTLPixelFormat color_format,
             MTLPixelFormat depth_format);
 
-  // Draws every tfrag tree of `level`. `camera` comes straight from the DMA the game sent.
+  // Draws every tfrag tree of `level`. `camera` and `occlusion` come straight from the DMA the
+  // game sent; `occlusion` may be null, which leaves frustum culling as the only culling.
   void render(id<MTLRenderCommandEncoder> encoder,
               const LevelData& level,
-              const GoalBackgroundCameraData& camera);
+              const GoalBackgroundCameraData& camera,
+              const u8* occlusion);
 #endif
 
   // Triangles drawn on the last frame, for the log line that says the renderer is doing work.
