@@ -41,6 +41,7 @@ class MetalDisplay : public GfxDisplay {
 
  private:
   void process_sdl_events();
+  void init_imgui();
 
   SDL_Window* m_window = nullptr;
   SDL_MetalView m_view = nullptr;
@@ -53,6 +54,11 @@ class MetalDisplay : public GfxDisplay {
   // The common texture pack ("GAME") has to be in the pool before the game uploads anything that
   // references it. Loaded on the first frame, which is the first point the render thread owns.
   bool m_common_level_loaded = false;
+  // The debug GUI. Its platform half is ImGui's own SDL3 backend, shared with the OpenGL
+  // display; the drawing half is MetalImGui, which is this port's.
+  bool m_imgui_inited = false;
+  bool m_imgui_renderer_ready = false;
+  std::unique_ptr<class MetalImGui> m_imgui;
 };
 
 extern const GfxRendererModule gRendererMetal;

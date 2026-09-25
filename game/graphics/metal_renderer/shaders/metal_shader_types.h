@@ -169,6 +169,18 @@ struct SpriteDrawUniforms {
   float pad0, pad1;
 };
 
+// imgui.metal. ImGui reports positions in screen pixels; these turn them into clip space.
+struct ImGuiUniforms {
+#ifdef __METAL_VERSION__
+  ::metal::float2 scale;
+  ::metal::float2 translate;
+#else
+  struct {
+    float x, y;
+  } scale, translate;
+#endif
+};
+
 // generic.metal. One struct for the whole renderer: the projection the VU program would have
 // applied, the fog, and the per-draw alpha reject and colour multiplier.
 struct GenericUniforms {

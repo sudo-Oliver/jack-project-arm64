@@ -377,6 +377,7 @@ if(APPLE)
                             graphics/metal_renderer/MetalMerc2.mm
                             graphics/metal_renderer/MetalOcean.mm
                             graphics/metal_renderer/MetalDepthCue.mm
+                            graphics/metal_renderer/MetalImGui.mm
                             graphics/metal_renderer/MetalGeneric2.mm
                             graphics/metal_renderer/MetalShadow.mm
                             graphics/metal_renderer/MetalSky.mm

@@ -18,6 +18,7 @@
 #include "common/goal_constants.h"
 
 #include "game/graphics/opengl_renderer/buckets.h"
+#include "game/graphics/opengl_renderer/debug_gui.h"
 #include "common/global_profiler/GlobalProfiler.h"
 #include <atomic>
 
@@ -33,11 +34,15 @@
 #include "game/graphics/opengl_renderer/loader/Loader.h"
 #include "game/graphics/texture/TexturePool.h"
 #include "game/graphics/metal_renderer/MetalGpuResources.h"
+#include "game/graphics/metal_renderer/MetalImGui.h"
 #include "game/graphics/metal_renderer/MetalRenderer.h"
 #include "game/graphics/metal_renderer/MetalShaderLibrary.h"
 #include "game/system/hid/sdl_util.h"
 
 #include "metal_shader_types.h"
+#include "third-party/imgui/imgui.h"
+#include "third-party/imgui/imgui_impl_sdl3.h"
+#include "third-party/imgui/imgui_style.h"
 
 // Holds the Objective-C objects so metal.h can stay plain C++.
 struct MetalContext {
@@ -117,6 +122,11 @@ struct MetalGraphicsData {
   // The bucket table: one entry per bucket, empty where a renderer is not ported yet.
   std::unique_ptr<MetalRenderer> renderer;
   bool renderer_ready = false;
+
+  // The debug menu bar and its windows. Same class the OpenGL backend uses -- it has no graphics
+  // API in it, only ImGui calls.
+  OpenGlDebugGui debug_gui;
+  std::string imgui_filename, imgui_log_filename;
 };
 
 std::unique_ptr<MetalGraphicsData> g_metal_gfx_data;
@@ -320,9 +330,60 @@ MetalDisplay::MetalDisplay(SDL_Window* window,
       m_input_manager(std::make_shared<InputManager>(window)) {
   m_main = is_main;
   m_display_manager->set_input_manager(m_input_manager);
+
+  // The same key the OpenGL display binds, so the debug GUI is reached the same way on both.
+  m_input_manager->register_command(
+      CommandBinding::Source::KEYBOARD,
+      CommandBinding(Gfx::g_debug_settings.hide_imgui_key, [&](const SDL_Event& event) {
+        if (event.type == SDL_EVENT_KEY_DOWN && event.key.repeat == 0) {
+          if (!Gfx::g_debug_settings.ignore_hide_imgui) {
+            set_imgui_visible(!is_imgui_visible());
+          }
+        }
+      }));
+}
+
+void MetalDisplay::init_imgui() {
+  // Same setup the OpenGL display does, minus its renderer backend: the context, the settings
+  // files, the style, and ImGui's SDL3 platform backend.
+  IMGUI_CHECKVERSION();
+  ImGui::CreateContext();
+
+  g_metal_gfx_data->imgui_filename = file_util::get_file_path({"imgui.ini"});
+  g_metal_gfx_data->imgui_log_filename = file_util::get_file_path({"imgui_log.txt"});
+  ImGuiIO& io = ImGui::GetIO();
+  io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+  io.IniFilename = g_metal_gfx_data->imgui_filename.c_str();
+  io.LogFilename = g_metal_gfx_data->imgui_log_filename.c_str();
+
+  if (Gfx::g_debug_settings.alternate_style) {
+    ImGui::applyAlternateStyle();
+  }
+  ImGui::applyFontStyle();
+
+  ImGui_ImplSDL3_InitForMetal(m_window);
+  // imgui's setup calls functions that may fail intentionally and leaves the error set.
+  SDL_ClearError();
+
+  // The renderer has to exist before the first NewFrame: ImGui builds its font atlas through the
+  // renderer backend, and NewFrame reads the built font. Doing it lazily on the first visible
+  // frame crashes in ImGui::Begin.
+  m_imgui = std::make_unique<MetalImGui>();
+  m_imgui_renderer_ready = m_imgui->init(m_ctx->device, m_ctx->library, kMetalColorFormat);
+  if (!m_imgui_renderer_ready) {
+    lg::error("[Metal] debug GUI failed to initialise; it will not be drawn");
+  }
+  m_imgui_inited = true;
+  set_imgui_visible(Gfx::g_debug_settings.show_imgui);
+  g_metal_gfx_data->debug_gui.master_enable = Gfx::g_debug_settings.show_imgui;
 }
 
 MetalDisplay::~MetalDisplay() {
+  if (m_imgui_inited) {
+    ImGui_ImplSDL3_Shutdown();
+    ImGui::DestroyContext();
+    m_imgui_inited = false;
+  }
   metal_shutdown_gpu_resource_backend();
   if (m_ctx) {
     m_ctx->queue = nil;
@@ -347,6 +408,9 @@ void MetalDisplay::process_sdl_events() {
       m_should_quit = true;
     }
     m_display_manager->process_sdl_event(evt);
+    if (m_imgui_inited) {
+      ImGui_ImplSDL3_ProcessEvent(&evt);
+    }
     m_input_manager->process_sdl_event(evt);
   }
 }
@@ -365,11 +429,29 @@ void MetalDisplay::render() {
     m_input_manager->poll_mouse_data();
     m_input_manager->finish_polling();
   }
+  if (!m_imgui_inited) {
+    auto p = scoped_prof("startup::metal::init_imgui");
+    init_imgui();
+  }
   process_sdl_events();
   {
     auto p = scoped_prof("display-manager-ee-events");
     m_display_manager->process_ee_events();
   }
+
+  // The debug GUI's frame. It has to be opened and closed on every frame this function runs,
+  // including the ones that draw nothing, or ImGui asserts on the next NewFrame.
+  {
+    auto p = scoped_prof("imgui-new-frame");
+    ImGui_ImplSDL3_NewFrame();
+    ImGui::NewFrame();
+  }
+  g_metal_gfx_data->debug_gui.master_enable = is_imgui_visible();
+  if (is_imgui_visible()) {
+    auto p = scoped_prof("debug-gui");
+    g_metal_gfx_data->debug_gui.draw(g_metal_gfx_data->dma_copier.get_last_result().stats);
+  }
+  ImGui::Render();
 
   // Keep the drawable the same size as the window's backing store.
   int w = 0, h = 0;
@@ -617,6 +699,12 @@ void MetalDisplay::render() {
       [present_enc setViewport:(MTLViewport){0.0, 0.0, (double)window_w, (double)window_h, 0.0,
                                             1.0}];
       [present_enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+
+      // The debug GUI goes over the finished frame, at the window's resolution rather than the
+      // game's: it is text, and it should be as sharp as the display allows.
+      if (m_imgui_renderer_ready && is_imgui_visible()) {
+        m_imgui->render(ImGui::GetDrawData(), present_enc, window_w, window_h);
+      }
       [present_enc endEncoding];
     }
 
