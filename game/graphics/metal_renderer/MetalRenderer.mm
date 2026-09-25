@@ -15,6 +15,7 @@
 #include "game/graphics/metal_renderer/MetalOcean.h"
 #include "game/graphics/metal_renderer/MetalShrub.h"
 #include "game/graphics/metal_renderer/MetalSky.h"
+#include "game/graphics/metal_renderer/MetalSprite3.h"
 #include "game/graphics/metal_renderer/MetalTFragment.h"
 #include "game/graphics/metal_renderer/MetalTextureUploadHandler.h"
 #include "game/graphics/metal_renderer/MetalTie3.h"
@@ -144,6 +145,10 @@ void MetalRenderer::init_bucket_table() {
     m_bucket_renderers[(int)id] =
         std::make_unique<MetalMerc2BucketRenderer>(name, (int)id, m_merc2);
   }
+
+  // The sprite bucket: the particles, the HUD, the menus and the fake shadows.
+  m_bucket_renderers[(int)BucketId::SPRITE] =
+      std::make_unique<MetalSprite3>("sprite", (int)BucketId::SPRITE);
 
   // The GIF buckets: debug draws and the subtitle text. Batch sizes are the OpenGL table's.
   m_bucket_renderers[(int)BucketId::DEBUG] =
@@ -338,6 +343,8 @@ void MetalRenderer::render(DmaFollower dma,
       m_last_frame_tris += mid->last_frame_tris();
     } else if (auto* near_ocean = dynamic_cast<MetalOceanNear*>(renderer.get())) {
       m_last_frame_tris += near_ocean->last_frame_tris();
+    } else if (auto* sprite = dynamic_cast<MetalSprite3*>(renderer.get())) {
+      m_last_frame_tris += sprite->last_frame_tris();
     }
   }
   if (m_merc2) {

@@ -52,6 +52,7 @@ inline const std::vector<ShaderDef>& all_shaders() {
       {"ocean_common.metal", "ocean_common_vert", "ocean_common_frag"},
       {"ocean_texture.metal", "ocean_texture_vert", "ocean_texture_frag"},
       {"ocean_texture_mipmap.metal", "ocean_texture_mipmap_vert", "ocean_texture_mipmap_frag"},
+      {"sprite3.metal", "sprite3_vert", "sprite3_frag"},
       {"direct_basic_textured.metal", "direct_basic_textured_vert",
        "direct_basic_textured_frag"},
   };

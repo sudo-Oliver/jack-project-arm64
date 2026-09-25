@@ -129,3 +129,46 @@ enum { MetalMercVectorsPerBone = 8 };
 // Buffer slot the bone vectors are bound to in merc2.metal.
 enum { MetalBufferIndexBones = 3 };
 
+// sprite3.metal. Everything the sprite VU program needs, set once per frame. The 75-entry HUD
+// offset table dominates the size, which is why the two alpha-test bounds are in their own struct
+// below rather than in here: they change per draw, and re-sending 1.7 KB for two floats is waste.
+//
+// Field order is the GLSL's, with the matrices and float4s first so the scalars do not sit in the
+// padding Metal inserts before a 16-byte-aligned member.
+enum { MetalSpriteHudUserCount = 75 };
+struct Sprite3Uniforms {
+  METAL_FLOAT4X4 camera;
+  METAL_FLOAT4X4 hud_matrix;
+  METAL_FLOAT4 hvdf_offset;
+  METAL_FLOAT4 hud_hvdf_offset;
+  METAL_FLOAT4 basis_x;
+  METAL_FLOAT4 basis_y;
+  METAL_FLOAT4 xy_array[8];
+  METAL_FLOAT4 xyz_array[4];
+  METAL_FLOAT4 st_array[4];
+  METAL_FLOAT4 hud_hvdf_user[MetalSpriteHudUserCount];
+  float pfog0;
+  float fog_min;
+  float fog_max;
+  float min_scale;
+  float max_scale;
+  float deg_to_rad;
+  float inv_area;
+  float scissor_adjust;
+  float height_scale;
+  float pad0, pad1, pad2;
+};
+
+// The per-draw half of sprite3.metal, and of the distorter: the alpha-test window the fragment
+// shader discards outside of.
+struct SpriteDrawUniforms {
+  float alpha_min;
+  float alpha_max;
+  float pad0, pad1;
+};
+
+// sprite_distort.metal. u_color is the distorter's global tint, from its sine table.
+struct SpriteDistortUniforms {
+  METAL_FLOAT4 u_color;
+};
+
