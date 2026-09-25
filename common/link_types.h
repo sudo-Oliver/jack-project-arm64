@@ -74,3 +74,9 @@ struct LinkHeaderV5 {
 // when a u32/s32 symbol link contains this value, (s7 + <val>) should be a 4-byte aligned address,
 // not including the 1 byte symbol offset. (no effect in jak 1).
 constexpr u32 LINK_SYM_NO_OFFSET_FLAG = 0xbadbeef;
+
+// In ARM64 v3 objects, link_infos[].size carries the page-aligned boundary between the
+// executable functions and the writable static data of a segment. The high bit marks this as
+// private metadata, so x86 objects keep their original header bytes and the runtime can tell an
+// object built before this existed from one that carries the boundary.
+constexpr u32 LINK_ARM64_EXECUTABLE_SIZE_FLAG = 0x80000000;

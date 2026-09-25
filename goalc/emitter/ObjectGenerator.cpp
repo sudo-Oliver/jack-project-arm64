@@ -16,6 +16,8 @@
 #include "ObjectGenerator.h"
 
 #include "common/goal_constants.h"
+#include "common/jit_memory.h"
+#include "common/link_types.h"
 #include "common/type_system/TypeSystem.h"
 #include "common/versions/versions.h"
 
@@ -94,15 +96,25 @@ ObjectFileData ObjectGenerator::generate_data_v3(const TypeSystem* ts) {
   // do static data layout (step 2, part 2)
   for (int seg = N_SEG; seg-- > 0;) {
     auto& data = m_data_by_seg.at(seg);
+    bool first_static = true;
     for (auto& s : m_static_data_by_seg.at(seg)) {
       // align
-      while (data.size() % s.min_align) {
+      size_t alignment = s.min_align;
+      if (m_instruction_set == InstructionSet::ARM64 && first_static) {
+        // Start the static data of a segment on its own page. Apple Silicon refuses to map a
+        // page both writable and executable, and GOAL writes to its static objects at runtime,
+        // so the runtime has to be able to protect the functions as RX while leaving everything
+        // from here on writable. That is only possible if the two never share a page.
+        alignment = jit_memory::page_size();
+      }
+      while (data.size() % alignment) {
         insert_data<u8>(seg, 0);
       }
 
       s.location = data.size();
 
       data.insert(data.end(), s.data.begin(), s.data.end());
+      first_static = false;
     }
   }
 
@@ -734,6 +746,19 @@ std::vector<u8> ObjectGenerator::generate_header_v3() {
   for (int i = N_SEG; i-- > 0;) {
     table.link_seg[i].offset = offset;                 // start of the link
     table.link_seg[i].size = m_link_by_seg[i].size();  // size of the link data
+    if (m_instruction_set == InstructionSet::ARM64) {
+      // The runtime never reads the link size -- it walks the link data itself -- so use the
+      // field to tell it where this segment's functions end and its static data begins. The
+      // static data was page-aligned above, so the runtime can protect everything below the
+      // boundary as RX and leave the rest writable. The condition is the target instruction set
+      // rather than the host: this describes the object file, and only an ARM64 runtime reads it.
+      uint32_t executable_size = m_data_by_seg[i].size();
+      if (!m_static_data_by_seg.at(i).empty()) {
+        executable_size = m_static_data_by_seg.at(i).front().location;
+      }
+      ASSERT(executable_size < LINK_ARM64_EXECUTABLE_SIZE_FLAG);
+      table.link_seg[i].size = LINK_ARM64_EXECUTABLE_SIZE_FLAG | executable_size;
+    }
     offset += m_link_by_seg[i].size();                 // to next link data
     total_link_size += m_link_by_seg[i].size();        // need to track this.
   }

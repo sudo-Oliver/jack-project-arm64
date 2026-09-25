@@ -7,6 +7,7 @@ if(CMAKE_APPLE_SILICON_PROCESSOR STREQUAL "arm64")
         # ${CMAKE_CURRENT_LIST_DIR}/test_goal_kernel2.cpp
         # ${CMAKE_CURRENT_LIST_DIR}/test_goal_kernel3.cpp
         ${CMAKE_CURRENT_LIST_DIR}/test_jit_memory.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/test_object_generator_arm64.cpp
         ${CMAKE_CURRENT_LIST_DIR}/test_CodeTester.cpp
         ${CMAKE_CURRENT_LIST_DIR}/test_arm64_ir_core.cpp
         ${CMAKE_CURRENT_LIST_DIR}/test_arm64_ir_symbols.cpp
