@@ -179,6 +179,14 @@ id<MTLSamplerState> MetalDrawStateCache::sampler(DrawMode mode) {
     sd.minFilter = MTLSamplerMinMagFilterLinear;
     sd.magFilter = MTLSamplerMinMagFilterLinear;
     sd.mipFilter = MTLSamplerMipFilterLinear;
+    // Anisotropic filtering, which the OpenGL backend only ever sets on the texture animator's
+    // output. Most of what this game shows is ground and water seen at a grazing angle, and
+    // that is exactly what plain trilinear filtering blurs: the mip level is chosen for the
+    // shortest axis of the footprint, so a surface stretching away from the camera is sampled
+    // from a level far coarser than it needs. Sixteen taps is the cap every Apple GPU supports
+    // and it costs nothing on the draws that do not need it, since the hardware only takes the
+    // extra taps where the footprint is actually stretched.
+    sd.maxAnisotropy = 16;
   } else {
     sd.minFilter = MTLSamplerMinMagFilterNearest;
     sd.magFilter = MTLSamplerMinMagFilterNearest;

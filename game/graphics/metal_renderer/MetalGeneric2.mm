@@ -191,6 +191,9 @@ struct MetalGeneric2::Impl {
     sd.minFilter = filter ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
     sd.magFilter = filter ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
     sd.mipFilter = MTLSamplerMipFilterNotMipmapped;
+    if (filter) {
+      sd.maxAnisotropy = 16;  // see the note in MetalDrawStateCache::sampler
+    }
     id<MTLSamplerState> s = [device newSamplerStateWithDescriptor:sd];
     samplers[key] = s;
     return s;
