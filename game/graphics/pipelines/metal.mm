@@ -49,6 +49,17 @@ struct MetalContext {
   // Depth buffer for the world geometry. Recreated whenever the drawable changes size.
   id<MTLTexture> depth_texture = nil;
   u32 depth_w = 0, depth_h = 0;
+
+  // The game is drawn into this rather than straight into the drawable, and copied onto the
+  // drawable at the end of the frame. Two renderers -- the depth cue and the sprite distorter --
+  // have to sample the frame they are drawing into, and Metal cannot sample a drawable that the
+  // window server owns. `snapshot_texture` is where that sample comes from.
+  id<MTLTexture> scene_texture = nil;
+  id<MTLTexture> snapshot_texture = nil;
+  u32 scene_w = 0, scene_h = 0;
+
+  id<MTLRenderPipelineState> present_pso = nil;
+  id<MTLSamplerState> present_sampler = nil;
 };
 
 // Pixel formats the render pass and every pipeline state must agree on.
@@ -443,6 +454,21 @@ void MetalDisplay::render() {
     // frame did not.
     const u32 dw = (u32)drawable.texture.width;
     const u32 dh = (u32)drawable.texture.height;
+    if (!m_ctx->scene_texture || m_ctx->scene_w != dw || m_ctx->scene_h != dh) {
+      MTLTextureDescriptor* sd =
+          [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:kMetalColorFormat
+                                                             width:dw
+                                                            height:dh
+                                                         mipmapped:NO];
+      sd.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+      sd.storageMode = MTLStorageModePrivate;
+      m_ctx->scene_texture = [m_ctx->device newTextureWithDescriptor:sd];
+      // Same size and format: the snapshot is a straight copy of the scene so far.
+      sd.usage = MTLTextureUsageShaderRead;
+      m_ctx->snapshot_texture = [m_ctx->device newTextureWithDescriptor:sd];
+      m_ctx->scene_w = dw;
+      m_ctx->scene_h = dh;
+    }
     if (!m_ctx->depth_texture || m_ctx->depth_w != dw || m_ctx->depth_h != dh) {
       MTLTextureDescriptor* dd =
           [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:kMetalDepthFormat
@@ -457,7 +483,7 @@ void MetalDisplay::render() {
     }
 
     MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
-    pass.colorAttachments[0].texture = drawable.texture;
+    pass.colorAttachments[0].texture = m_ctx->scene_texture;
     pass.colorAttachments[0].loadAction = MTLLoadActionClear;
     pass.colorAttachments[0].storeAction = MTLStoreActionStore;
     // Distinctive clear colour: proof the Metal path is what is on screen, not OpenGL.
@@ -485,9 +511,65 @@ void MetalDisplay::render() {
       if (!g_metal_gfx_data->renderer_ready) {
         g_metal_gfx_data->renderer_ready = g_metal_gfx_data->renderer->init(
             m_ctx->device, m_ctx->library, kMetalColorFormat, kMetalDepthFormat);
+        if (g_metal_gfx_data->renderer_ready && !m_ctx->present_pso) {
+          MTLRenderPipelineDescriptor* pd = [[MTLRenderPipelineDescriptor alloc] init];
+          pd.vertexFunction = [m_ctx->library newFunctionWithName:@"present_vert"];
+          pd.fragmentFunction = [m_ctx->library newFunctionWithName:@"present_frag"];
+          pd.colorAttachments[0].pixelFormat = kMetalColorFormat;
+          NSError* perr = nil;
+          m_ctx->present_pso = [m_ctx->device newRenderPipelineStateWithDescriptor:pd
+                                                                             error:&perr];
+          if (!m_ctx->present_pso) {
+            lg::error("[Metal] present pipeline failed: {}",
+                      perr ? [[perr localizedDescription] UTF8String] : "unknown error");
+          }
+          MTLSamplerDescriptor* smp = [[MTLSamplerDescriptor alloc] init];
+          smp.minFilter = MTLSamplerMinMagFilterLinear;
+          smp.magFilter = MTLSamplerMinMagFilterLinear;
+          smp.sAddressMode = MTLSamplerAddressModeClampToEdge;
+          smp.tAddressMode = MTLSamplerAddressModeClampToEdge;
+          m_ctx->present_sampler = [m_ctx->device newSamplerStateWithDescriptor:smp];
+        }
       }
       if (g_metal_gfx_data->renderer_ready) {
-        g_metal_gfx_data->renderer->render(dma_for_frame, enc, offscreen_cmd, dw, dh);
+        // How a renderer gets the frame so far as a texture: end this pass (keeping its colour,
+        // depth and stencil), copy the colour out, and start a pass that loads all three back.
+        // On an Apple GPU that is one tile store and one tile load, and it only happens on the
+        // frames where a renderer actually asks.
+        auto snapshot_fn = [&](MetalRenderState* rs) -> id<MTLTexture> {
+          [enc setColorStoreAction:MTLStoreActionStore atIndex:0];
+          [enc setDepthStoreAction:MTLStoreActionStore];
+          [enc setStencilStoreAction:MTLStoreActionStore];
+          [enc endEncoding];
+
+          id<MTLBlitCommandEncoder> blit = [cmd blitCommandEncoder];
+          [blit copyFromTexture:m_ctx->scene_texture
+                    sourceSlice:0
+                    sourceLevel:0
+                     sourceOrigin:MTLOriginMake(0, 0, 0)
+                       sourceSize:MTLSizeMake(dw, dh, 1)
+                      toTexture:m_ctx->snapshot_texture
+               destinationSlice:0
+               destinationLevel:0
+              destinationOrigin:MTLOriginMake(0, 0, 0)];
+          [blit endEncoding];
+
+          MTLRenderPassDescriptor* resume = [MTLRenderPassDescriptor renderPassDescriptor];
+          resume.colorAttachments[0].texture = m_ctx->scene_texture;
+          resume.colorAttachments[0].loadAction = MTLLoadActionLoad;
+          resume.colorAttachments[0].storeAction = MTLStoreActionStore;
+          resume.depthAttachment.texture = m_ctx->depth_texture;
+          resume.depthAttachment.loadAction = MTLLoadActionLoad;
+          resume.depthAttachment.storeAction = MTLStoreActionDontCare;
+          resume.stencilAttachment.texture = m_ctx->depth_texture;
+          resume.stencilAttachment.loadAction = MTLLoadActionLoad;
+          resume.stencilAttachment.storeAction = MTLStoreActionDontCare;
+          enc = [cmd renderCommandEncoderWithDescriptor:resume];
+          rs->encoder = enc;
+          return m_ctx->snapshot_texture;
+        };
+        enc = g_metal_gfx_data->renderer->render(dma_for_frame, enc, offscreen_cmd, dw, dh,
+                                                 snapshot_fn);
         static u32 logged_tris = 0;
         if (g_metal_gfx_data->renderer->last_frame_tris() != logged_tris) {
           logged_tris = g_metal_gfx_data->renderer->last_frame_tris();
@@ -498,6 +580,21 @@ void MetalDisplay::render() {
 
     [enc endEncoding];
     [offscreen_cmd commit];
+
+    // Put the scene on screen. The OpenGL backend's equivalent is the blit out of its render FBO.
+    if (m_ctx->present_pso) {
+      MTLRenderPassDescriptor* present = [MTLRenderPassDescriptor renderPassDescriptor];
+      present.colorAttachments[0].texture = drawable.texture;
+      present.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+      present.colorAttachments[0].storeAction = MTLStoreActionStore;
+      id<MTLRenderCommandEncoder> present_enc =
+          [cmd renderCommandEncoderWithDescriptor:present];
+      [present_enc setRenderPipelineState:m_ctx->present_pso];
+      [present_enc setFragmentTexture:m_ctx->scene_texture atIndex:0];
+      [present_enc setFragmentSamplerState:m_ctx->present_sampler atIndex:0];
+      [present_enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+      [present_enc endEncoding];
+    }
 
     // Debug readback: OPENGOAL_METAL_SCREENSHOT=<path> writes the first fully-drawn frame to a
     // PNG and stops. Metal draws into a drawable the window server owns, so there is no way to

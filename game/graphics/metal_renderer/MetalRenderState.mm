@@ -186,6 +186,10 @@ id<MTLSamplerState> MetalDrawStateCache::sampler(DrawMode mode) {
   return sampler;
 }
 
+id<MTLTexture> MetalRenderState::snapshot_scene() {
+  return snapshot_scene_fn ? snapshot_scene_fn(this) : nil;
+}
+
 const u8* MetalRenderState::occlusion_for_level(int level_id) const {
   if (level_id < 0 || level_id >= (int)jak1::LEVEL_MAX) {
     return nullptr;

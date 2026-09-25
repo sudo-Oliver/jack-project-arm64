@@ -13,6 +13,7 @@
  * the device, the command encoder, and the translation from GS draw modes to Metal state objects.
  */
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -99,6 +100,18 @@ struct MetalRenderState {
   id<MTLCommandBuffer> offscreen_cmd = nil;
   MTLPixelFormat color_format = MTLPixelFormatInvalid;
   MTLPixelFormat depth_format = MTLPixelFormatInvalid;
+
+  // Hand back a texture holding the colour drawn so far this frame, for the renderers that have
+  // to read the frame they are drawing into: the depth cue and the sprite distorter.
+  //
+  // Metal cannot sample the target of the pass that is currently encoding, so this ends that
+  // pass, copies its colour out, and starts a new one that keeps the colour, depth and stencil
+  // already there. `encoder` is replaced with the new one, so a caller must re-read it -- and
+  // every other renderer already reads render_state->encoder per draw, so nothing else notices.
+  //
+  // Returns nil if the backend did not install a hook (an offscreen pass, for instance).
+  id<MTLTexture> snapshot_scene();
+  std::function<id<MTLTexture>(MetalRenderState*)> snapshot_scene_fn;
 
   std::shared_ptr<TexturePool> texture_pool;
   // merc draws the eyes with textures this renderer builds, so it has to be reachable from a

@@ -289,13 +289,15 @@ void MetalRenderer::scan_frame_state(DmaFollower dma) {
   }
 }
 
-void MetalRenderer::render(DmaFollower dma,
-                           id<MTLRenderCommandEncoder> encoder,
-                           id<MTLCommandBuffer> offscreen_cmd,
-                           u32 viewport_width,
-                           u32 viewport_height) {
+id<MTLRenderCommandEncoder> MetalRenderer::render(
+    DmaFollower dma,
+    id<MTLRenderCommandEncoder> encoder,
+    id<MTLCommandBuffer> offscreen_cmd,
+    u32 viewport_width,
+    u32 viewport_height,
+    std::function<id<MTLTexture>(MetalRenderState*)> snapshot_fn) {
   if (!m_ready) {
-    return;
+    return encoder;
   }
   m_last_frame_tris = 0;
   if (m_merc2) {
@@ -305,6 +307,7 @@ void MetalRenderer::render(DmaFollower dma,
     m_generic2->reset_tri_count();
   }
   m_render_state.encoder = encoder;
+  m_render_state.snapshot_scene_fn = std::move(snapshot_fn);
   m_render_state.offscreen_cmd = offscreen_cmd;
   m_render_state.viewport_width = viewport_width;
   m_render_state.viewport_height = viewport_height;
@@ -328,7 +331,8 @@ void MetalRenderer::render(DmaFollower dma,
   dma.read_and_advance();  // its ret tag
   if (dma.current_tag_offset() != next_bucket) {
     lg::error("[Metal] frame did not start with the default-register chain");
-    return;
+    m_render_state.snapshot_scene_fn = nullptr;
+    return m_render_state.encoder;
   }
   next_bucket += 16;
 
@@ -384,6 +388,10 @@ void MetalRenderer::render(DmaFollower dma,
   if (m_generic2) {
     m_last_frame_tris += m_generic2->last_frame_tris();
   }
+  // A renderer that took a snapshot replaced the encoder; the caller ends whichever is current.
+  id<MTLRenderCommandEncoder> final_encoder = m_render_state.encoder;
   m_render_state.encoder = nil;
+  m_render_state.snapshot_scene_fn = nullptr;
   m_render_state.offscreen_cmd = nil;
+  return final_encoder;
 }
