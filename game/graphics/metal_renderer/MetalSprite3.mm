@@ -45,11 +45,22 @@ struct MetalSprite3::Impl {
 
   Sprite3Uniforms uniforms{};
 
+  // The distorter. Its mesh is the sine table with the sprite-specific parts removed, one mesh
+  // per sprite resolution, rebuilt only when the game sends a new aspect ratio.
+  id<MTLRenderPipelineState> distort_pso = nil;
+  id<MTLDepthStencilState> distort_depth = nil;
+  id<MTLSamplerState> distort_sampler = nil;
+  id<MTLBuffer> distort_mesh = nil;
+  bool distort_mesh_dirty = true;
+  std::array<id<MTLBuffer>, kMetalFramesInFlight> distort_instances = {nil, nil, nil};
+
   void release() {
     for (int i = 0; i < kMetalFramesInFlight; i++) {
       vertex_buffers[i] = nil;
       index_buffers[i] = nil;
+      distort_instances[i] = nil;
     }
+    distort_mesh = nil;
   }
 };
 
@@ -117,6 +128,10 @@ bool MetalSprite3::init(MetalRenderState* render_state) {
     }
   }
 
+  if (!init_distort(render_state)) {
+    return false;
+  }
+
   // Build the pipeline the default draw mode needs now, rather than mid-frame.
   DrawMode probe;
   probe.set_alpha_blend(DrawMode::AlphaBlend::SRC_DST_SRC_DST);
@@ -175,12 +190,162 @@ void MetalSprite3::add_tri_count(u32 tris) {
 }
 
 bool MetalSprite3::distort_wants_instancing() const {
-  // The distorter is not drawn yet: it needs a copy of the frame so far, which means splitting
-  // the render pass. Its DMA is still read by the core, so the bucket stays in step.
+  // Only the instanced form is ported. The OpenGL backend keeps a non-instanced path for drivers
+  // without instancing; there is no such Metal driver.
   return true;
 }
 
-void MetalSprite3::distort_draw_gpu(bool /*instanced*/) {}
+void MetalSprite3::distort_instanced_mesh_changed() {
+  m_impl->distort_mesh_dirty = true;
+}
+
+bool MetalSprite3::init_distort(MetalRenderState* render_state) {
+  id<MTLFunction> vert = [render_state->library newFunctionWithName:@"sprite_distort_vert"];
+  id<MTLFunction> frag = [render_state->library newFunctionWithName:@"sprite_distort_frag"];
+  if (!vert || !frag) {
+    lg::error("[Metal] sprite_distort shader entry points missing from the library");
+    return false;
+  }
+
+  MTLVertexDescriptor* vd = [[MTLVertexDescriptor alloc] init];
+  vd.attributes[0].format = MTLVertexFormatFloat3;
+  vd.attributes[0].offset = offsetof(SpriteDistortVertex, xyz);
+  vd.attributes[0].bufferIndex = MetalBufferIndexVertex;
+  vd.attributes[1].format = MTLVertexFormatFloat2;
+  vd.attributes[1].offset = offsetof(SpriteDistortVertex, st);
+  vd.attributes[1].bufferIndex = MetalBufferIndexVertex;
+  vd.attributes[2].format = MTLVertexFormatFloat4;
+  vd.attributes[2].offset = offsetof(SpriteDistortInstanceData, x_y_z_s);
+  vd.attributes[2].bufferIndex = MetalBufferIndexInstance;
+  vd.attributes[3].format = MTLVertexFormatFloat4;
+  vd.attributes[3].offset = offsetof(SpriteDistortInstanceData, sx_sy_sz_t);
+  vd.attributes[3].bufferIndex = MetalBufferIndexInstance;
+  vd.layouts[MetalBufferIndexVertex].stride = sizeof(SpriteDistortVertex);
+  vd.layouts[MetalBufferIndexVertex].stepFunction = MTLVertexStepFunctionPerVertex;
+  vd.layouts[MetalBufferIndexInstance].stride = sizeof(SpriteDistortInstanceData);
+  vd.layouts[MetalBufferIndexInstance].stepFunction = MTLVertexStepFunctionPerInstance;
+
+  MTLRenderPipelineDescriptor* desc = [[MTLRenderPipelineDescriptor alloc] init];
+  desc.vertexFunction = vert;
+  desc.fragmentFunction = frag;
+  desc.vertexDescriptor = vd;
+  desc.depthAttachmentPixelFormat = render_state->depth_format;
+  if (render_state->depth_format == MTLPixelFormatDepth32Float_Stencil8) {
+    desc.stencilAttachmentPixelFormat = render_state->depth_format;
+  }
+  auto* color = desc.colorAttachments[0];
+  color.pixelFormat = render_state->color_format;
+  // The distorter's GS setup is always SOURCE/DEST/SOURCE/DEST, checked by the core's asserts.
+  color.blendingEnabled = YES;
+  color.rgbBlendOperation = MTLBlendOperationAdd;
+  color.alphaBlendOperation = MTLBlendOperationAdd;
+  color.sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+  color.destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+  color.sourceAlphaBlendFactor = MTLBlendFactorOne;
+  color.destinationAlphaBlendFactor = MTLBlendFactorZero;
+
+  NSError* err = nil;
+  m_impl->distort_pso = [m_impl->device newRenderPipelineStateWithDescriptor:desc error:&err];
+  if (!m_impl->distort_pso) {
+    lg::error("[Metal] sprite_distort pipeline failed: {}",
+              err ? [[err localizedDescription] UTF8String] : "unknown error");
+    return false;
+  }
+
+  // Its GS setup always has zmsk set, so it never writes depth. It does test it.
+  MTLDepthStencilDescriptor* dd = [[MTLDepthStencilDescriptor alloc] init];
+  dd.depthCompareFunction = MTLCompareFunctionGreaterEqual;
+  dd.depthWriteEnabled = NO;
+  m_impl->distort_depth = [m_impl->device newDepthStencilStateWithDescriptor:dd];
+
+  // tex1.mmag is asserted to be 1, and the coordinates are clamped: this samples the frame.
+  MTLSamplerDescriptor* sd = [[MTLSamplerDescriptor alloc] init];
+  sd.minFilter = MTLSamplerMinMagFilterLinear;
+  sd.magFilter = MTLSamplerMinMagFilterLinear;
+  sd.sAddressMode = MTLSamplerAddressModeClampToEdge;
+  sd.tAddressMode = MTLSamplerAddressModeClampToEdge;
+  m_impl->distort_sampler = [m_impl->device newSamplerStateWithDescriptor:sd];
+
+  m_impl->distort_mesh = [m_impl->device
+      newBufferWithLength:m_sprite_distorter_vertices_instanced.size() * sizeof(SpriteDistortVertex)
+                  options:MTLResourceStorageModeShared];
+  for (int i = 0; i < kMetalFramesInFlight; i++) {
+    m_impl->distort_instances[i] = [m_impl->device
+        newBufferWithLength:(NSUInteger)MAX_DISTORT_SPRITES * sizeof(SpriteDistortInstanceData)
+                    options:MTLResourceStorageModeShared];
+    if (!m_impl->distort_instances[i]) {
+      return false;
+    }
+  }
+  return m_impl->distort_mesh != nil;
+}
+
+void MetalSprite3::distort_draw_gpu(bool /*instanced*/) {
+  if (!m_impl->ready || !m_impl->distort_pso || m_distort_stats.total_tris == 0) {
+    return;
+  }
+  auto* render_state = m_current_render_state;
+  if (!render_state) {
+    return;
+  }
+
+  // The distorter samples the frame drawn so far, so the pass has to be split here. This is the
+  // only place in a Jak 1 frame that asks for it, and only on frames with a distorter in them.
+  id<MTLTexture> snapshot = render_state->snapshot_scene();
+  id<MTLRenderCommandEncoder> encoder = render_state->encoder;
+  if (!snapshot || !encoder) {
+    return;
+  }
+
+  if (m_impl->distort_mesh_dirty) {
+    m_impl->distort_mesh_dirty = false;
+    memcpy([m_impl->distort_mesh contents], m_sprite_distorter_vertices_instanced.data(),
+           m_sprite_distorter_vertices_instanced.size() * sizeof(SpriteDistortVertex));
+  }
+
+  SpriteDistortUniforms u{};
+  u.u_color = {m_sprite_distorter_sine_tables.color.x() / 255.f,
+               m_sprite_distorter_sine_tables.color.y() / 255.f,
+               m_sprite_distorter_sine_tables.color.z() / 255.f,
+               m_sprite_distorter_sine_tables.color.w() / 255.f};
+  u.height_scale = 1.f;
+  u.scissor_height = 448.f;
+
+  const int frame = m_impl->frame;
+  id<MTLBuffer> inst_buf = m_impl->distort_instances[frame];
+  auto* instances_out = (SpriteDistortInstanceData*)[inst_buf contents];
+
+  [encoder setRenderPipelineState:m_impl->distort_pso];
+  [encoder setDepthStencilState:m_impl->distort_depth];
+  [encoder setFragmentSamplerState:m_impl->distort_sampler atIndex:0];
+  [encoder setFragmentTexture:snapshot atIndex:0];
+  [encoder setVertexBuffer:m_impl->distort_mesh offset:0 atIndex:MetalBufferIndexVertex];
+  [encoder setVertexBytes:&u length:sizeof(u) atIndex:MetalBufferIndexUniforms];
+  [encoder setFragmentBytes:&u length:sizeof(u) atIndex:MetalBufferIndexUniforms];
+
+  // One draw per resolution group, the same split the OpenGL renderer makes: a group shares a
+  // mesh, so its sprites are instances of it.
+  u32 instance_write = 0;
+  int vert_offset = 0;
+  for (int res = 3; res < 12; res++) {
+    const auto& instances = m_sprite_distorter_instances_by_res[res];
+    const int num_verts = res * 5;
+    if (!instances.empty() && instance_write + instances.size() <= (u32)MAX_DISTORT_SPRITES) {
+      memcpy(instances_out + instance_write, instances.data(),
+             instances.size() * sizeof(SpriteDistortInstanceData));
+      [encoder setVertexBuffer:inst_buf
+                        offset:instance_write * sizeof(SpriteDistortInstanceData)
+                       atIndex:MetalBufferIndexInstance];
+      [encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip
+                  vertexStart:vert_offset
+                  vertexCount:num_verts
+                instanceCount:instances.size()];
+      instance_write += instances.size();
+      m_last_frame_tris += res * 2 * instances.size();
+    }
+    vert_offset += num_verts;
+  }
+}
 
 void MetalSprite3::set_frame_constants() {
   auto& u = m_impl->uniforms;

@@ -47,12 +47,15 @@ class MetalSprite3 : public MetalBucketRenderer, public Sprite3Core {
   void flush_sprites_gpu(bool double_draw) override;
   void distort_draw_gpu(bool instanced) override;
   bool distort_wants_instancing() const override;
+  void distort_instanced_mesh_changed() override;
   void direct_reset_state() override;
   void direct_render_vif(u32 vif0, u32 vif1, const u8* data, u32 size) override;
   void direct_flush() override;
   void add_tri_count(u32 tris) override;
 
  private:
+  bool init_distort(MetalRenderState* render_state);
+
   struct Impl;
   std::unique_ptr<Impl> m_impl;
   MetalDirect m_direct;

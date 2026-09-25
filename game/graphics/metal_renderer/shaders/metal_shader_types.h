@@ -32,6 +32,8 @@ enum MetalBufferIndex {
   MetalBufferIndexVertex = 0,
   MetalBufferIndexUniforms = 1,
   MetalBufferIndexTimeOfDay = 2,
+  // Per-instance vertex data, for the one renderer that instances: the sprite distorter.
+  MetalBufferIndexInstance = 4,
 };
 
 
@@ -200,5 +202,8 @@ struct ShadowUniforms {
 // sprite_distort.metal. u_color is the distorter's global tint, from its sine table.
 struct SpriteDistortUniforms {
   METAL_FLOAT4 u_color;
+  float height_scale;
+  float scissor_height;
+  float pad0, pad1;
 };
 
