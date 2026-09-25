@@ -191,6 +191,13 @@ struct GenericUniforms {
   int pad0;
 };
 
+// depth_cue.metal. The flat colour and the clip-space depth the pass draws at.
+struct DepthCueUniforms {
+  METAL_FLOAT4 u_color;
+  float u_depth;
+  float pad0, pad1, pad2;
+};
+
 // shadow.metal. The flat colour of the pass being drawn, and the vertical scissor adjust that
 // the GLSL had substituted in at compile time.
 struct ShadowUniforms {

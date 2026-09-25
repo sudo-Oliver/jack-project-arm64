@@ -186,8 +186,20 @@ id<MTLSamplerState> MetalDrawStateCache::sampler(DrawMode mode) {
   return sampler;
 }
 
+id<MTLTexture> MetalRenderState::pause_and_snapshot() {
+  return pause_and_snapshot_fn ? pause_and_snapshot_fn(this) : nil;
+}
+
+void MetalRenderState::resume_scene() {
+  if (resume_scene_fn) {
+    resume_scene_fn(this);
+  }
+}
+
 id<MTLTexture> MetalRenderState::snapshot_scene() {
-  return snapshot_scene_fn ? snapshot_scene_fn(this) : nil;
+  id<MTLTexture> tex = pause_and_snapshot();
+  resume_scene();
+  return tex;
 }
 
 const u8* MetalRenderState::occlusion_for_level(int level_id) const {

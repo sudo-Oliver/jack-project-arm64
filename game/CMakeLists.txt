@@ -51,6 +51,7 @@ set(RUNTIME_SOURCE
         graphics/ocean/CommonOceanRendererCore.cpp
         graphics/ocean/OceanTextureCore.cpp
         graphics/foreground/Merc2Core.cpp
+        graphics/depth_cue/DepthCueCore.cpp
         graphics/shadow/ShadowRendererCore.cpp
         graphics/shadow/ShadowRendererCore_PS2.cpp
         graphics/sprite/Sprite3Core.cpp
@@ -374,6 +375,7 @@ if(APPLE)
                             graphics/metal_renderer/MetalEye.mm
                             graphics/metal_renderer/MetalMerc2.mm
                             graphics/metal_renderer/MetalOcean.mm
+                            graphics/metal_renderer/MetalDepthCue.mm
                             graphics/metal_renderer/MetalGeneric2.mm
                             graphics/metal_renderer/MetalShadow.mm
                             graphics/metal_renderer/MetalSky.mm

@@ -34,17 +34,23 @@ class MetalRenderer {
             MTLPixelFormat color_format,
             MTLPixelFormat depth_format);
 
-  // Walks one frame's DMA chain and draws it into `encoder`. `snapshot_fn` is how a renderer that
-  // has to read the frame so far gets it -- see MetalRenderState::snapshot_scene. It may replace
-  // the encoder, so this returns whichever one is current when the frame's buckets are done, and
-  // the caller ends that one.
-  id<MTLRenderCommandEncoder> render(
-      DmaFollower dma,
-      id<MTLRenderCommandEncoder> encoder,
-      id<MTLCommandBuffer> offscreen_cmd,
-      u32 viewport_width,
-      u32 viewport_height,
-      std::function<id<MTLTexture>(MetalRenderState*)> snapshot_fn);
+  // What the backend has to hand the frame beyond the encoder: the frame's own command buffer,
+  // and the two hooks that split its render pass. See MetalRenderState.
+  struct FrameHooks {
+    id<MTLCommandBuffer> frame_cmd = nil;
+    std::function<id<MTLTexture>(MetalRenderState*)> pause_and_snapshot;
+    std::function<void(MetalRenderState*)> resume;
+  };
+
+  // Walks one frame's DMA chain and draws it into `encoder`. A renderer that reads the frame so
+  // far replaces the encoder, so this returns whichever one is current when the buckets are done
+  // and the caller ends that one.
+  id<MTLRenderCommandEncoder> render(DmaFollower dma,
+                                     id<MTLRenderCommandEncoder> encoder,
+                                     id<MTLCommandBuffer> offscreen_cmd,
+                                     u32 viewport_width,
+                                     u32 viewport_height,
+                                     const FrameHooks& hooks);
 
   // Triangles drawn on the last frame, summed over every bucket that counts them.
   u32 last_frame_tris() const { return m_last_frame_tris; }

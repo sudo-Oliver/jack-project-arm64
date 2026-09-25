@@ -9,6 +9,7 @@
 
 #include "common/log/log.h"
 
+#include "game/graphics/metal_renderer/MetalDepthCue.h"
 #include "game/graphics/metal_renderer/MetalDirect.h"
 #include "game/graphics/metal_renderer/MetalEye.h"
 #include "game/graphics/metal_renderer/MetalGeneric2.h"
@@ -168,6 +169,10 @@ void MetalRenderer::init_bucket_table() {
         name, (int)id, m_generic2, MetalGeneric2::Mode::NORMAL);
   }
 
+  // The depth cue: the soft horizontal smear over the whole frame.
+  m_bucket_renderers[(int)BucketId::DEPTH_CUE] =
+      std::make_unique<MetalDepthCue>("depth-cue", (int)BucketId::DEPTH_CUE);
+
   // The character shadows, as stencil shadow volumes.
   m_bucket_renderers[(int)BucketId::SHADOW] =
       std::make_unique<MetalShadow>("shadow", (int)BucketId::SHADOW);
@@ -295,7 +300,7 @@ id<MTLRenderCommandEncoder> MetalRenderer::render(
     id<MTLCommandBuffer> offscreen_cmd,
     u32 viewport_width,
     u32 viewport_height,
-    std::function<id<MTLTexture>(MetalRenderState*)> snapshot_fn) {
+    const FrameHooks& hooks) {
   if (!m_ready) {
     return encoder;
   }
@@ -307,7 +312,9 @@ id<MTLRenderCommandEncoder> MetalRenderer::render(
     m_generic2->reset_tri_count();
   }
   m_render_state.encoder = encoder;
-  m_render_state.snapshot_scene_fn = std::move(snapshot_fn);
+  m_render_state.frame_cmd = hooks.frame_cmd;
+  m_render_state.pause_and_snapshot_fn = hooks.pause_and_snapshot;
+  m_render_state.resume_scene_fn = hooks.resume;
   m_render_state.offscreen_cmd = offscreen_cmd;
   m_render_state.viewport_width = viewport_width;
   m_render_state.viewport_height = viewport_height;
@@ -331,7 +338,9 @@ id<MTLRenderCommandEncoder> MetalRenderer::render(
   dma.read_and_advance();  // its ret tag
   if (dma.current_tag_offset() != next_bucket) {
     lg::error("[Metal] frame did not start with the default-register chain");
-    m_render_state.snapshot_scene_fn = nullptr;
+    m_render_state.pause_and_snapshot_fn = nullptr;
+    m_render_state.resume_scene_fn = nullptr;
+    m_render_state.frame_cmd = nil;
     return m_render_state.encoder;
   }
   next_bucket += 16;
@@ -380,6 +389,8 @@ id<MTLRenderCommandEncoder> MetalRenderer::render(
       m_last_frame_tris += sprite->last_frame_tris();
     } else if (auto* shadow = dynamic_cast<MetalShadow*>(renderer.get())) {
       m_last_frame_tris += shadow->last_frame_tris();
+    } else if (auto* depth_cue = dynamic_cast<MetalDepthCue*>(renderer.get())) {
+      m_last_frame_tris += depth_cue->last_frame_tris();
     }
   }
   if (m_merc2) {
@@ -391,7 +402,9 @@ id<MTLRenderCommandEncoder> MetalRenderer::render(
   // A renderer that took a snapshot replaced the encoder; the caller ends whichever is current.
   id<MTLRenderCommandEncoder> final_encoder = m_render_state.encoder;
   m_render_state.encoder = nil;
-  m_render_state.snapshot_scene_fn = nullptr;
+  m_render_state.pause_and_snapshot_fn = nullptr;
+  m_render_state.resume_scene_fn = nullptr;
+  m_render_state.frame_cmd = nil;
   m_render_state.offscreen_cmd = nil;
   return final_encoder;
 }

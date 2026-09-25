@@ -536,7 +536,9 @@ void MetalDisplay::render() {
         // depth and stencil), copy the colour out, and start a pass that loads all three back.
         // On an Apple GPU that is one tile store and one tile load, and it only happens on the
         // frames where a renderer actually asks.
-        auto snapshot_fn = [&](MetalRenderState* rs) -> id<MTLTexture> {
+        MetalRenderer::FrameHooks hooks;
+        hooks.frame_cmd = cmd;
+        hooks.pause_and_snapshot = [&](MetalRenderState*) -> id<MTLTexture> {
           [enc setColorStoreAction:MTLStoreActionStore atIndex:0];
           [enc setDepthStoreAction:MTLStoreActionStore];
           [enc setStencilStoreAction:MTLStoreActionStore];
@@ -553,7 +555,9 @@ void MetalDisplay::render() {
                destinationLevel:0
               destinationOrigin:MTLOriginMake(0, 0, 0)];
           [blit endEncoding];
-
+          return m_ctx->snapshot_texture;
+        };
+        hooks.resume = [&](MetalRenderState* rs) {
           MTLRenderPassDescriptor* resume = [MTLRenderPassDescriptor renderPassDescriptor];
           resume.colorAttachments[0].texture = m_ctx->scene_texture;
           resume.colorAttachments[0].loadAction = MTLLoadActionLoad;
@@ -566,10 +570,8 @@ void MetalDisplay::render() {
           resume.stencilAttachment.storeAction = MTLStoreActionDontCare;
           enc = [cmd renderCommandEncoderWithDescriptor:resume];
           rs->encoder = enc;
-          return m_ctx->snapshot_texture;
         };
-        enc = g_metal_gfx_data->renderer->render(dma_for_frame, enc, offscreen_cmd, dw, dh,
-                                                 snapshot_fn);
+        enc = g_metal_gfx_data->renderer->render(dma_for_frame, enc, offscreen_cmd, dw, dh, hooks);
         static u32 logged_tris = 0;
         if (g_metal_gfx_data->renderer->last_frame_tris() != logged_tris) {
           logged_tris = g_metal_gfx_data->renderer->last_frame_tris();

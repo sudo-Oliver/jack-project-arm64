@@ -101,17 +101,28 @@ struct MetalRenderState {
   MTLPixelFormat color_format = MTLPixelFormatInvalid;
   MTLPixelFormat depth_format = MTLPixelFormatInvalid;
 
-  // Hand back a texture holding the colour drawn so far this frame, for the renderers that have
-  // to read the frame they are drawing into: the depth cue and the sprite distorter.
+  // How a renderer that has to read the frame it is drawing into -- the depth cue, the sprite
+  // distorter -- gets at it. Metal cannot sample the target of the pass that is currently
+  // encoding, so the frame's pass has to be split.
   //
-  // Metal cannot sample the target of the pass that is currently encoding, so this ends that
-  // pass, copies its colour out, and starts a new one that keeps the colour, depth and stencil
-  // already there. `encoder` is replaced with the new one, so a caller must re-read it -- and
-  // every other renderer already reads render_state->encoder per draw, so nothing else notices.
+  // pause_and_snapshot() ends that pass keeping its colour, depth and stencil, copies the colour
+  // into a texture and returns it. No encoder is active afterwards, and `frame_cmd` is free for
+  // the caller's own passes -- which is what the depth cue needs, since it renders into a target
+  // of its own in between. resume_scene() starts the frame's pass again and puts the new encoder
+  // in `encoder`; a caller must re-read it, and every renderer already reads it per draw.
   //
-  // Returns nil if the backend did not install a hook (an offscreen pass, for instance).
+  // snapshot_scene() is both at once, for a renderer that only wants to sample.
+  //
+  // All three return nil / do nothing if the backend installed no hooks (an offscreen pass).
+  id<MTLTexture> pause_and_snapshot();
+  void resume_scene();
   id<MTLTexture> snapshot_scene();
-  std::function<id<MTLTexture>(MetalRenderState*)> snapshot_scene_fn;
+
+  // The frame's command buffer, for the passes a renderer encodes between pause and resume. Work
+  // put on it runs in order with the rest of the frame, unlike offscreen_cmd, which runs first.
+  id<MTLCommandBuffer> frame_cmd = nil;
+  std::function<id<MTLTexture>(MetalRenderState*)> pause_and_snapshot_fn;
+  std::function<void(MetalRenderState*)> resume_scene_fn;
 
   std::shared_ptr<TexturePool> texture_pool;
   // merc draws the eyes with textures this renderer builds, so it has to be reachable from a

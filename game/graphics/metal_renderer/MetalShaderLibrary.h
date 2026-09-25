@@ -55,6 +55,7 @@ inline const std::vector<ShaderDef>& all_shaders() {
       {"sprite3.metal", "sprite3_vert", "sprite3_frag"},
       {"shadow.metal", "shadow_vert", "shadow_frag"},
       {"generic.metal", "generic_vert", "generic_frag"},
+      {"depth_cue.metal", "depth_cue_vert", "depth_cue_frag"},
       {"present.metal", "present_vert", "present_frag"},
       {"sprite_distort.metal", "sprite_distort_vert", "sprite_distort_frag"},
       {"direct_basic_textured.metal", "direct_basic_textured_vert",
