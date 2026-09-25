@@ -51,6 +51,8 @@ set(RUNTIME_SOURCE
         graphics/ocean/CommonOceanRendererCore.cpp
         graphics/ocean/OceanTextureCore.cpp
         graphics/foreground/Merc2Core.cpp
+        graphics/shadow/ShadowRendererCore.cpp
+        graphics/shadow/ShadowRendererCore_PS2.cpp
         graphics/sprite/Sprite3Core.cpp
         graphics/sprite/Sprite3Core_Distort.cpp
         graphics/opengl_renderer/DirectRenderer2.cpp
@@ -80,7 +82,6 @@ set(RUNTIME_SOURCE
         graphics/opengl_renderer/Profiler.cpp
         graphics/opengl_renderer/ProgressRenderer.cpp
         graphics/opengl_renderer/Shader.cpp
-        graphics/opengl_renderer/Shadow_PS2.cpp
         graphics/opengl_renderer/ShadowRenderer.cpp
         graphics/sky/SkyBlendCPU.cpp
         graphics/opengl_renderer/SkyBlendGPU.cpp
@@ -373,6 +374,7 @@ if(APPLE)
                             graphics/metal_renderer/MetalEye.mm
                             graphics/metal_renderer/MetalMerc2.mm
                             graphics/metal_renderer/MetalOcean.mm
+                            graphics/metal_renderer/MetalShadow.mm
                             graphics/metal_renderer/MetalSky.mm
                             graphics/metal_renderer/MetalSprite3.mm
                             graphics/metal_renderer/MetalRenderer.mm

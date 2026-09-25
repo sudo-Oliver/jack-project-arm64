@@ -14,6 +14,7 @@
 #include "game/graphics/metal_renderer/MetalMerc2.h"
 #include "game/graphics/metal_renderer/MetalOcean.h"
 #include "game/graphics/metal_renderer/MetalShrub.h"
+#include "game/graphics/metal_renderer/MetalShadow.h"
 #include "game/graphics/metal_renderer/MetalSky.h"
 #include "game/graphics/metal_renderer/MetalSprite3.h"
 #include "game/graphics/metal_renderer/MetalTFragment.h"
@@ -145,6 +146,10 @@ void MetalRenderer::init_bucket_table() {
     m_bucket_renderers[(int)id] =
         std::make_unique<MetalMerc2BucketRenderer>(name, (int)id, m_merc2);
   }
+
+  // The character shadows, as stencil shadow volumes.
+  m_bucket_renderers[(int)BucketId::SHADOW] =
+      std::make_unique<MetalShadow>("shadow", (int)BucketId::SHADOW);
 
   // The sprite bucket: the particles, the HUD, the menus and the fake shadows.
   m_bucket_renderers[(int)BucketId::SPRITE] =
@@ -345,6 +350,8 @@ void MetalRenderer::render(DmaFollower dma,
       m_last_frame_tris += near_ocean->last_frame_tris();
     } else if (auto* sprite = dynamic_cast<MetalSprite3*>(renderer.get())) {
       m_last_frame_tris += sprite->last_frame_tris();
+    } else if (auto* shadow = dynamic_cast<MetalShadow*>(renderer.get())) {
+      m_last_frame_tris += shadow->last_frame_tris();
     }
   }
   if (m_merc2) {

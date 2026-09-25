@@ -41,6 +41,13 @@ id<MTLRenderPipelineState> MetalDrawStateCache::pipeline(DrawMode mode,
   desc.fragmentFunction = m_frag;
   desc.vertexDescriptor = m_vertex_desc;
   desc.depthAttachmentPixelFormat = m_depth_format;
+  // A pipeline's attachment formats have to match the render pass it is used in, and the frame's
+  // pass carries a stencil attachment because the shadow renderer needs one. A combined
+  // depth-stencil format therefore has to be declared on both slots, or every draw fails.
+  if (m_depth_format == MTLPixelFormatDepth32Float_Stencil8 ||
+      m_depth_format == MTLPixelFormatDepth24Unorm_Stencil8) {
+    desc.stencilAttachmentPixelFormat = m_depth_format;
+  }
   auto* color = desc.colorAttachments[0];
   color.pixelFormat = m_color_format;
   color.writeMask = write_mask;

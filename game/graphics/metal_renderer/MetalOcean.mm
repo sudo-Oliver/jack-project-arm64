@@ -131,6 +131,9 @@ bool MetalCommonOceanRenderer::init(MetalRenderState* render_state) {
     desc.fragmentFunction = frag;
     desc.vertexDescriptor = vd;
     desc.depthAttachmentPixelFormat = render_state->depth_format;
+    if (render_state->depth_format == MTLPixelFormatDepth32Float_Stencil8) {
+      desc.stencilAttachmentPixelFormat = render_state->depth_format;
+    }
     auto* color = desc.colorAttachments[0];
     color.pixelFormat = render_state->color_format;
     color.blendingEnabled = blends[i].enabled;

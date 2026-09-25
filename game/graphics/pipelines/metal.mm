@@ -53,7 +53,9 @@ struct MetalContext {
 
 // Pixel formats the render pass and every pipeline state must agree on.
 constexpr MTLPixelFormat kMetalColorFormat = MTLPixelFormatBGRA8Unorm;
-constexpr MTLPixelFormat kMetalDepthFormat = MTLPixelFormatDepth32Float;
+// Depth *and* stencil: the shadow renderer draws its volumes into the stencil buffer, and on
+// Apple GPUs a combined format is one tile allocation rather than two.
+constexpr MTLPixelFormat kMetalDepthFormat = MTLPixelFormatDepth32Float_Stencil8;
 
 // See kMetalFramesInFlight in MetalRenderState.h for what this is holding back and why.
 dispatch_semaphore_t g_metal_frame_semaphore = dispatch_semaphore_create(kMetalFramesInFlight);
@@ -465,6 +467,12 @@ void MetalDisplay::render() {
     pass.depthAttachment.storeAction = MTLStoreActionDontCare;
     // The game's projection makes nearer geometry compare greater, so the far value is 0.
     pass.depthAttachment.clearDepth = 0.0;
+    // The shadow volumes count into the stencil buffer and read the count back in the same frame,
+    // so it starts at zero and never has to be stored.
+    pass.stencilAttachment.texture = m_ctx->depth_texture;
+    pass.stencilAttachment.loadAction = MTLLoadActionClear;
+    pass.stencilAttachment.storeAction = MTLStoreActionDontCare;
+    pass.stencilAttachment.clearStencil = 0;
 
     // Offscreen work goes in its own command buffer, committed first. See offscreen_cmd in
     // MetalRenderState.h.

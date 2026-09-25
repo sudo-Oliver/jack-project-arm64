@@ -94,6 +94,9 @@ id<MTLRenderPipelineState> MetalDirect::Impl::pipeline(const PipelineKey& key) {
   desc.fragmentFunction = frag;
   desc.vertexDescriptor = vertex_desc;
   desc.depthAttachmentPixelFormat = depth_format;
+  if (depth_format == MTLPixelFormatDepth32Float_Stencil8) {
+    desc.stencilAttachmentPixelFormat = depth_format;
+  }
   auto* color = desc.colorAttachments[0];
   color.pixelFormat = color_format;
   // The GS can write only alpha, which is how it fills a stencil-like mask without touching the

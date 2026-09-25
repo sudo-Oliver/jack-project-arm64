@@ -167,6 +167,14 @@ struct SpriteDrawUniforms {
   float pad0, pad1;
 };
 
+// shadow.metal. The flat colour of the pass being drawn, and the vertical scissor adjust that
+// the GLSL had substituted in at compile time.
+struct ShadowUniforms {
+  METAL_FLOAT4 color;
+  float scissor_adjust;
+  float pad0, pad1, pad2;
+};
+
 // sprite_distort.metal. u_color is the distorter's global tint, from its sine table.
 struct SpriteDistortUniforms {
   METAL_FLOAT4 u_color;
