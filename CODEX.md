@@ -38,15 +38,52 @@ passed the whole time.
 
 ### Metal status
 
-The Metal backend exists and draws with a real ported shader: it owns the window, `MTLDevice`,
-command queue and `CAMetalLayer`, compiles MSL at runtime, builds a pipeline state and issues a
-draw (`Using renderer: Metal`, `[Metal] device: Apple M4`, `[Metal] compiled 1 shader file(s)`,
-exit 0).
+**The Jak 1 bucket table is complete on Metal: every renderer the OpenGL table assigns has a
+Metal counterpart.** A village1 frame from the same camera on both backends matches.
 
-**An orange triangle on a dark blue background is the expected output right now.** The blue is the
-clear colour in `metal.mm`, the triangle is the ported `solid_color` shader. It is a deliberate
-smoke test proving source -> `MTLLibrary` -> pipeline state -> draw works end to end; no bucket
-renderer has been ported yet, so no game geometry appears.
+What the backend owns: the window, `MTLDevice`, command queue and `CAMetalLayer`; MSL compiled at
+runtime into one `MTLLibrary`; the bucket table; and the frame loop.
+
+The frame is drawn into an offscreen colour texture and copied onto the drawable by a final
+full-screen pass, the same shape the OpenGL backend already has with its render FBO. That is what
+lets the two renderers that read the frame they are drawing into work at all --
+`MetalRenderState::pause_and_snapshot()` ends the frame's pass keeping colour, depth and stencil,
+hands back a copy of the colour, and `resume_scene()` starts the pass again. The depth cue needs
+a pass of its own in between; the sprite distorter only samples, so it uses `snapshot_scene()`,
+which is both at once.
+
+The depth attachment is `Depth32Float_Stencil8`: the shadow renderer draws stencil shadow
+volumes. Every pipeline has to declare the stencil format too, or its draws fail.
+
+| Renderer | Buckets (jak1) | Metal |
+|---|---|---|
+| `TFragment` | 6 | done |
+| `TextureUploadHandler` | 11 | done (the texture animator is jak 2 and later only) |
+| `Generic2BucketRenderer` | 10 | done |
+| `Merc2BucketRenderer` | 8 | done |
+| `DirectRenderer` | 3 | done |
+| `Tie3WithEnvmapJak1` | 2 | done, including the wind instances and the envmap second pass |
+| `SkyBlendHandler` | 2 | done |
+| `Shrub` | 2 | done |
+| `SkyRenderer`, `Sprite3`, `ShadowRenderer`, `OceanNear`, `OceanMidAndFar`, `EyeRenderer`, `DepthCue` | 1 each | done |
+
+Not ported, and jak 2 / jak 3 only: the glow renderer inside the sprite bucket, the texture
+animator, and jak 2's proto visibility. The sprite distorter's non-instanced path is deliberately
+not ported: it exists in the OpenGL backend for drivers without instancing, and there is no such
+Metal driver.
+
+Two differences from the OpenGL backend that are Metal's, not bugs:
+
+- Metal bakes blend into the pipeline state, depth test and write into a depth-stencil state, and
+  clamp and filter into a sampler, so each distinct `DrawMode` gets its objects built once and
+  cached by the mode's integer value. `MetalDrawStateCache` is that translation, written once.
+  `MetalGeneric2` keeps its own copy on purpose -- generic reads a `DrawMode` differently in two
+  places, and sharing the cache would mean sharing those differences into renderers that do not
+  want them.
+- Metal does support primitive restart at `0xFFFFFFFF` for a 32-bit index buffer, which is the
+  same sentinel the `.fr3` strips already use, so the background renderers draw strips directly.
+  The sprite and generic renderers expand their strips into triangles anyway, because they build
+  their index buffers per frame and the expansion is free there.
 
 OpenGL remains the default and stays fully working. Pick a backend at runtime:
 
@@ -55,7 +92,15 @@ OpenGL remains the default and stays fully working. Pick a backend at runtime:
 OPENGOAL_RENDERER=metal ./build/game/gk -v --game jak1 -- -boot -fakeiso # Metal
 ```
 
-Continue from `## Next up: Metal` below.
+### Known artifacts that are not Metal's
+
+Both backends show these identically, so they are not part of the port:
+
+- Thin black slivers along the ocean horizon, seen when looking out to sea in village1. The far
+  ocean's geometry, drawn through the direct renderer.
+- Jak stands too high on the village1 rope bridges, as if floating. That is collision, not
+  rendering; `ropebridge.gc` is full of inline VU (`.div.vf` with `fsf`/`ftf`, masked moves), so
+  the ARM64 emitter is the first place to look -- see the history at the top of this file.
 
 Historical note, kept because older logs refer to it:
 

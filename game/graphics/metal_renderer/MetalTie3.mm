@@ -32,14 +32,12 @@ struct TieTreeCache {
   std::vector<std::array<math::Vector4f, 4>> wind_matrices;
 };
 
-// The categories this renderer draws. NORMAL is the plain geometry; NORMAL_ENVMAP is the base pass
-// of the shiny geometry, which the OpenGL backend draws with ETIE_BASE. That shader differs only
-// in doing the camera transform in two steps to avoid a rounding difference against the shiny
-// second draw it has to line up with -- and the second draw is not ported yet, so the plain shader
-// is used for both here. It becomes wrong the moment the shiny pass lands; that is the reason to
-// port ETIE next rather than later.
-constexpr tfrag3::TieCategory kCategories[] = {tfrag3::TieCategory::NORMAL,
-                                               tfrag3::TieCategory::NORMAL_ENVMAP};
+// The categories this renderer draws. NORMAL is the plain geometry; NORMAL_ENVMAP is the base
+// pass of the shiny geometry, which uses ETIE_BASE rather than the plain shader: it has to round
+// identically to the reflection pass that is drawn over it, or the two z-fight.
+// NORMAL_ENVMAP is not in this list: it is drawn by draw_tree_envmap(), which does its base pass
+// and its reflection pass together, in that order, which is the order the OpenGL backend uses.
+constexpr tfrag3::TieCategory kCategories[] = {tfrag3::TieCategory::NORMAL};
 
 }  // namespace
 
@@ -54,8 +52,10 @@ struct MetalTie3::Impl {
   // The wind sway is integrated over time, so this has to survive between frames.
   std::vector<float> wind_vectors;
   float wind_multiplier = 1.f;
-  id<MTLRenderPipelineState> wind_probe_pso = nil;
   MetalDrawStateCache wind_states;
+  // The shiny geometry: its base pass, then its reflection pass.
+  MetalDrawStateCache etie_base_states;
+  MetalDrawStateCache etie_states;
 
   std::vector<u8> vis_temp;
   std::vector<std::pair<int, int>> draw_idx_temp;
@@ -103,6 +103,15 @@ bool MetalTie3::init(MetalRenderState* render_state) {
   vd.attributes[2].format = MTLVertexFormatUShort;
   vd.attributes[2].offset = 28;
   vd.attributes[2].bufferIndex = MetalBufferIndexVertex;
+  // Only the shiny geometry reads these two: the normal, packed as 2-10-10-10, and the
+  // per-instance tint. Declaring them for every tie pipeline costs nothing and keeps one
+  // descriptor for all four shaders.
+  vd.attributes[3].format = MTLVertexFormatInt1010102Normalized;
+  vd.attributes[3].offset = 24;
+  vd.attributes[3].bufferIndex = MetalBufferIndexVertex;
+  vd.attributes[4].format = MTLVertexFormatUChar4Normalized;
+  vd.attributes[4].offset = 12;
+  vd.attributes[4].bufferIndex = MetalBufferIndexVertex;
   vd.layouts[MetalBufferIndexVertex].stride = sizeof(tfrag3::PreloadedVertex);
   vd.layouts[MetalBufferIndexVertex].stepFunction = MTLVertexStepFunctionPerVertex;
 
@@ -120,12 +129,27 @@ bool MetalTie3::init(MetalRenderState* render_state) {
   m_impl->wind_states.init(render_state->device, wind_vert, wind_frag, vd,
                            render_state->color_format, render_state->depth_format);
 
+  id<MTLFunction> etie_base_vert = [render_state->library newFunctionWithName:@"etie_base_vert"];
+  id<MTLFunction> etie_vert = [render_state->library newFunctionWithName:@"etie_vert"];
+  id<MTLFunction> etie_frag = [render_state->library newFunctionWithName:@"etie_frag"];
+  if (!etie_base_vert || !etie_vert || !etie_frag) {
+    lg::error("[Metal] etie shader entry points missing from the library");
+    return false;
+  }
+  m_impl->etie_base_states.init(render_state->device, etie_base_vert, etie_frag, vd,
+                                render_state->color_format, render_state->depth_format);
+  m_impl->etie_states.init(render_state->device, etie_vert, etie_frag, vd,
+                           render_state->color_format, render_state->depth_format);
+
   DrawMode probe;
   probe.set_depth_write_enable(true);
   if (!m_impl->states.pipeline(probe)) {
     return false;
   }
   if (!m_impl->wind_states.pipeline(probe)) {
+    return false;
+  }
+  if (!m_impl->etie_base_states.pipeline(probe) || !m_impl->etie_states.pipeline(probe)) {
     return false;
   }
   m_impl->ready = true;
@@ -138,11 +162,23 @@ void MetalTie3::render(DmaFollower& dma, MetalRenderState* render_state) {
   // The wind state rides in this bucket, and nothing else here reads the chain, so pick it out on
   // the way past. It is the one transfer in the bucket the size of a TieWindWork.
   m_has_wind_data = false;
+  bool want_envmap_color = false;
+  m_envmap_color = math::Vector4f(1.f, 1.f, 1.f, 1.f);
   while (dma.current_tag_offset() != render_state->next_bucket && !dma.ended()) {
     auto transfer = dma.read_and_advance();
     if (!m_has_wind_data && transfer.size_bytes == (int)sizeof(TieWindWork)) {
       memcpy(&m_wind_data, transfer.data, sizeof(TieWindWork));
       m_has_wind_data = true;
+      // The envmap tint is the next transfer, one quadword.
+      want_envmap_color = true;
+      continue;
+    }
+    if (want_envmap_color && transfer.size_bytes == 16) {
+      memcpy(m_envmap_color.data(), transfer.data, 16);
+      // Same scaling the OpenGL backend applies for Jak 1.
+      m_envmap_color /= 128.f;
+      m_envmap_color *= 2.f;
+      want_envmap_color = false;
     }
   }
 
@@ -331,7 +367,117 @@ void MetalTie3::draw_level(MetalRenderState* render_state, const LevelData& leve
       }
     }
 
+    draw_tree_envmap(render_state, level, in_tree, tfrag3::TieCategory::NORMAL_ENVMAP);
     draw_tree_wind(render_state, level, tree_idx, in_tree);
+  }
+}
+
+/*!
+ * The shiny geometry: a base pass that looks like ordinary tie, then a second pass that adds the
+ * reflection over it. Both use the same visibility the plain draws already computed, and the same
+ * split camera transform, so the two line up exactly.
+ */
+void MetalTie3::draw_tree_envmap(MetalRenderState* render_state,
+                                 const LevelData& level,
+                                 const tfrag3::TieTree& in_tree,
+                                 tfrag3::TieCategory category) {
+  const size_t first = in_tree.category_draw_indices[(int)category];
+  const size_t last = in_tree.category_draw_indices[(int)category + 1];
+  if (first >= last) {
+    return;
+  }
+  id<MTLRenderCommandEncoder> encoder = render_state->encoder;
+  const auto& camera = render_state->level_slots[m_level_id].camera;
+  auto& cache = m_impl->trees[&in_tree - level.level->tie_trees[0].data()];
+  const int frame = (m_impl->frame + kMetalFramesInFlight - 1) % kMetalFramesInFlight;
+  id<MTLBuffer> index_buffer = cache.index_buffer[frame];
+  if (!index_buffer || !encoder) {
+    return;
+  }
+
+  EtieUniforms u{};
+  for (int col = 0; col < 4; col++) {
+    u.cam_no_persp.col[col] = {camera.rot[col][0], camera.rot[col][1], camera.rot[col][2],
+                               camera.rot[col][3]};
+  }
+  // init_etie_cam_uniforms: the perspective, split into the two vectors the VU program used.
+  {
+    const float inv_fog = 1.f / camera.fog[0];
+    const auto& hvdf_off = camera.hvdf_off;
+    const float pxx = camera.perspective[0].x();
+    const float pyy = camera.perspective[1].y();
+    const float pzz = camera.perspective[2].z();
+    const float pzw = camera.perspective[2].w();
+    const float pwz = camera.perspective[3].z();
+    const float scale = pzw * inv_fog;
+    u.persp0 = {scale * hvdf_off.x(), scale * hvdf_off.y(), scale * hvdf_off.z() + pzz, scale};
+    u.persp1 = {pxx, pyy, pwz, 0.f};
+  }
+  u.hvdf_offset = {camera.hvdf_off[0], camera.hvdf_off[1], camera.hvdf_off[2],
+                   camera.hvdf_off[3]};
+  u.fog_color = {render_state->fog_color[0] / 255.f, render_state->fog_color[1] / 255.f,
+                 render_state->fog_color[2] / 255.f, render_state->fog_intensity / 255.f};
+  u.envmap_tod_tint = {m_envmap_color[0], m_envmap_color[1], m_envmap_color[2],
+                       m_envmap_color[3]};
+  u.fog_min = camera.fog.y();
+  u.fog_max = camera.fog.z();
+  u.scissor_adjust = 512.f / 448.f;
+  u.height_scale = 1.f;
+  u.gfx_hack_no_tex = 0;
+
+  // Pass one is the base, pass two the reflection; the only differences are the pipeline and the
+  // alpha-fail double draw, which only the base does.
+  for (int pass = 0; pass < 2; pass++) {
+    auto& states = pass == 0 ? m_impl->etie_base_states : m_impl->etie_states;
+    for (size_t draw_idx = first; draw_idx < last; draw_idx++) {
+      const auto& draw = in_tree.static_draws[draw_idx];
+      const auto& visible = m_impl->draw_idx_temp[draw_idx];
+      if (visible.second == 0) {
+        continue;
+      }
+      if (draw.tree_tex_id < 0 || (size_t)draw.tree_tex_id >= level.textures.size()) {
+        continue;
+      }
+      id<MTLTexture> texture = metal_texture_from_handle(level.textures[draw.tree_tex_id]);
+      if (!texture) {
+        continue;
+      }
+      id<MTLRenderPipelineState> pso = states.pipeline(draw.mode);
+      if (!pso) {
+        continue;
+      }
+
+      const DoubleDraw double_draw = alpha_test_double_draw(draw.mode);
+      u.alpha_min = double_draw.aref_first;
+      u.alpha_max = 10.f;
+      u.decal = draw.mode.get_decal() ? 1 : 0;
+
+      [encoder setRenderPipelineState:pso];
+      [encoder setDepthStencilState:states.depth_state(draw.mode, false)];
+      [encoder setFragmentSamplerState:states.sampler(draw.mode) atIndex:0];
+      [encoder setFragmentTexture:texture atIndex:0];
+      [encoder setVertexBytes:&u length:sizeof(u) atIndex:MetalBufferIndexUniforms];
+      [encoder setFragmentBytes:&u length:sizeof(u) atIndex:MetalBufferIndexUniforms];
+      [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangleStrip
+                          indexCount:visible.second
+                           indexType:MTLIndexTypeUInt32
+                         indexBuffer:index_buffer
+                   indexBufferOffset:visible.first * sizeof(u32)];
+      m_last_frame_tris += draw.num_triangles;
+
+      if (pass == 0 && double_draw.kind == DoubleDrawKind::AFAIL_NO_DEPTH_WRITE) {
+        u.alpha_min = -10.f;
+        u.alpha_max = double_draw.aref_second;
+        [encoder setDepthStencilState:states.depth_state(draw.mode, true)];
+        [encoder setVertexBytes:&u length:sizeof(u) atIndex:MetalBufferIndexUniforms];
+        [encoder setFragmentBytes:&u length:sizeof(u) atIndex:MetalBufferIndexUniforms];
+        [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangleStrip
+                            indexCount:visible.second
+                             indexType:MTLIndexTypeUInt32
+                           indexBuffer:index_buffer
+                     indexBufferOffset:visible.first * sizeof(u32)];
+      }
+    }
   }
 }
 

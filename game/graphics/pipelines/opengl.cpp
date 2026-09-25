@@ -467,6 +467,45 @@ GLDisplay::~GLDisplay() {
   }
 }
 
+// How long the GPU spent on the frames since the last log line, measured with a timer query.
+double g_gl_gpu_seconds = 0;
+int g_gl_gpu_samples = 0;
+
+/*!
+ * A GL timer query around one frame. The result of a query is not ready when the frame ends, so
+ * two are kept and the one from the previous frame is read.
+ */
+struct GlFrameTimer {
+  GLuint queries[2] = {0, 0};
+  bool started[2] = {false, false};
+  int idx = 0;
+
+  void begin() {
+    if (!queries[0]) {
+      glGenQueries(2, queries);
+    }
+    glBeginQuery(GL_TIME_ELAPSED, queries[idx]);
+  }
+
+  void end() {
+    glEndQuery(GL_TIME_ELAPSED);
+    started[idx] = true;
+    const int other = idx ^ 1;
+    if (started[other]) {
+      GLint done = 0;
+      glGetQueryObjectiv(queries[other], GL_QUERY_RESULT_AVAILABLE, &done);
+      if (done) {
+        GLuint64 ns = 0;
+        glGetQueryObjectui64v(queries[other], GL_QUERY_RESULT, &ns);
+        g_gl_gpu_seconds += (double)ns / 1e9;
+        g_gl_gpu_samples++;
+        started[other] = false;
+      }
+    }
+    idx = other;
+  }
+};
+
 void render_game_frame(int game_width,
                        int game_height,
                        int window_fb_width,
@@ -659,12 +698,20 @@ void GLDisplay::render() {
       draw_splash(fbuf_w, fbuf_h);
     }
 
+    static GlFrameTimer gpu_timer;
+    const bool time_gpu = std::getenv("OPENGOAL_FPS_LOG") != nullptr;
+    if (time_gpu) {
+      gpu_timer.begin();
+    }
     render_game_frame(
         game_res_w, game_res_h, fbuf_w, fbuf_h, Gfx::g_global_settings.lbox_w,
         Gfx::g_global_settings.lbox_h, Gfx::g_global_settings.msaa_samples,
         Gfx::g_global_settings.brightness_contrast_color,
         Gfx::g_global_settings.brightness_contrast_alpha,
         m_take_screenshot_next_frame && g_gfx_data->debug_gui.screenshot_hotkey_enabled);
+    if (time_gpu) {
+      gpu_timer.end();
+    }
     // If we took a screenshot, stop taking them now!
     if (m_take_screenshot_next_frame) {
       m_take_screenshot_next_frame = false;
@@ -784,10 +831,15 @@ void GLDisplay::render() {
       }
       fps_frames++;
       if (fps_timer.getSeconds() >= 1.0) {
-        lg::info("[OpenGL] {:.1f} fps, worst frame {:.2f} ms", fps_frames / fps_timer.getSeconds(),
-                 worst_frame * 1000.0);
+        // The frame rate alone says nothing here -- the GOAL engine paces itself to 60 -- so the
+        // number that matters is how long the GPU was busy. Both backends report it the same way.
+        lg::info("[OpenGL] {:.1f} fps, worst frame {:.2f} ms, gpu {:.2f} ms",
+                 fps_frames / fps_timer.getSeconds(), worst_frame * 1000.0,
+                 g_gl_gpu_seconds * 1000.0 / std::max(1, g_gl_gpu_samples));
         fps_frames = 0;
         worst_frame = 0;
+        g_gl_gpu_seconds = 0;
+        g_gl_gpu_samples = 0;
         fps_timer.start();
       }
     }

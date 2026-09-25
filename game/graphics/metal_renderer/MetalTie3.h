@@ -43,9 +43,15 @@ class MetalTie3 : public MetalBucketRenderer {
                       size_t tree_idx,
                       const tfrag3::TieTree& in_tree);
 
-  // The wind state the game sends once per frame, in this bucket's own DMA.
+  void draw_tree_envmap(MetalRenderState* render_state,
+                        const LevelData& level,
+                        const tfrag3::TieTree& in_tree,
+                        tfrag3::TieCategory category);
+
+  // The wind state and the envmap tint the game sends once per frame, in this bucket's own DMA.
   TieWindWork m_wind_data{};
   bool m_has_wind_data = false;
+  math::Vector4f m_envmap_color{1.f, 1.f, 1.f, 1.f};
 
   struct Impl;
   std::unique_ptr<Impl> m_impl;

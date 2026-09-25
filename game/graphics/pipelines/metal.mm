@@ -75,6 +75,10 @@ namespace {
 
 bool g_metal_inited = false;
 
+// Filled in by the frame's completion handler, on a background thread, and read by the log line.
+std::atomic<double> g_metal_gpu_seconds{0};
+std::atomic<int> g_metal_gpu_samples{0};
+
 // Mirrors GraphicsData in the OpenGL backend: the game thread hands a DMA chain over here and
 // waits, the render thread consumes it. Kept separate so the two backends cannot interfere.
 constexpr PerGameVersion<int> metal_fr3_level_count(jak1::LEVEL_TOTAL,
@@ -450,10 +454,18 @@ void MetalDisplay::render() {
       return;
     }
 
-    // Depth buffer, sized to the drawable. The world geometry needs one; the clear-and-present
-    // frame did not.
-    const u32 dw = (u32)drawable.texture.width;
-    const u32 dh = (u32)drawable.texture.height;
+    // The game is drawn at the resolution the game's own settings ask for, and the final pass
+    // scales it onto the drawable -- the same thing the OpenGL backend does with its render FBO
+    // and the blit out of it. Rendering at the drawable's size instead would ignore the setting,
+    // and on a Retina display that is four times the pixels for no one's benefit.
+    const u32 window_w = (u32)drawable.texture.width;
+    const u32 window_h = (u32)drawable.texture.height;
+    u32 dw = (u32)Gfx::g_global_settings.game_res_w;
+    u32 dh = (u32)Gfx::g_global_settings.game_res_h;
+    if (dw == 0 || dh == 0) {
+      dw = window_w;
+      dh = window_h;
+    }
     if (!m_ctx->scene_texture || m_ctx->scene_w != dw || m_ctx->scene_h != dh) {
       MTLTextureDescriptor* sd =
           [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:kMetalColorFormat
@@ -480,6 +492,14 @@ void MetalDisplay::render() {
       m_ctx->depth_texture = [m_ctx->device newTextureWithDescriptor:dd];
       m_ctx->depth_w = dw;
       m_ctx->depth_h = dh;
+    }
+
+    // The vsync setting is the game's, the same one the OpenGL backend hands to
+    // SDL_GL_SetSwapInterval. On a CAMetalLayer it is displaySyncEnabled, and turning it off is
+    // what makes the frame rate measurable rather than pinned to the display.
+    if (Gfx::g_global_settings.vsync != Gfx::g_global_settings.old_vsync) {
+      Gfx::g_global_settings.old_vsync = Gfx::g_global_settings.vsync;
+      m_ctx->layer.displaySyncEnabled = Gfx::g_global_settings.vsync ? YES : NO;
     }
 
     MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
@@ -594,6 +614,8 @@ void MetalDisplay::render() {
       [present_enc setRenderPipelineState:m_ctx->present_pso];
       [present_enc setFragmentTexture:m_ctx->scene_texture atIndex:0];
       [present_enc setFragmentSamplerState:m_ctx->present_sampler atIndex:0];
+      [present_enc setViewport:(MTLViewport){0.0, 0.0, (double)window_w, (double)window_h, 0.0,
+                                            1.0}];
       [present_enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
       [present_enc endEncoding];
     }
@@ -633,8 +655,8 @@ void MetalDisplay::render() {
     id<MTLBuffer> screenshot_buffer = nil;
     u32 shot_w = 0, shot_h = 0, shot_stride = 0;
     if (want_screenshot) {
-      shot_w = (u32)drawable.texture.width;
-      shot_h = (u32)drawable.texture.height;
+      shot_w = window_w;
+      shot_h = window_h;
       shot_stride = shot_w * 4;
       screenshot_buffer = [m_ctx->device newBufferWithLength:shot_stride * shot_h
                                                      options:MTLResourceStorageModeShared];
@@ -650,7 +672,15 @@ void MetalDisplay::render() {
    destinationBytesPerImage:shot_stride * shot_h];
       [blit endEncoding];
     }
-    [cmd addCompletedHandler:^(id<MTLCommandBuffer>) {
+    [cmd addCompletedHandler:^(id<MTLCommandBuffer> done) {
+      // How long the GPU was actually busy with this frame. The frame rate says nothing on its
+      // own -- the GOAL engine paces itself to 60 -- so this is the number that compares the two
+      // backends. The OpenGL backend measures the same thing with a timer query.
+      const double gpu = [done GPUEndTime] - [done GPUStartTime];
+      if (gpu > 0) {
+        g_metal_gpu_seconds += gpu;
+        g_metal_gpu_samples++;
+      }
       dispatch_semaphore_signal(g_metal_frame_semaphore);
     }];
     [cmd presentDrawable:drawable];
@@ -703,9 +733,14 @@ void MetalDisplay::render() {
     static int fps_frames = 0;
     fps_frames++;
     if (fps_timer.getSeconds() >= 1.0) {
-      lg::info("[Metal] {:.1f} fps, worst frame {:.2f} ms, {} pipelines built ({:.1f} ms)",
-               fps_frames / fps_timer.getSeconds(), g_metal_worst_frame_ms * 1000.0,
-               g_metal_pipeline_builds, g_metal_pipeline_build_seconds * 1000.0);
+      lg::info(
+          "[Metal] {:.1f} fps, worst frame {:.2f} ms, gpu {:.2f} ms, {} pipelines built ({:.1f} "
+          "ms)",
+          fps_frames / fps_timer.getSeconds(), g_metal_worst_frame_ms * 1000.0,
+          g_metal_gpu_seconds * 1000.0 / std::max(1, g_metal_gpu_samples.load()),
+          g_metal_pipeline_builds, g_metal_pipeline_build_seconds * 1000.0);
+      g_metal_gpu_seconds = 0;
+      g_metal_gpu_samples = 0;
       g_metal_pipeline_builds = 0;
       g_metal_pipeline_build_seconds = 0;
       fps_frames = 0;

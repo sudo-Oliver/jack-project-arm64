@@ -191,6 +191,26 @@ struct GenericUniforms {
   int pad0;
 };
 
+// etie.metal, for both of its passes. cam_no_persp is the camera's rotation alone and persp0 /
+// persp1 are the perspective split the way the VU program had it: ETIE keeps the two apart so the
+// base pass and the reflection pass round identically and do not z-fight.
+struct EtieUniforms {
+  METAL_FLOAT4X4 cam_no_persp;
+  METAL_FLOAT4 persp0;
+  METAL_FLOAT4 persp1;
+  METAL_FLOAT4 hvdf_offset;
+  METAL_FLOAT4 fog_color;
+  METAL_FLOAT4 envmap_tod_tint;
+  float fog_min;
+  float fog_max;
+  float alpha_min;
+  float alpha_max;
+  float scissor_adjust;
+  float height_scale;
+  int decal;
+  int gfx_hack_no_tex;
+};
+
 // tie_wind.metal. `camera` is the swaying instance's own matrix, already multiplied by the
 // camera's, so it changes per draw; everything else is per frame.
 struct TieWindUniforms {

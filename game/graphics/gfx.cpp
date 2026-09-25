@@ -78,6 +78,13 @@ u32 Init(GameVersion version) {
     lg::info("Using renderer: {}", GetRenderer(pipeline) ? GetRenderer(pipeline)->name : "none");
   }
 
+  // OPENGOAL_VSYNC=0 unpins the frame rate from the display, which is the only way to compare
+  // what the two backends actually cost: with vsync on they both read 60.0 and say nothing.
+  if (const char* want = getenv("OPENGOAL_VSYNC"); want) {
+    g_global_settings.vsync = std::string(want) != "0";
+    lg::info("vsync {} by OPENGOAL_VSYNC", g_global_settings.vsync ? "on" : "off");
+  }
+
   {
     auto p = scoped_prof("startup::gfx::init_current_renderer");
     if (GetCurrentRenderer()->init(g_global_settings)) {
