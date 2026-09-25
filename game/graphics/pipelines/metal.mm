@@ -59,9 +59,13 @@ struct MetalContext {
   // drawable at the end of the frame. Two renderers -- the depth cue and the sprite distorter --
   // have to sample the frame they are drawing into, and Metal cannot sample a drawable that the
   // window server owns. `snapshot_texture` is where that sample comes from.
+  // With MSAA on, scene_texture is the multisample attachment and scene_resolve is what the
+  // present pass and the snapshot read. With it off they are the same texture.
   id<MTLTexture> scene_texture = nil;
+  id<MTLTexture> scene_resolve = nil;
   id<MTLTexture> snapshot_texture = nil;
   u32 scene_w = 0, scene_h = 0;
+  u32 scene_samples = 0;
 
   id<MTLRenderPipelineState> present_pso = nil;
   id<MTLSamplerState> present_sampler = nil;
@@ -548,22 +552,59 @@ void MetalDisplay::render() {
       dw = window_w;
       dh = window_h;
     }
-    if (!m_ctx->scene_texture || m_ctx->scene_w != dw || m_ctx->scene_h != dh) {
+    // The game's own multisampling setting, the same one the OpenGL backend hands to its FBO.
+    u32 samples = (u32)std::max(1, Gfx::g_global_settings.msaa_samples);
+    while (samples > 1 && ![m_ctx->device supportsTextureSampleCount:samples]) {
+      samples /= 2;
+    }
+
+    if (!m_ctx->scene_texture || m_ctx->scene_w != dw || m_ctx->scene_h != dh ||
+        m_ctx->scene_samples != samples) {
       MTLTextureDescriptor* sd =
           [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:kMetalColorFormat
                                                              width:dw
                                                             height:dh
                                                          mipmapped:NO];
-      sd.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
       sd.storageMode = MTLStorageModePrivate;
-      m_ctx->scene_texture = [m_ctx->device newTextureWithDescriptor:sd];
-      // Same size and format: the snapshot is a straight copy of the scene so far.
-      sd.usage = MTLTextureUsageShaderRead;
-      m_ctx->snapshot_texture = [m_ctx->device newTextureWithDescriptor:sd];
+      if (samples > 1) {
+        // The multisample attachment is never read and never stored except on the frames that
+        // take a snapshot, so on an Apple GPU it can live entirely in tile memory.
+        sd.textureType = MTLTextureType2DMultisample;
+        sd.sampleCount = samples;
+        sd.usage = MTLTextureUsageRenderTarget;
+        sd.storageMode = MTLStorageModeMemoryless;
+        m_ctx->scene_texture = [m_ctx->device newTextureWithDescriptor:sd];
+
+        MTLTextureDescriptor* rd =
+            [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:kMetalColorFormat
+                                                               width:dw
+                                                              height:dh
+                                                           mipmapped:NO];
+        rd.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+        rd.storageMode = MTLStorageModePrivate;
+        m_ctx->scene_resolve = [m_ctx->device newTextureWithDescriptor:rd];
+      } else {
+        sd.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+        m_ctx->scene_texture = [m_ctx->device newTextureWithDescriptor:sd];
+        m_ctx->scene_resolve = m_ctx->scene_texture;
+      }
+
+      // Same size and format as the resolve: the snapshot is a straight copy of the scene so far.
+      MTLTextureDescriptor* nd =
+          [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:kMetalColorFormat
+                                                             width:dw
+                                                            height:dh
+                                                         mipmapped:NO];
+      nd.usage = MTLTextureUsageShaderRead;
+      nd.storageMode = MTLStorageModePrivate;
+      m_ctx->snapshot_texture = [m_ctx->device newTextureWithDescriptor:nd];
       m_ctx->scene_w = dw;
       m_ctx->scene_h = dh;
+      m_ctx->scene_samples = samples;
+      lg::info("[Metal] render target {}x{}, {} sample(s)", dw, dh, samples);
     }
-    if (!m_ctx->depth_texture || m_ctx->depth_w != dw || m_ctx->depth_h != dh) {
+    if (!m_ctx->depth_texture || m_ctx->depth_w != dw || m_ctx->depth_h != dh ||
+        (u32)m_ctx->depth_texture.sampleCount != samples) {
       MTLTextureDescriptor* dd =
           [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:kMetalDepthFormat
                                                              width:dw
@@ -571,6 +612,11 @@ void MetalDisplay::render() {
                                                          mipmapped:NO];
       dd.usage = MTLTextureUsageRenderTarget;
       dd.storageMode = MTLStorageModePrivate;
+      if (samples > 1) {
+        dd.textureType = MTLTextureType2DMultisample;
+        dd.sampleCount = samples;
+        dd.storageMode = MTLStorageModeMemoryless;
+      }
       m_ctx->depth_texture = [m_ctx->device newTextureWithDescriptor:dd];
       m_ctx->depth_w = dw;
       m_ctx->depth_h = dh;
@@ -587,7 +633,12 @@ void MetalDisplay::render() {
     MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
     pass.colorAttachments[0].texture = m_ctx->scene_texture;
     pass.colorAttachments[0].loadAction = MTLLoadActionClear;
-    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    if (samples > 1) {
+      pass.colorAttachments[0].resolveTexture = m_ctx->scene_resolve;
+      pass.colorAttachments[0].storeAction = MTLStoreActionMultisampleResolve;
+    } else {
+      pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    }
     // Distinctive clear colour: proof the Metal path is what is on screen, not OpenGL.
     pass.colorAttachments[0].clearColor = MTLClearColorMake(0.1, 0.1, 0.25, 1.0);
     pass.depthAttachment.texture = m_ctx->depth_texture;
@@ -612,7 +663,7 @@ void MetalDisplay::render() {
     if (g_metal_gfx_data) {
       if (!g_metal_gfx_data->renderer_ready) {
         g_metal_gfx_data->renderer_ready = g_metal_gfx_data->renderer->init(
-            m_ctx->device, m_ctx->library, kMetalColorFormat, kMetalDepthFormat);
+            m_ctx->device, m_ctx->library, kMetalColorFormat, kMetalDepthFormat, samples);
         if (g_metal_gfx_data->renderer_ready && !m_ctx->present_pso) {
           MTLRenderPipelineDescriptor* pd = [[MTLRenderPipelineDescriptor alloc] init];
           pd.vertexFunction = [m_ctx->library newFunctionWithName:@"present_vert"];
@@ -641,13 +692,15 @@ void MetalDisplay::render() {
         MetalRenderer::FrameHooks hooks;
         hooks.frame_cmd = cmd;
         hooks.pause_and_snapshot = [&](MetalRenderState*) -> id<MTLTexture> {
-          [enc setColorStoreAction:MTLStoreActionStore atIndex:0];
+          [enc setColorStoreAction:samples > 1 ? MTLStoreActionStoreAndMultisampleResolve
+                                               : MTLStoreActionStore
+                           atIndex:0];
           [enc setDepthStoreAction:MTLStoreActionStore];
           [enc setStencilStoreAction:MTLStoreActionStore];
           [enc endEncoding];
 
           id<MTLBlitCommandEncoder> blit = [cmd blitCommandEncoder];
-          [blit copyFromTexture:m_ctx->scene_texture
+          [blit copyFromTexture:m_ctx->scene_resolve
                     sourceSlice:0
                     sourceLevel:0
                      sourceOrigin:MTLOriginMake(0, 0, 0)
@@ -663,7 +716,12 @@ void MetalDisplay::render() {
           MTLRenderPassDescriptor* resume = [MTLRenderPassDescriptor renderPassDescriptor];
           resume.colorAttachments[0].texture = m_ctx->scene_texture;
           resume.colorAttachments[0].loadAction = MTLLoadActionLoad;
-          resume.colorAttachments[0].storeAction = MTLStoreActionStore;
+          if (samples > 1) {
+            resume.colorAttachments[0].resolveTexture = m_ctx->scene_resolve;
+            resume.colorAttachments[0].storeAction = MTLStoreActionMultisampleResolve;
+          } else {
+            resume.colorAttachments[0].storeAction = MTLStoreActionStore;
+          }
           resume.depthAttachment.texture = m_ctx->depth_texture;
           resume.depthAttachment.loadAction = MTLLoadActionLoad;
           resume.depthAttachment.storeAction = MTLStoreActionDontCare;
@@ -693,8 +751,15 @@ void MetalDisplay::render() {
       present.colorAttachments[0].storeAction = MTLStoreActionStore;
       id<MTLRenderCommandEncoder> present_enc =
           [cmd renderCommandEncoderWithDescriptor:present];
+      PresentUniforms present_u{};
+      present_u.scene_size = {(float)dw, (float)dh};
+      // Only worth the nine taps when the scene is actually being magnified.
+      present_u.upscale = (window_w > dw || window_h > dh) ? 1 : 0;
       [present_enc setRenderPipelineState:m_ctx->present_pso];
-      [present_enc setFragmentTexture:m_ctx->scene_texture atIndex:0];
+      [present_enc setFragmentBytes:&present_u
+                             length:sizeof(present_u)
+                            atIndex:MetalBufferIndexUniforms];
+      [present_enc setFragmentTexture:m_ctx->scene_resolve atIndex:0];
       [present_enc setFragmentSamplerState:m_ctx->present_sampler atIndex:0];
       [present_enc setViewport:(MTLViewport){0.0, 0.0, (double)window_w, (double)window_h, 0.0,
                                             1.0}];

@@ -193,8 +193,10 @@ void MetalRenderer::init_bucket_table() {
 bool MetalRenderer::init(id<MTLDevice> device,
                          id<MTLLibrary> library,
                          MTLPixelFormat color_format,
-                         MTLPixelFormat depth_format) {
+                         MTLPixelFormat depth_format,
+                         u32 sample_count) {
   m_render_state.device = device;
+  m_render_state.sample_count = sample_count;
   m_render_state.library = library;
   m_render_state.color_format = color_format;
   m_render_state.depth_format = depth_format;

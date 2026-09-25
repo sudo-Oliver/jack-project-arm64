@@ -32,7 +32,8 @@ class MetalRenderer {
   bool init(id<MTLDevice> device,
             id<MTLLibrary> library,
             MTLPixelFormat color_format,
-            MTLPixelFormat depth_format);
+            MTLPixelFormat depth_format,
+            u32 sample_count);
 
   // What the backend has to hand the frame beyond the encoder: the frame's own command buffer,
   // and the two hooks that split its render pass. See MetalRenderState.

@@ -80,6 +80,7 @@ bool MetalShadow::init(MetalRenderState* render_state) {
     desc.vertexFunction = vert;
     desc.fragmentFunction = frag;
     desc.vertexDescriptor = vd;
+    desc.rasterSampleCount = render_state->sample_count;
     desc.depthAttachmentPixelFormat = render_state->depth_format;
     desc.stencilAttachmentPixelFormat = render_state->depth_format;
     auto* color = desc.colorAttachments[0];

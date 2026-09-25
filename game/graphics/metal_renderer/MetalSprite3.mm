@@ -112,7 +112,7 @@ bool MetalSprite3::init(MetalRenderState* render_state) {
   vd.layouts[MetalBufferIndexVertex].stepFunction = MTLVertexStepFunctionPerVertex;
 
   m_impl->states.init(render_state->device, vert, frag, vd, render_state->color_format,
-                      render_state->depth_format);
+                      render_state->depth_format, render_state->sample_count);
 
   for (int i = 0; i < kMetalFramesInFlight; i++) {
     m_impl->vertex_buffers[i] = [m_impl->device
@@ -229,6 +229,7 @@ bool MetalSprite3::init_distort(MetalRenderState* render_state) {
   desc.vertexFunction = vert;
   desc.fragmentFunction = frag;
   desc.vertexDescriptor = vd;
+  desc.rasterSampleCount = render_state->sample_count;
   desc.depthAttachmentPixelFormat = render_state->depth_format;
   if (render_state->depth_format == MTLPixelFormatDepth32Float_Stencil8) {
     desc.stencilAttachmentPixelFormat = render_state->depth_format;

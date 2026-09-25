@@ -52,6 +52,8 @@ struct MetalDirect::Impl {
   MTLVertexDescriptor* vertex_desc = nil;
   MTLPixelFormat color_format = MTLPixelFormatInvalid;
   MTLPixelFormat depth_format = MTLPixelFormatInvalid;
+  // Must match the render pass these pipelines are used in.
+  u32 sample_count = 1;
   bool ready = false;
 
   u32 max_verts = 0;
@@ -93,6 +95,7 @@ id<MTLRenderPipelineState> MetalDirect::Impl::pipeline(const PipelineKey& key) {
   desc.vertexFunction = vert;
   desc.fragmentFunction = frag;
   desc.vertexDescriptor = vertex_desc;
+  desc.rasterSampleCount = sample_count;
   desc.depthAttachmentPixelFormat = depth_format;
   if (depth_format == MTLPixelFormatDepth32Float_Stencil8) {
     desc.stencilAttachmentPixelFormat = depth_format;
@@ -233,6 +236,7 @@ bool MetalDirect::init(MetalRenderState* render_state) {
   m_impl->device = render_state->device;
   m_impl->color_format = render_state->color_format;
   m_impl->depth_format = render_state->depth_format;
+  m_impl->sample_count = render_state->sample_count;
   m_impl->vert = [render_state->library newFunctionWithName:@"direct_basic_textured_vert"];
   m_impl->frag = [render_state->library newFunctionWithName:@"direct_basic_textured_frag"];
   if (!m_impl->vert || !m_impl->frag) {

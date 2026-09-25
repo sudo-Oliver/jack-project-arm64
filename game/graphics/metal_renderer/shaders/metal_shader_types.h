@@ -169,6 +169,19 @@ struct SpriteDrawUniforms {
   float pad0, pad1;
 };
 
+// present.metal. The scene's size in texels, and whether this is a magnification worth filtering.
+struct PresentUniforms {
+#ifdef __METAL_VERSION__
+  ::metal::float2 scene_size;
+#else
+  struct {
+    float x, y;
+  } scene_size;
+#endif
+  int upscale;
+  int pad0;
+};
+
 // imgui.metal. ImGui reports positions in screen pixels; these turn them into clip space.
 struct ImGuiUniforms {
 #ifdef __METAL_VERSION__

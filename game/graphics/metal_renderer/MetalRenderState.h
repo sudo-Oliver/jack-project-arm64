@@ -55,12 +55,15 @@ extern double g_metal_pipeline_build_seconds;
  */
 class MetalDrawStateCache {
  public:
+  // `sample_count` must match the render pass these pipelines are used in. It defaults to one,
+  // which is what an offscreen pass wants; the frame's own pass passes render_state->sample_count.
   void init(id<MTLDevice> device,
             id<MTLFunction> vert,
             id<MTLFunction> frag,
             MTLVertexDescriptor* vertex_desc,
             MTLPixelFormat color_format,
-            MTLPixelFormat depth_format);
+            MTLPixelFormat depth_format,
+            u32 sample_count = 1);
 
   // Returns nil and logs if the pipeline cannot be built. `write_mask` is for renderers that
   // draw colour and alpha in separate passes; on OpenGL that is glColorMask, on Metal it belongs
@@ -78,6 +81,7 @@ class MetalDrawStateCache {
   MTLVertexDescriptor* m_vertex_desc = nil;
   MTLPixelFormat m_color_format = MTLPixelFormatInvalid;
   MTLPixelFormat m_depth_format = MTLPixelFormatInvalid;
+  u32 m_sample_count = 1;
   std::unordered_map<u64, id<MTLRenderPipelineState>> m_pipelines;
   std::unordered_map<u32, id<MTLDepthStencilState>> m_depth_states;
   std::unordered_map<u32, id<MTLSamplerState>> m_samplers;
@@ -100,6 +104,8 @@ struct MetalRenderState {
   id<MTLCommandBuffer> offscreen_cmd = nil;
   MTLPixelFormat color_format = MTLPixelFormatInvalid;
   MTLPixelFormat depth_format = MTLPixelFormatInvalid;
+  // How many samples the frame's render pass has. Every pipeline used in it has to agree.
+  u32 sample_count = 1;
 
   // How a renderer that has to read the frame it is drawing into -- the depth cue, the sprite
   // distorter -- gets at it. Metal cannot sample the target of the pass that is currently

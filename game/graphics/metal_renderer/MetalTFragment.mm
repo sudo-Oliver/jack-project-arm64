@@ -98,7 +98,7 @@ bool MetalTFragment::init(MetalRenderState* render_state) {
   vd.layouts[MetalBufferIndexVertex].stepFunction = MTLVertexStepFunctionPerVertex;
 
   m_impl->states.init(render_state->device, vert, frag, vd, render_state->color_format,
-                      render_state->depth_format);
+                      render_state->depth_format, render_state->sample_count);
 
   // Build one now, so a broken shader or vertex layout is reported here rather than on the first
   // frame that happens to use that draw mode.

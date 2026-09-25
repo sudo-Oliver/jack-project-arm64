@@ -19,7 +19,9 @@ void MetalDrawStateCache::init(id<MTLDevice> device,
                                id<MTLFunction> frag,
                                MTLVertexDescriptor* vertex_desc,
                                MTLPixelFormat color_format,
-                               MTLPixelFormat depth_format) {
+                               MTLPixelFormat depth_format,
+                               u32 sample_count) {
+  m_sample_count = sample_count;
   m_device = device;
   m_vert = vert;
   m_frag = frag;
@@ -40,6 +42,7 @@ id<MTLRenderPipelineState> MetalDrawStateCache::pipeline(DrawMode mode,
   desc.vertexFunction = m_vert;
   desc.fragmentFunction = m_frag;
   desc.vertexDescriptor = m_vertex_desc;
+  desc.rasterSampleCount = m_sample_count;
   desc.depthAttachmentPixelFormat = m_depth_format;
   // A pipeline's attachment formats have to match the render pass it is used in, and the frame's
   // pass carries a stencil attachment because the shadow renderer needs one. A combined

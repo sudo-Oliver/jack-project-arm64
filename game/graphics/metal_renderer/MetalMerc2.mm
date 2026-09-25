@@ -125,7 +125,7 @@ bool MetalMerc2::init(MetalRenderState* render_state) {
   vd.layouts[MetalBufferIndexVertex].stepFunction = MTLVertexStepFunctionPerVertex;
 
   m_impl->states.init(render_state->device, vert, frag, vd, render_state->color_format,
-                      render_state->depth_format);
+                      render_state->depth_format, render_state->sample_count);
 
   // emerc: the environment-mapped pass, same vertex layout, different shader.
   id<MTLFunction> envmap_vert = [render_state->library newFunctionWithName:@"emerc_vert"];
@@ -135,7 +135,7 @@ bool MetalMerc2::init(MetalRenderState* render_state) {
     return false;
   }
   m_impl->envmap_states.init(render_state->device, envmap_vert, envmap_frag, vd,
-                             render_state->color_format, render_state->depth_format);
+                             render_state->color_format, render_state->depth_format, render_state->sample_count);
 
   m_impl->bones.device = render_state->device;
   m_impl->bones.length = MAX_SHADER_BONE_VECTORS * sizeof(math::Vector4f);

@@ -87,7 +87,7 @@ bool MetalShrub::init(MetalRenderState* render_state) {
   vd.layouts[MetalBufferIndexVertex].stepFunction = MTLVertexStepFunctionPerVertex;
 
   m_impl->states.init(render_state->device, vert, frag, vd, render_state->color_format,
-                      render_state->depth_format);
+                      render_state->depth_format, render_state->sample_count);
 
   DrawMode probe;
   probe.set_depth_write_enable(true);

@@ -36,6 +36,8 @@ struct MetalGeneric2::Impl {
   MTLVertexDescriptor* vertex_desc = nil;
   MTLPixelFormat color_format = MTLPixelFormatInvalid;
   MTLPixelFormat depth_format = MTLPixelFormatInvalid;
+  // Must match the render pass these pipelines are used in.
+  u32 sample_count = 1;
   bool ready = false;
 
   std::unordered_map<u32, id<MTLRenderPipelineState>> pipelines;
@@ -80,6 +82,7 @@ struct MetalGeneric2::Impl {
     desc.vertexFunction = vert;
     desc.fragmentFunction = frag;
     desc.vertexDescriptor = vertex_desc;
+    desc.rasterSampleCount = sample_count;
     desc.depthAttachmentPixelFormat = depth_format;
     if (depth_format == MTLPixelFormatDepth32Float_Stencil8) {
       desc.stencilAttachmentPixelFormat = depth_format;
@@ -209,6 +212,7 @@ bool MetalGeneric2::init(MetalRenderState* render_state) {
   m_impl->device = render_state->device;
   m_impl->color_format = render_state->color_format;
   m_impl->depth_format = render_state->depth_format;
+  m_impl->sample_count = render_state->sample_count;
 
   m_impl->vert = [render_state->library newFunctionWithName:@"generic_vert"];
   m_impl->frag = [render_state->library newFunctionWithName:@"generic_frag"];

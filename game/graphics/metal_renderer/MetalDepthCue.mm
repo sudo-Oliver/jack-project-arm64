@@ -92,6 +92,7 @@ bool MetalDepthCue::init(MetalRenderState* render_state) {
     desc.vertexFunction = vert;
     desc.fragmentFunction = frag;
     desc.vertexDescriptor = vd;
+    desc.rasterSampleCount = render_state->sample_count;
     desc.depthAttachmentPixelFormat = render_state->depth_format;
     if (render_state->depth_format == MTLPixelFormatDepth32Float_Stencil8) {
       desc.stencilAttachmentPixelFormat = render_state->depth_format;

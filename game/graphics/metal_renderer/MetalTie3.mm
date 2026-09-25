@@ -116,7 +116,7 @@ bool MetalTie3::init(MetalRenderState* render_state) {
   vd.layouts[MetalBufferIndexVertex].stepFunction = MTLVertexStepFunctionPerVertex;
 
   m_impl->states.init(render_state->device, vert, frag, vd, render_state->color_format,
-                      render_state->depth_format);
+                      render_state->depth_format, render_state->sample_count);
 
   // The swaying instances use their own shader: it is handed the instance's matrix rather than a
   // matrix with the perspective already folded in, so it does the divide itself.
@@ -127,7 +127,7 @@ bool MetalTie3::init(MetalRenderState* render_state) {
     return false;
   }
   m_impl->wind_states.init(render_state->device, wind_vert, wind_frag, vd,
-                           render_state->color_format, render_state->depth_format);
+                           render_state->color_format, render_state->depth_format, render_state->sample_count);
 
   id<MTLFunction> etie_base_vert = [render_state->library newFunctionWithName:@"etie_base_vert"];
   id<MTLFunction> etie_vert = [render_state->library newFunctionWithName:@"etie_vert"];
@@ -137,9 +137,9 @@ bool MetalTie3::init(MetalRenderState* render_state) {
     return false;
   }
   m_impl->etie_base_states.init(render_state->device, etie_base_vert, etie_frag, vd,
-                                render_state->color_format, render_state->depth_format);
+                                render_state->color_format, render_state->depth_format, render_state->sample_count);
   m_impl->etie_states.init(render_state->device, etie_vert, etie_frag, vd,
-                           render_state->color_format, render_state->depth_format);
+                           render_state->color_format, render_state->depth_format, render_state->sample_count);
 
   DrawMode probe;
   probe.set_depth_write_enable(true);
