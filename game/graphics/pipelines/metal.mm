@@ -553,7 +553,23 @@ void MetalDisplay::render() {
       dh = window_h;
     }
     // The game's own multisampling setting, the same one the OpenGL backend hands to its FBO.
-    u32 samples = (u32)std::max(1, Gfx::g_global_settings.msaa_samples);
+    //
+    // Pinned to one for now: with a multisample attachment the frame comes out with the colour
+    // wrong and blocks of stale content across it, and it does that whether or not the depth cue
+    // and the distorter split the pass, so the fault is in the multisample path itself rather
+    // than in the split. Everything else the feature needs is in place -- the resolve target,
+    // the rasterSampleCount on every pipeline that draws into the frame's pass -- so this is the
+    // one line to change once the cause is found. Shipping it enabled would mean shipping a
+    // broken picture to anyone whose settings ask for it.
+    u32 samples = 1;
+    if (Gfx::g_global_settings.msaa_samples > 1) {
+      static bool complained = false;
+      if (!complained) {
+        complained = true;
+        lg::warn("[Metal] msaa {} requested; the Metal backend draws without it for now",
+                 Gfx::g_global_settings.msaa_samples);
+      }
+    }
     while (samples > 1 && ![m_ctx->device supportsTextureSampleCount:samples]) {
       samples /= 2;
     }
@@ -567,12 +583,14 @@ void MetalDisplay::render() {
                                                          mipmapped:NO];
       sd.storageMode = MTLStorageModePrivate;
       if (samples > 1) {
-        // The multisample attachment is never read and never stored except on the frames that
-        // take a snapshot, so on an Apple GPU it can live entirely in tile memory.
+        // Not memoryless, however tempting: the depth cue and the sprite distorter end the
+        // frame's pass and start another one that loads the colour back, and a memoryless
+        // attachment's contents do not survive the end of a pass. With memoryless here the
+        // resumed pass reads undefined tile memory, which showed up as the clear colour bleeding
+        // through the whole frame.
         sd.textureType = MTLTextureType2DMultisample;
         sd.sampleCount = samples;
         sd.usage = MTLTextureUsageRenderTarget;
-        sd.storageMode = MTLStorageModeMemoryless;
         m_ctx->scene_texture = [m_ctx->device newTextureWithDescriptor:sd];
 
         MTLTextureDescriptor* rd =
@@ -613,9 +631,10 @@ void MetalDisplay::render() {
       dd.usage = MTLTextureUsageRenderTarget;
       dd.storageMode = MTLStorageModePrivate;
       if (samples > 1) {
+        // Private rather than memoryless, for the same reason as the colour above: the resumed
+        // pass loads the depth and the stencil back.
         dd.textureType = MTLTextureType2DMultisample;
         dd.sampleCount = samples;
-        dd.storageMode = MTLStorageModeMemoryless;
       }
       m_ctx->depth_texture = [m_ctx->device newTextureWithDescriptor:dd];
       m_ctx->depth_w = dw;
