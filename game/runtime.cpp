@@ -94,6 +94,11 @@
 u8* g_ee_main_mem = nullptr;
 bool g_ee_jit_code_dirty = false;
 #if defined(__APPLE__) && defined(__aarch64__)
+// Read once at startup, only ever read from the signal handler afterwards. See the
+// inventory block in sigbus_handler.
+static bool g_jit_detect = false;
+#endif
+#if defined(__APPLE__) && defined(__aarch64__)
 // 16MB GOAL execution stack in normal PROT_READ|PROT_WRITE memory (not MAP_JIT).
 // On Darwin 25, GOAL stack cannot be in MAP_JIT memory (W^X enforcement).
 static uint8_t g_goal_jit_stack_buf[16 * 1024 * 1024];
@@ -745,6 +750,59 @@ static void sigbus_handler(int sig, siginfo_t* info, void* ctx) {
 
     if (fault_addr >= ee_code_start && fault_addr < ee_code_end) {
 
+      // Inventory mode for the W^X migration. With GK_JIT_DETECT=1 in the environment, report
+      // each distinct faulting PC exactly once. The point is to enumerate every code path that
+      // writes into the code heap: once the handler stops emulating, each of those either has to
+      // be covered by an explicit write window or it becomes a hard crash.
+      //
+      // Everything here has to stay async-signal-safe: a fixed open-addressed table, relaxed
+      // atomics, and write(2). No malloc, no snprintf into shared state, no locks.
+      if (g_jit_detect) {
+        // A boot touches a few thousand distinct PCs, so size the table well above that: once it
+        // saturates, every fault reports again and the log becomes useless.
+        constexpr int kSeenSlots = 16384;
+        constexpr int kMaxProbes = 64;
+        static _Atomic uint64_t s_seen_pcs[kSeenSlots] = {};
+        static _Atomic bool s_table_full = false;
+        const uint64_t pc = uctx->uc_mcontext->__ss.__pc;
+        // Fibonacci hash, then linear probe.
+        uint32_t slot = (uint32_t)((pc * 0x9e3779b97f4a7c15ull) >> 50) & (kSeenSlots - 1);
+        bool first_time = false;
+        bool exhausted = true;
+        for (int probe = 0; probe < kMaxProbes; probe++) {
+          uint64_t expected = 0;
+          uint64_t& cell = *(uint64_t*)&s_seen_pcs[(slot + probe) & (kSeenSlots - 1)];
+          if (__atomic_compare_exchange_n(&cell, &expected, pc, false, __ATOMIC_RELAXED,
+                                          __ATOMIC_RELAXED)) {
+            first_time = true;  // claimed an empty slot: this PC is new
+            exhausted = false;
+            break;
+          }
+          if (expected == pc) {
+            exhausted = false;
+            break;
+          }
+        }
+        if (exhausted) {
+          // Say so once rather than silently under-reporting.
+          bool expected_full = false;
+          bool& full_cell = *(bool*)&s_table_full;
+          if (__atomic_compare_exchange_n(&full_cell, &expected_full, true, false,
+                                          __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+            write(2, "[JIT-DETECT] PC table is full; further sites are not reported\n", 61);
+          }
+        }
+        if (first_time) {
+          char dbuf[192];
+          int dn = __builtin_snprintf(
+              dbuf, sizeof(dbuf),
+              "[JIT-DETECT] pc=0x%llx lr=0x%llx fault=EE+0x%zx region=code+0x%zx\n",
+              (unsigned long long)pc, (unsigned long long)uctx->uc_mcontext->__ss.__lr,
+              (size_t)(fault_addr - ee_base), (size_t)(fault_addr - ee_code_start));
+          write(2, dbuf, dn);
+        }
+      }
+
       auto& ss = uctx->uc_mcontext->__ss;
       auto& ns = uctx->uc_mcontext->__ns;
       auto gpr = [&](int r) -> uint64_t {
@@ -1165,6 +1223,10 @@ RuntimeExitStatus exec_runtime(GameLaunchOptions game_options, int argc, const c
 #endif
   // Install SIGBUS handler to diagnose MAP_JIT protection faults
   {
+#if defined(__APPLE__) && defined(__aarch64__)
+    // Read before the handler can run, so the handler never touches the environment itself.
+    g_jit_detect = getenv("GK_JIT_DETECT") != nullptr;
+#endif
     struct sigaction sa{};
     sa.sa_sigaction = sigbus_handler;
     sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
