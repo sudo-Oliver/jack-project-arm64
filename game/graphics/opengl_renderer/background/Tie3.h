@@ -5,6 +5,7 @@
 #include "common/util/FilteredValue.h"
 
 #include "game/graphics/gfx.h"
+#include "game/graphics/background/TieWind.h"
 #include "game/graphics/opengl_renderer/BucketRenderer.h"
 #include "game/graphics/opengl_renderer/background/background_common.h"
 #include "game/graphics/pipelines/opengl.h"
@@ -73,16 +74,10 @@ class Tie3 : public BucketRenderer {
                            ScopedProfilerNode& prof,
                            tfrag3::TieCategory category);
 
-  struct WindWork {
-    u32 paused;
-    u32 pad[3];
-    math::Vector4f wind_array[64];
-    math::Vector4f wind_normal;
-    math::Vector4f wind_temp;
-    float wind_force[64];
-    u32 wind_time;
-    u32 pad2[3];
-  } m_wind_data;
+  // The wind state, and the maths that turns it into a per-instance matrix, are shared with the
+  // Metal backend.
+  using WindWork = TieWindWork;
+  TieWindWork m_wind_data;
 
   int lod() const { return Gfx::g_global_settings.lod_tie; }
 

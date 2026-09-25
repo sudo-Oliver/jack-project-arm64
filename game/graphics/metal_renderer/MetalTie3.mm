@@ -25,6 +25,11 @@ struct TieTreeCache {
   std::array<id<MTLBuffer>, kMetalFramesInFlight> index_buffer = {nil, nil, nil};
   std::array<id<MTLBuffer>, kMetalFramesInFlight> time_of_day = {nil, nil, nil};
   std::vector<math::Vector<u8, 4>> color_scratch;
+
+  // Where each wind draw's slice of the tree's wind index buffer starts. The loader packs every
+  // wind draw's stream into one buffer, in draw order, and does not record the offsets.
+  std::vector<u32> wind_index_offsets;
+  std::vector<std::array<math::Vector4f, 4>> wind_matrices;
 };
 
 // The categories this renderer draws. NORMAL is the plain geometry; NORMAL_ENVMAP is the base pass
@@ -45,6 +50,12 @@ struct MetalTie3::Impl {
 
   u64 cached_load_id = UINT64_MAX;
   std::vector<TieTreeCache> trees;
+
+  // The wind sway is integrated over time, so this has to survive between frames.
+  std::vector<float> wind_vectors;
+  float wind_multiplier = 1.f;
+  id<MTLRenderPipelineState> wind_probe_pso = nil;
+  MetalDrawStateCache wind_states;
 
   std::vector<u8> vis_temp;
   std::vector<std::pair<int, int>> draw_idx_temp;
@@ -98,9 +109,23 @@ bool MetalTie3::init(MetalRenderState* render_state) {
   m_impl->states.init(render_state->device, vert, frag, vd, render_state->color_format,
                       render_state->depth_format);
 
+  // The swaying instances use their own shader: it is handed the instance's matrix rather than a
+  // matrix with the perspective already folded in, so it does the divide itself.
+  id<MTLFunction> wind_vert = [render_state->library newFunctionWithName:@"tie_wind_vert"];
+  id<MTLFunction> wind_frag = [render_state->library newFunctionWithName:@"tie_wind_frag"];
+  if (!wind_vert || !wind_frag) {
+    lg::error("[Metal] tie_wind shader entry points missing from the library");
+    return false;
+  }
+  m_impl->wind_states.init(render_state->device, wind_vert, wind_frag, vd,
+                           render_state->color_format, render_state->depth_format);
+
   DrawMode probe;
   probe.set_depth_write_enable(true);
   if (!m_impl->states.pipeline(probe)) {
+    return false;
+  }
+  if (!m_impl->wind_states.pipeline(probe)) {
     return false;
   }
   m_impl->ready = true;
@@ -110,8 +135,15 @@ bool MetalTie3::init(MetalRenderState* render_state) {
 void MetalTie3::render(DmaFollower& dma, MetalRenderState* render_state) {
   m_last_frame_tris = 0;
 
+  // The wind state rides in this bucket, and nothing else here reads the chain, so pick it out on
+  // the way past. It is the one transfer in the bucket the size of a TieWindWork.
+  m_has_wind_data = false;
   while (dma.current_tag_offset() != render_state->next_bucket && !dma.ended()) {
-    dma.read_and_advance();
+    auto transfer = dma.read_and_advance();
+    if (!m_has_wind_data && transfer.size_bytes == (int)sizeof(TieWindWork)) {
+      memcpy(&m_wind_data, transfer.data, sizeof(TieWindWork));
+      m_has_wind_data = true;
+    }
   }
 
   const auto& slot = render_state->level_slots[m_level_id];
@@ -151,6 +183,14 @@ void MetalTie3::draw_level(MetalRenderState* render_state, const LevelData& leve
                                         options:MTLResourceStorageModeShared];
       }
       cache.color_scratch.resize(in_tree.colors.color_count);
+
+      // The loader concatenates every wind draw's index stream into one buffer, in draw order.
+      cache.wind_index_offsets.clear();
+      u32 wind_off = 0;
+      for (const auto& draw : in_tree.instanced_wind_draws) {
+        cache.wind_index_offsets.push_back(wind_off);
+        wind_off += draw.vertex_index_stream.size();
+      }
       max_inds = std::max(max_inds, in_tree.unpacked.indices.size());
       max_draws = std::max(max_draws, in_tree.static_draws.size());
       max_vis = std::max(max_vis, in_tree.bvh.vis_nodes.size());
@@ -289,6 +329,119 @@ void MetalTie3::draw_level(MetalRenderState* render_state, const LevelData& leve
         }
         m_last_frame_tris += draw.num_triangles;
       }
+    }
+
+    draw_tree_wind(render_state, level, tree_idx, in_tree);
+  }
+}
+
+/*!
+ * The swaying instances. One draw per instance group, because the matrix changes per instance.
+ */
+void MetalTie3::draw_tree_wind(MetalRenderState* render_state,
+                               const LevelData& level,
+                               size_t tree_idx,
+                               const tfrag3::TieTree& in_tree) {
+  if (in_tree.instanced_wind_draws.empty() || !m_has_wind_data) {
+    return;
+  }
+  const auto& tie_gl = level.tie_data[0].at(tree_idx);
+  if (!tie_gl.has_wind) {
+    return;
+  }
+  id<MTLBuffer> wind_index_buffer = metal_buffer_from_handle(tie_gl.wind_indices);
+  id<MTLBuffer> vertex_buffer = metal_buffer_from_handle(tie_gl.vertex_buffer);
+  auto& cache = m_impl->trees[tree_idx];
+  const int frame = (m_impl->frame + kMetalFramesInFlight - 1) % kMetalFramesInFlight;
+  id<MTLBuffer> tod_buffer = cache.time_of_day[frame];
+  if (!wind_index_buffer || !vertex_buffer || !tod_buffer) {
+    return;
+  }
+
+  const auto& camera = render_state->level_slots[m_level_id].camera;
+  std::array<math::Vector4f, 4> cam;
+  for (int i = 0; i < 4; i++) {
+    cam[i] = camera.camera[i];
+  }
+  compute_tie_wind_matrices(m_wind_data, in_tree.wind_instance_info, cam,
+                            m_impl->wind_multiplier, m_impl->wind_vectors, cache.wind_matrices);
+
+  id<MTLRenderCommandEncoder> encoder = render_state->encoder;
+  TieWindUniforms u{};
+  u.hvdf_offset = {camera.hvdf_off[0], camera.hvdf_off[1], camera.hvdf_off[2],
+                   camera.hvdf_off[3]};
+  u.fog_color = {render_state->fog_color[0] / 255.f, render_state->fog_color[1] / 255.f,
+                 render_state->fog_color[2] / 255.f, render_state->fog_intensity / 255.f};
+  u.fog_constant = camera.fog.x();
+  u.fog_min = camera.fog.y();
+  u.fog_max = camera.fog.z();
+  u.scissor_adjust = 512.f / 448.f;
+  u.height_scale = 1.f;
+  u.gfx_hack_no_tex = 0;
+
+  [encoder setVertexBuffer:vertex_buffer offset:0 atIndex:MetalBufferIndexVertex];
+  [encoder setVertexBuffer:tod_buffer offset:0 atIndex:MetalBufferIndexTimeOfDay];
+
+  for (size_t draw_idx = 0; draw_idx < in_tree.instanced_wind_draws.size(); draw_idx++) {
+    const auto& draw = in_tree.instanced_wind_draws[draw_idx];
+    if (draw.tree_tex_id < 0 || (size_t)draw.tree_tex_id >= level.textures.size()) {
+      continue;
+    }
+    id<MTLTexture> texture = metal_texture_from_handle(level.textures[draw.tree_tex_id]);
+    if (!texture) {
+      continue;
+    }
+    id<MTLRenderPipelineState> pso = m_impl->wind_states.pipeline(draw.mode);
+    if (!pso) {
+      continue;
+    }
+    const DoubleDraw double_draw = alpha_test_double_draw(draw.mode);
+    u.decal = draw.mode.get_decal() ? 1 : 0;
+
+    [encoder setRenderPipelineState:pso];
+    [encoder setFragmentSamplerState:m_impl->wind_states.sampler(draw.mode) atIndex:0];
+    [encoder setFragmentTexture:texture atIndex:0];
+
+    u32 off = 0;
+    for (const auto& grp : draw.instance_groups) {
+      if (grp.vis_idx >= m_impl->vis_temp.size() || !m_impl->vis_temp[grp.vis_idx]) {
+        off += grp.num;
+        continue;  // invisible, skip.
+      }
+      if (grp.instance_idx >= cache.wind_matrices.size()) {
+        off += grp.num;
+        continue;
+      }
+      const auto& mat = cache.wind_matrices[grp.instance_idx];
+      for (int col = 0; col < 4; col++) {
+        u.camera.col[col] = {mat[col][0], mat[col][1], mat[col][2], mat[col][3]};
+      }
+
+      u.alpha_min = double_draw.aref_first;
+      u.alpha_max = 10.f;
+      [encoder setDepthStencilState:m_impl->wind_states.depth_state(draw.mode, false)];
+      [encoder setVertexBytes:&u length:sizeof(u) atIndex:MetalBufferIndexUniforms];
+      [encoder setFragmentBytes:&u length:sizeof(u) atIndex:MetalBufferIndexUniforms];
+      [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangleStrip
+                          indexCount:grp.num
+                           indexType:MTLIndexTypeUInt32
+                         indexBuffer:wind_index_buffer
+                   indexBufferOffset:(off + cache.wind_index_offsets[draw_idx]) * sizeof(u32)];
+      m_last_frame_tris += grp.num;
+
+      if (double_draw.kind == DoubleDrawKind::AFAIL_NO_DEPTH_WRITE) {
+        u.alpha_min = -10.f;
+        u.alpha_max = double_draw.aref_second;
+        [encoder setDepthStencilState:m_impl->wind_states.depth_state(draw.mode, true)];
+        [encoder setVertexBytes:&u length:sizeof(u) atIndex:MetalBufferIndexUniforms];
+        [encoder setFragmentBytes:&u length:sizeof(u) atIndex:MetalBufferIndexUniforms];
+        [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangleStrip
+                            indexCount:grp.num
+                             indexType:MTLIndexTypeUInt32
+                           indexBuffer:wind_index_buffer
+                     indexBufferOffset:(off + cache.wind_index_offsets[draw_idx]) * sizeof(u32)];
+      }
+      off += grp.num;
     }
   }
 }

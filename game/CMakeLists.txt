@@ -51,6 +51,7 @@ set(RUNTIME_SOURCE
         graphics/ocean/CommonOceanRendererCore.cpp
         graphics/ocean/OceanTextureCore.cpp
         graphics/foreground/Merc2Core.cpp
+        graphics/background/TieWind.cpp
         graphics/depth_cue/DepthCueCore.cpp
         graphics/shadow/ShadowRendererCore.cpp
         graphics/shadow/ShadowRendererCore_PS2.cpp

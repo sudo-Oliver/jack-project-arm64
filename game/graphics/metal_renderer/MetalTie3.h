@@ -10,14 +10,18 @@
  * baked into the unpacked vertices by the loader. So this renderer is MetalTFragment with the
  * geometry taken from the tie buffers and the draws taken from a category range.
  *
- * Not yet done: the envmap second draw (the shiny pass, which needs the ETIE shader) and the wind
- * instances. The envmap *base* draw is included, with the plain shader -- see the note in the
- * implementation.
+ * The swaying instances -- the palm trees, the banners -- are a second pass with their own shader
+ * and their own index buffer, because each instance is drawn with its own matrix rather than the
+ * camera's. The maths that builds those matrices is shared with the OpenGL backend.
+ *
+ * Not yet done: the envmap second draw, the shiny pass, which needs the ETIE shader. The envmap
+ * *base* draw is included, with the plain shader -- see the note in the implementation.
  */
 
 #include <memory>
 #include <string>
 
+#include "game/graphics/background/TieWind.h"
 #include "game/graphics/metal_renderer/MetalRenderState.h"
 
 #ifdef __OBJC__
@@ -34,6 +38,14 @@ class MetalTie3 : public MetalBucketRenderer {
 
  private:
   void draw_level(MetalRenderState* render_state, const LevelData& level);
+  void draw_tree_wind(MetalRenderState* render_state,
+                      const LevelData& level,
+                      size_t tree_idx,
+                      const tfrag3::TieTree& in_tree);
+
+  // The wind state the game sends once per frame, in this bucket's own DMA.
+  TieWindWork m_wind_data{};
+  bool m_has_wind_data = false;
 
   struct Impl;
   std::unique_ptr<Impl> m_impl;

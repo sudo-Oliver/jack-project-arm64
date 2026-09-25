@@ -191,6 +191,24 @@ struct GenericUniforms {
   int pad0;
 };
 
+// tie_wind.metal. `camera` is the swaying instance's own matrix, already multiplied by the
+// camera's, so it changes per draw; everything else is per frame.
+struct TieWindUniforms {
+  METAL_FLOAT4X4 camera;
+  METAL_FLOAT4 hvdf_offset;
+  METAL_FLOAT4 fog_color;
+  float fog_constant;
+  float fog_min;
+  float fog_max;
+  float alpha_min;
+  float alpha_max;
+  float scissor_adjust;
+  float height_scale;
+  int decal;
+  int gfx_hack_no_tex;
+  int pad0, pad1, pad2;
+};
+
 // depth_cue.metal. The flat colour and the clip-space depth the pass draws at.
 struct DepthCueUniforms {
   METAL_FLOAT4 u_color;
