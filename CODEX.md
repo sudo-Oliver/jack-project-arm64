@@ -55,6 +55,40 @@ which is both at once.
 The depth attachment is `Depth32Float_Stencil8`: the shadow renderer draws stencil shadow
 volumes. Every pipeline has to declare the stencil format too, or its draws fail.
 
+The scene is drawn at the game's own resolution (`game_res_w/h`, the same setting the OpenGL
+backend sizes its FBO from) and the final pass scales it onto the window. That pass uses the
+Catmull-Rom form of a bicubic rather than a bilinear stretch, which is where the picture is
+sharper than the OpenGL backend's blit.
+
+The debug GUI works: `MetalImGui` is the renderer half (ImGui's own Metal backend is not
+vendored here), the platform half is ImGui's `imgui_impl_sdl3` shared with the OpenGL display,
+and the menu itself is `OpenGlDebugGui` unchanged. Same toggle key as OpenGL. The renderer has to
+be initialised **before** the first `NewFrame`: ImGui builds its font atlas through the renderer
+backend, and doing it lazily crashes inside `ImGui::Begin`.
+
+**Multisampling does not work yet and is pinned off.** With a multisample attachment the colour
+comes out wrong and blocks of stale content appear across the frame. It is not the pass split:
+the same artifacts appear with the depth cue and the distorter both prevented from splitting. It
+is not the memoryless storage the attachments started with either, though that was a real bug and
+is fixed. Everything else the feature needs is in place, so re-enabling it is one line in
+`metal.mm` once the cause is found.
+
+### Measured against OpenGL
+
+The frame rate says nothing: the GOAL engine paces itself to 60 on both backends. What compares
+them is GPU milliseconds per frame, which both now report behind `OPENGOAL_FPS_LOG=1` -- from the
+command buffer on Metal, from a timer query on OpenGL. `OPENGOAL_VSYNC=0` unpins the display.
+
+village1, 3008x1692 into a 6016x3384 window, one sample:
+
+| | GPU ms |
+|---|---|
+| OpenGL | 7.4 |
+| Metal | 6.9 |
+
+Metal was 11.5 ms before it honoured the resolution setting -- it had been drawing at the
+drawable's full 6016x3384, four times the pixels.
+
 | Renderer | Buckets (jak1) | Metal |
 |---|---|---|
 | `TFragment` | 6 | done |
