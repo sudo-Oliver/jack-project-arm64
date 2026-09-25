@@ -10,7 +10,8 @@
  * around each write; this collects that in one place instead of open-coding mprotect at each
  * site.
  *
- * Local change: OS_POSIX comes from common_types.h here, not from a separate BuildConfig.h.
+ * Local changes: OS_POSIX comes from common_types.h here, not from a separate BuildConfig.h,
+ * and OG_EXECUTION_MODE_AOT is defaulted below because this tree has no AOT build mode.
  */
 
 #include <cerrno>
@@ -30,6 +31,13 @@
 #include <sys/mman.h>
 #elif defined(_WIN32)
 #include "third-party/mman/mman.h"
+#endif
+
+// This tree has no ahead-of-time execution mode. Upstream defines this through its build
+// config; define it here so the #if tests below read as intentional rather than relying on
+// an undefined macro evaluating to zero.
+#ifndef OG_EXECUTION_MODE_AOT
+#define OG_EXECUTION_MODE_AOT 0
 #endif
 
 namespace jit_memory {
