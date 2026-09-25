@@ -206,9 +206,12 @@ MetalGeneric2::~MetalGeneric2() {
 }
 
 bool MetalGeneric2::init(MetalRenderState* render_state) {
-  if (m_impl->ready) {
+  // Ten buckets share one of these, so init() is called ten times. It only does the work once --
+  // unless the sample count changed, which invalidates every pipeline it built.
+  if (m_impl->ready && m_impl->sample_count == render_state->sample_count) {
     return true;
   }
+  m_impl->pipelines.clear();
   m_impl->device = render_state->device;
   m_impl->color_format = render_state->color_format;
   m_impl->depth_format = render_state->depth_format;

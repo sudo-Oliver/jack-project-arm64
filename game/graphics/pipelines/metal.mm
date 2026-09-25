@@ -540,38 +540,43 @@ void MetalDisplay::render() {
       return;
     }
 
-    // The game is drawn at the resolution the game's own settings ask for, and the final pass
-    // scales it onto the drawable -- the same thing the OpenGL backend does with its render FBO
-    // and the blit out of it. Rendering at the drawable's size instead would ignore the setting,
-    // and on a Retina display that is four times the pixels for no one's benefit.
+    // Where the game is drawn, in pixels.
+    //
+    // The game's resolution list is in points -- it is built from the display modes SDL reports,
+    // which on macOS are point sizes. So "the window's resolution" in that list reads as
+    // 3008x1692 on a display whose backing store is 6016x3384, and rendering at it would throw
+    // away three quarters of the pixels the display actually has.
+    //
+    // So: when the setting asks for the window's own size, draw at the backing store's size --
+    // the native Retina resolution -- and present one to one. When it asks for anything else,
+    // draw at that and let the final pass upscale, which is what the bicubic there is for.
     const u32 window_w = (u32)drawable.texture.width;
     const u32 window_h = (u32)drawable.texture.height;
+    int window_pt_w = 0, window_pt_h = 0;
+    SDL_GetWindowSize(m_window, &window_pt_w, &window_pt_h);
+
     u32 dw = (u32)Gfx::g_global_settings.game_res_w;
     u32 dh = (u32)Gfx::g_global_settings.game_res_h;
-    if (dw == 0 || dh == 0) {
+    if (dw == 0 || dh == 0 || ((int)dw == window_pt_w && (int)dh == window_pt_h)) {
       dw = window_w;
       dh = window_h;
     }
     // The game's own multisampling setting, the same one the OpenGL backend hands to its FBO.
     //
-    // Pinned to one for now: with a multisample attachment the frame comes out with the colour
-    // wrong and blocks of stale content across it, and it does that whether or not the depth cue
-    // and the distorter split the pass, so the fault is in the multisample path itself rather
-    // than in the split. Everything else the feature needs is in place -- the resolve target,
-    // the rasterSampleCount on every pipeline that draws into the frame's pass -- so this is the
-    // one line to change once the cause is found. Shipping it enabled would mean shipping a
-    // broken picture to anyone whose settings ask for it.
+    // Deliberately one sample. On this backend the frame is drawn at the display's native
+    // resolution, which already resolves the edges a multisample pass would -- and a multisample
+    // pass would additionally cost a resolve every frame, plus a store and load of the
+    // multisample attachment on every frame the depth cue or the distorter splits the pass,
+    // which is every frame. The plumbing for it is all here (the resolve target, the matching
+    // rasterSampleCount on every pipeline, the rebuild when the count changes), so this is one
+    // line to change if it is ever wanted.
     u32 samples = 1;
-    if (Gfx::g_global_settings.msaa_samples > 1) {
-      static bool complained = false;
-      if (!complained) {
-        complained = true;
-        lg::warn("[Metal] msaa {} requested; the Metal backend draws without it for now",
-                 Gfx::g_global_settings.msaa_samples);
-      }
-    }
-    while (samples > 1 && ![m_ctx->device supportsTextureSampleCount:samples]) {
-      samples /= 2;
+
+    // The game applies its settings some way into the boot, so this changes at least once after
+    // the renderer has built its pipelines. They have to be rebuilt to match, or every draw
+    // fails and the frame comes out as the clear colour with fragments of geometry over it.
+    if (g_metal_gfx_data && g_metal_gfx_data->renderer_ready) {
+      g_metal_gfx_data->renderer->set_sample_count(samples);
     }
 
     if (!m_ctx->scene_texture || m_ctx->scene_w != dw || m_ctx->scene_h != dh ||

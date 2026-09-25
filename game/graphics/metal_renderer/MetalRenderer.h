@@ -53,6 +53,11 @@ class MetalRenderer {
                                      u32 viewport_height,
                                      const FrameHooks& hooks);
 
+  // The game applies its own settings some way into the boot, so the sample count the pipelines
+  // were built with can stop matching the render pass. A pipeline whose sample count disagrees
+  // with the pass fails every draw, so when it changes, every pipeline is rebuilt.
+  void set_sample_count(u32 sample_count);
+
   // Triangles drawn on the last frame, summed over every bucket that counts them.
   u32 last_frame_tris() const { return m_last_frame_tris; }
 

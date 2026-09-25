@@ -239,6 +239,22 @@ bool MetalRenderer::init(id<MTLDevice> device,
   return true;
 }
 
+void MetalRenderer::set_sample_count(u32 sample_count) {
+  if (!m_ready || sample_count == m_render_state.sample_count) {
+    return;
+  }
+  lg::info("[Metal] sample count {} -> {}; rebuilding pipelines",
+           m_render_state.sample_count, sample_count);
+  m_render_state.sample_count = sample_count;
+  for (auto& renderer : m_bucket_renderers) {
+    if (!renderer->init(&m_render_state)) {
+      lg::error("[Metal] bucket renderer {} failed to rebuild", renderer->name());
+      m_ready = false;
+      return;
+    }
+  }
+}
+
 void MetalRenderer::scan_frame_state(DmaFollower dma) {
   // The camera and the occlusion strings arrive in specific buckets, but the renderers that need
   // them run in others. The OpenGL backend passes them along its SharedRenderState as the buckets
