@@ -3,8 +3,6 @@
 #include "common/dma/gs.h"
 #include "common/math/Vector.h"
 
-#include "game/graphics/opengl_renderer/BucketRenderer.h"
-#include "game/graphics/opengl_renderer/DirectRenderer.h"
 
 using math::Matrix4f;
 using math::Vector4f;

@@ -1,7 +1,8 @@
 #pragma once
 
 #include "game/graphics/gfx.h"
-#include "game/graphics/opengl_renderer/sprite/sprite_common.h"
+#include "game/graphics/opengl_renderer/BucketRenderer.h"
+#include "game/graphics/sprite/sprite_common.h"
 
 class GlowRenderer {
  public:

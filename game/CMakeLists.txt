@@ -51,6 +51,8 @@ set(RUNTIME_SOURCE
         graphics/ocean/CommonOceanRendererCore.cpp
         graphics/ocean/OceanTextureCore.cpp
         graphics/foreground/Merc2Core.cpp
+        graphics/sprite/Sprite3Core.cpp
+        graphics/sprite/Sprite3Core_Distort.cpp
         graphics/opengl_renderer/DirectRenderer2.cpp
         graphics/opengl_renderer/dma_helpers.cpp
         graphics/eye/EyeRendererCore.cpp

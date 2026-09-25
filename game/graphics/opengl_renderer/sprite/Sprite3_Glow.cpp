@@ -178,9 +178,9 @@ bool glow_math(const SpriteGlowConsts* consts,
 /*!
  * Handle glow dma and draw glow sprites using GlowRenderer
  */
-void Sprite3::glow_dma_and_draw(DmaFollower& dma,
-                                SharedRenderState* render_state,
-                                ScopedProfilerNode& prof) {
+void Sprite3::glow_dma_and_draw_ogl(DmaFollower& dma) {
+  auto* render_state = m_current_render_state;
+  auto& prof = *m_current_prof;
   auto maybe_consts_setup = dma.read_and_advance();
   if (maybe_consts_setup.size_bytes != sizeof(SpriteGlowConsts)) {
     return;
