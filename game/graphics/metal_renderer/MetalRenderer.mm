@@ -11,6 +11,7 @@
 
 #include "game/graphics/metal_renderer/MetalDirect.h"
 #include "game/graphics/metal_renderer/MetalEye.h"
+#include "game/graphics/metal_renderer/MetalGeneric2.h"
 #include "game/graphics/metal_renderer/MetalMerc2.h"
 #include "game/graphics/metal_renderer/MetalOcean.h"
 #include "game/graphics/metal_renderer/MetalShrub.h"
@@ -147,6 +148,26 @@ void MetalRenderer::init_bucket_table() {
         std::make_unique<MetalMerc2BucketRenderer>(name, (int)id, m_merc2);
   }
 
+  // The generic buckets: the fallback renderer. All ten share one MetalGeneric2, the way the
+  // OpenGL table shares one Generic2 -- the draws are sorted per bucket, not pooled.
+  m_generic2 = std::make_shared<MetalGeneric2>();
+  const std::pair<const char*, BucketId> generic_buckets[] = {
+      {"l0-tfrag-generic", BucketId::GENERIC_TFRAG_TEX_LEVEL0},
+      {"l1-tfrag-generic", BucketId::GENERIC_TFRAG_TEX_LEVEL1},
+      {"l0-shrub-generic", BucketId::SHRUB_GENERIC_LEVEL0},
+      {"l1-shrub-generic", BucketId::SHRUB_GENERIC_LEVEL1},
+      {"common-alpha-generic", BucketId::GENERIC_ALPHA},
+      {"l0-pris-generic", BucketId::GENERIC_PRIS_LEVEL0},
+      {"l1-pris-generic", BucketId::GENERIC_PRIS_LEVEL1},
+      {"common-pris-generic", BucketId::GENERIC_PRIS},
+      {"l0-water-generic", BucketId::GENERIC_WATER_LEVEL0},
+      {"l1-water-generic", BucketId::GENERIC_WATER_LEVEL1},
+  };
+  for (const auto& [name, id] : generic_buckets) {
+    m_bucket_renderers[(int)id] = std::make_unique<MetalGeneric2BucketRenderer>(
+        name, (int)id, m_generic2, MetalGeneric2::Mode::NORMAL);
+  }
+
   // The character shadows, as stencil shadow volumes.
   m_bucket_renderers[(int)BucketId::SHADOW] =
       std::make_unique<MetalShadow>("shadow", (int)BucketId::SHADOW);
@@ -280,6 +301,9 @@ void MetalRenderer::render(DmaFollower dma,
   if (m_merc2) {
     m_merc2->reset_tri_count();
   }
+  if (m_generic2) {
+    m_generic2->reset_tri_count();
+  }
   m_render_state.encoder = encoder;
   m_render_state.offscreen_cmd = offscreen_cmd;
   m_render_state.viewport_width = viewport_width;
@@ -356,6 +380,9 @@ void MetalRenderer::render(DmaFollower dma,
   }
   if (m_merc2) {
     m_last_frame_tris += m_merc2->last_frame_tris();
+  }
+  if (m_generic2) {
+    m_last_frame_tris += m_generic2->last_frame_tris();
   }
   m_render_state.encoder = nil;
   m_render_state.offscreen_cmd = nil;

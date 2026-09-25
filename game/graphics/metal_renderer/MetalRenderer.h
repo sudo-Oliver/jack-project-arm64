@@ -52,6 +52,7 @@ class MetalRenderer {
   MetalRenderState m_render_state;
   // Shared by all eight merc buckets, like the OpenGL table's single Merc2.
   std::shared_ptr<class MetalMerc2> m_merc2;
+  std::shared_ptr<class MetalGeneric2> m_generic2;
   // Shared by the two sky-blend buckets, which build the same pair of textures.
   std::shared_ptr<class MetalSkyBlend> m_sky_blend;
   std::vector<std::unique_ptr<MetalBucketRenderer>> m_bucket_renderers;

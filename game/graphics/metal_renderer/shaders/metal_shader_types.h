@@ -167,6 +167,28 @@ struct SpriteDrawUniforms {
   float pad0, pad1;
 };
 
+// generic.metal. One struct for the whole renderer: the projection the VU program would have
+// applied, the fog, and the per-draw alpha reject and colour multiplier.
+struct GenericUniforms {
+  METAL_FLOAT4X4 full_matrix;
+  METAL_FLOAT4 scale;
+  METAL_FLOAT4 hvdf_offset;
+  METAL_FLOAT4 fog_color;
+  METAL_FLOAT4 fog_constants;  // pfog0, fog_min, fog_max, unused
+  float mat_23;
+  float mat_32;
+  float mat_33;
+  float alpha_reject;
+  float color_mult;
+  float scissor_adjust;
+  float height_scale;
+  float scissor_height;
+  int use_full_matrix;
+  int warp_sample_mode;
+  int gfx_hack_no_tex;
+  int pad0;
+};
+
 // shadow.metal. The flat colour of the pass being drawn, and the vertical scissor adjust that
 // the GLSL had substituted in at compile time.
 struct ShadowUniforms {
