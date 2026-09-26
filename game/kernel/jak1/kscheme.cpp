@@ -7,6 +7,7 @@
 #endif
 
 #include "common/common_types.h"
+#include "common/jit_memory.h"
 #include "common/log/log.h"
 #include "common/symbols.h"
 #include "common/util/Timer.h"
@@ -87,6 +88,22 @@ u64 alloc_from_heap(u32 heapSymbol, u32 type, s32 size, u32 pp) {
   }
   ASSERT(size > 0);
 
+  u32 allocation_flags = KMALLOC_MEMSET;
+  const char* allocation_name = "global-object";
+#if defined(__APPLE__) && defined(__aarch64__)
+  // A function object holds code: C trampolines, mips2c stubs, and GOAL functions built at
+  // runtime. Its page has to become executable, so it must not share one with ordinary heap data.
+  // The check comes before the type-name lookups below, because the function type itself is
+  // allocated before its GOAL symbol exists.
+  //
+  // The name matters: kmalloc packs small allocations named "function" into shared executable
+  // pages. Without that, every 0x40-byte trampoline would take a 16 kB page of its own.
+  if (type && type == *(s7 + FIX_SYM_FUNCTION_TYPE)) {
+    allocation_flags |= KMALLOC_EXECUTABLE;
+    allocation_name = "function";
+  }
+#endif
+
   // align to 16 bytes (part one)
   s32 alignedSize = size + 0xf;
 
@@ -104,27 +121,28 @@ u64 alloc_from_heap(u32 heapSymbol, u32 type, s32 size, u32 pp) {
     // it's a kheap, so just kmalloc.
 
     if (!type) {  // no type given, just call it a global-object
-      return kmalloc(*Ptr<Ptr<kheapinfo>>(heapSymbol), size, KMALLOC_MEMSET, "global-object")
+      return kmalloc(*Ptr<Ptr<kheapinfo>>(heapSymbol), size, allocation_flags, allocation_name)
           .offset;
     }
 
     Ptr<Type> typ(type);
     if (!typ->symbol.offset) {  // type doesn't have a symbol, just call it a global-object
-      return kmalloc(*Ptr<Ptr<kheapinfo>>(heapSymbol), size, KMALLOC_MEMSET, "global-object")
+      return kmalloc(*Ptr<Ptr<kheapinfo>>(heapSymbol), size, allocation_flags, allocation_name)
           .offset;
     }
 
     Ptr<String> gstr = info(typ->symbol)->str;
     if (!gstr.offset) {  // str was never written
-      return kmalloc(*Ptr<Ptr<kheapinfo>>(heapSymbol), size, KMALLOC_MEMSET, "global-object")
+      return kmalloc(*Ptr<Ptr<kheapinfo>>(heapSymbol), size, allocation_flags, allocation_name)
           .offset;
     }
     if (!gstr->len) {  // string has nothing in it.
-      return kmalloc(*Ptr<Ptr<kheapinfo>>(heapSymbol), size, KMALLOC_MEMSET, "global-object")
+      return kmalloc(*Ptr<Ptr<kheapinfo>>(heapSymbol), size, allocation_flags, allocation_name)
           .offset;
     }
 
-    return kmalloc(*Ptr<Ptr<kheapinfo>>(heapSymbol), size, KMALLOC_MEMSET, gstr->data()).offset;
+    return kmalloc(*Ptr<Ptr<kheapinfo>>(heapSymbol), size, allocation_flags,
+                   allocation_flags & KMALLOC_EXECUTABLE ? allocation_name : gstr->data()).offset;
   } else if (heapOffset == FIX_SYM_PROCESS_TYPE) {
     if (pp == UNKNOWN_PP) {
       // added
@@ -317,14 +335,8 @@ void _arg_call_arm64();
  * But calling this function is fast. It used to be really fast but wrong.
  */
 Ptr<Function> make_function_from_c_systemv(void* func, bool arg3_is_pp) {
-#if defined(__aarch64__) && defined(__APPLE__)
-  auto raw = kmalloc(kcodeheap, 0x40, KMALLOC_MEMSET, "trampoline");
-  *Ptr<u32>(raw.offset) = *(s7 + FIX_SYM_FUNCTION_TYPE);
-  auto mem = Ptr<u8>(raw.offset + BASIC_OFFSET);
-#else
   auto mem = Ptr<u8>(alloc_heap_object(s7.offset + FIX_SYM_GLOBAL_HEAP,
-                                       *(s7 + FIX_SYM_FUNCTION_TYPE), 0x40, UNKNOWN_PP));
-#endif
+                                      *(s7 + FIX_SYM_FUNCTION_TYPE), 0x40, UNKNOWN_PP));
 #ifndef __aarch64__
   auto f = (uint64_t)func;
   auto target_function = (u8*)&f;
@@ -404,7 +416,9 @@ Ptr<Function> make_function_from_c_systemv(void* func, bool arg3_is_pp) {
   // br x8
   write_u32(0xD61F0100u);
 
-  sys_icache_invalidate(mem.c(), 0x40);
+  // The page is writable while the trampoline is written and executable once it is done.
+  // make_executable flushes the instruction cache for the same range.
+  jit_memory::make_executable(mem.c(), 0x40);
 #endif
 
   return mem.cast<Function>();
@@ -497,14 +511,8 @@ void _stack_call_arm64();
 
 Ptr<Function> make_stack_arg_function_from_c_systemv(void* func) {
   // allocate a function object on the global heap
-#if defined(__aarch64__) && defined(__APPLE__)
-  auto raw = kmalloc(kcodeheap, 0x40, KMALLOC_MEMSET, "trampoline");
-  *Ptr<u32>(raw.offset) = *(s7 + FIX_SYM_FUNCTION_TYPE);
-  auto mem = Ptr<u8>(raw.offset + BASIC_OFFSET);
-#else
   auto mem = Ptr<u8>(alloc_heap_object(s7.offset + FIX_SYM_GLOBAL_HEAP,
-                                       *(s7 + FIX_SYM_FUNCTION_TYPE), 0x40, UNKNOWN_PP));
-#endif
+                                      *(s7 + FIX_SYM_FUNCTION_TYPE), 0x40, UNKNOWN_PP));
 #ifndef __aarch64__
   auto f = (uint64_t)func;
   auto target_function = (u8*)&f;
@@ -558,7 +566,9 @@ Ptr<Function> make_stack_arg_function_from_c_systemv(void* func) {
 
   write_u32(0xD61F0100u);
 
-  sys_icache_invalidate(mem.c(), 0x40);
+  // The page is writable while the trampoline is written and executable once it is done.
+  // make_executable flushes the instruction cache for the same range.
+  jit_memory::make_executable(mem.c(), 0x40);
 #endif
 
   return mem.cast<Function>();
@@ -637,14 +647,12 @@ Ptr<Function> make_stack_arg_function_from_c(void* func) {
  * Create a GOAL function which does nothing and immediately returns.
  */
 Ptr<Function> make_nothing_func() {
-#if defined(__aarch64__) && defined(__APPLE__)
-  auto raw_n = kmalloc(kcodeheap, 0x14, KMALLOC_MEMSET, "nothing-func");
-  *Ptr<u32>(raw_n.offset) = *(s7 + FIX_SYM_FUNCTION_TYPE);
-  auto mem = Ptr<u8>(raw_n.offset + BASIC_OFFSET);
-  *Ptr<u32>(mem.offset) = 0xD65F03C0u;  // ARM64 ret
-#else
   auto mem = Ptr<u8>(alloc_heap_object(s7.offset + FIX_SYM_GLOBAL_HEAP,
-                                       *(s7 + FIX_SYM_FUNCTION_TYPE), 0x14, UNKNOWN_PP));
+                                      *(s7 + FIX_SYM_FUNCTION_TYPE), 0x14, UNKNOWN_PP));
+#if defined(__aarch64__) && defined(__APPLE__)
+  *Ptr<u32>(mem.offset) = 0xD65F03C0u;  // ARM64 ret
+  jit_memory::make_executable(mem.c(), 0x14);
+#else
   // a single x86-64 ret.
   mem.c()[0] = 0xc3;
   // CacheFlush(mem, 8);
@@ -656,15 +664,13 @@ Ptr<Function> make_nothing_func() {
  * Create a GOAL function which returns 0.
  */
 Ptr<Function> make_zero_func() {
+  auto mem = Ptr<u8>(alloc_heap_object(s7.offset + FIX_SYM_GLOBAL_HEAP,
+                                      *(s7 + FIX_SYM_FUNCTION_TYPE), 0x14, UNKNOWN_PP));
 #if defined(__aarch64__) && defined(__APPLE__)
-  auto raw_z = kmalloc(kcodeheap, 0x14, KMALLOC_MEMSET, "zero-func");
-  *Ptr<u32>(raw_z.offset) = *(s7 + FIX_SYM_FUNCTION_TYPE);
-  auto mem = Ptr<u8>(raw_z.offset + BASIC_OFFSET);
   *Ptr<u32>(mem.offset)     = 0xD2800000u;  // ARM64 movz x0, #0
   *Ptr<u32>(mem.offset + 4) = 0xD65F03C0u;  // ARM64 ret
+  jit_memory::make_executable(mem.c(), 0x14);
 #else
-  auto mem = Ptr<u8>(alloc_heap_object(s7.offset + FIX_SYM_GLOBAL_HEAP,
-                                       *(s7 + FIX_SYM_FUNCTION_TYPE), 0x14, UNKNOWN_PP));
   // xor eax, eax
   mem.c()[0] = 0x31;
   mem.c()[1] = 0xc0;
@@ -1131,11 +1137,6 @@ u64 method_set(u32 type_, u32 method_id, u32 method) {
     auto sym = s7.offset;
     for (; sym < LastSymbol.offset; sym += 8) {
       auto symValue = *Ptr<u32>(sym);
-      // Skip kcodeheap addresses — on ARM64/Apple all code segments live there,
-      // and none of them are valid type objects for child-type propagation.
-      if (EE_CODE_HEAP_START <= symValue && symValue < EE_CODE_HEAP_END) {
-        continue;
-      }
       if ((symValue < SymbolTable2.offset || 0x7ffffff < symValue) &&  // not in normal memory
           (symValue < 0x84000 || 0x100000 <= symValue)) {              // not in kernel memory
         continue;

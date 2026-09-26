@@ -801,10 +801,16 @@ void MetalDisplay::render() {
     // PNG and stops. Metal draws into a drawable the window server owns, so there is no way to
     // capture this from outside the process while the window is on another Space -- and looking
     // at the frame is the only way to tell a wrong matrix from a wrong texture.
+    // OPENGOAL_SCREENSHOT_LEVEL=* re-arms for every new level instead of firing once: the path
+    // gets the level's name appended, so one run walking the game writes one picture per level.
+    // That is the only way to check a level here without playing to it by hand.
     static bool screenshot_done = false;
+    static std::string last_shot_level;
+    std::string shot_level_name;
     const char* screenshot_path = std::getenv("OPENGOAL_METAL_SCREENSHOT");
     // Same trigger as the OpenGL backend: N frames after the named level is in use.
     const char* level_env = std::getenv("OPENGOAL_SCREENSHOT_LEVEL");
+    const bool every_level = level_env && std::string(level_env) == "*";
     const char* delay_env = std::getenv("OPENGOAL_SCREENSHOT_DELAY");
     const int want_delay = delay_env ? atoi(delay_env) : 0;
     // A frame during a fade or a menu draws a handful of triangles and is not worth capturing.
@@ -814,7 +820,18 @@ void MetalDisplay::render() {
     static int frames_since_level = -1;
     if (screenshot_path && !screenshot_done && g_metal_gfx_data) {
       for (const auto* lev : g_metal_gfx_data->loader->get_in_use_levels()) {
-        if (!level_env || lev->level->level_name == level_env) {
+        const std::string& name = lev->level->level_name;
+        if (every_level) {
+          // The level that is not the one already captured, and not the always-loaded common
+          // data, is the one this run has arrived at.
+          if (name != last_shot_level && name != "GAME") {
+            if (shot_level_name != name) {
+              shot_level_name = name;
+              frames_since_level = 0;
+            }
+            break;
+          }
+        } else if (!level_env || name == level_env) {
           if (frames_since_level < 0) {
             frames_since_level = 0;
           }
@@ -874,10 +891,23 @@ void MetalDisplay::render() {
         rgba[i * 4 + 2] = src[i * 4 + 0];
         rgba[i * 4 + 3] = 255;
       }
-      file_util::write_rgba_png(screenshot_path, rgba.data(), shot_w, shot_h);
-      lg::info("[Metal] wrote screenshot {} ({}x{}) at frame {}", screenshot_path, shot_w, shot_h,
+      std::string out_path = screenshot_path;
+      if (every_level) {
+        const auto dot = out_path.rfind('.');
+        const std::string stem = dot == std::string::npos ? out_path : out_path.substr(0, dot);
+        const std::string ext = dot == std::string::npos ? ".png" : out_path.substr(dot);
+        out_path = stem + "_" + shot_level_name + ext;
+      }
+      file_util::write_rgba_png(out_path, rgba.data(), shot_w, shot_h);
+      lg::info("[Metal] wrote screenshot {} ({}x{}) at frame {}", out_path, shot_w, shot_h,
                g_metal_gfx_data->frame_idx);
-      screenshot_done = true;
+      if (every_level) {
+        // Re-arm for the next level the game reaches.
+        last_shot_level = shot_level_name;
+        frames_since_level = -1;
+      } else {
+        screenshot_done = true;
+      }
     }
     }();
   }

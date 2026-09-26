@@ -92,12 +92,6 @@
 #include "system/SystemThread.h"
 
 u8* g_ee_main_mem = nullptr;
-bool g_ee_jit_code_dirty = false;
-#if defined(__APPLE__) && defined(__aarch64__)
-// Read once at startup, only ever read from the signal handler afterwards. See the
-// inventory block in sigbus_handler.
-static bool g_jit_detect = false;
-#endif
 #if defined(__APPLE__) && defined(__aarch64__)
 // 16MB GOAL execution stack in normal PROT_READ|PROT_WRITE memory (not MAP_JIT).
 // On Darwin 25, GOAL stack cannot be in MAP_JIT memory (W^X enforcement).
@@ -122,9 +116,6 @@ const char** g_argv = nullptr;
  */
 
 void deci2_runner(SystemThreadInterface& iface) {
-#if defined(__APPLE__) && defined(__aarch64__)
-  pthread_jit_write_protect_np(0);
-#endif
   // callback function so the server knows when to give up and shutdown
   std::function<bool()> shutdown_callback = [&]() { return iface.get_want_exit(); };
 
@@ -188,46 +179,46 @@ void ee_runner(SystemThreadInterface& iface) {
 #endif
   // Allocate Main RAM (EE memory).
   //
-  // On Darwin ARM64 (macOS 26+ / Darwin 25): W^X is enforced via APRR hardware.
-  // MAP_JIT is required for any page that will be executed after being written.
-  // Strategy (validated by tools/arm64_jit_layout_test.cpp Phase 0):
-  //   1. Allocate the full EE as MAP_JIT (kernel honours the address hint).
-  //   2. Overwrite the two data regions with regular mmap pages (MAP_FIXED).
-  //      The 16 MB code region [EE_CODE_HEAP_START, EE_CODE_HEAP_END) stays MAP_JIT.
-  //   3. GOAL heap writes land in the data regions → no W^X SIGBUS.
-  //      The linker toggles write-protect around code-region writes explicitly.
-  // NOTE: MAP_FIXED over a MAP_JIT range replaces those VAs with regular pages
-  // (non-MAP_JIT physical pages). This is an observed-to-work Darwin behaviour;
-  // vm_remap aliasing of MAP_JIT pages fails with KERN_PROTECTION_FAILURE (kr=2).
+  // On Darwin ARM64, W^X is enforced: a page is writable or executable, never both, and only a
+  // MAP_JIT page may become executable at all.
+  //
+  // The whole EE is one MAP_JIT region mapped read-write. Any page of it can then be flipped to
+  // read-execute with mprotect, whichever heap it belongs to, which is what lets the linker put a
+  // segment's code where the original game put it instead of in a fixed code region.
+  //
+  // It is mapped read-write rather than read-write-execute on purpose: asking for all three puts
+  // the region under the per-thread APRR switch, where it is only writable in write mode. We want
+  // the page table to decide instead, so every thread sees the same protection.
   if (EE_MEM_LOW_MAP) {
+#if defined(__aarch64__) && defined(__APPLE__)
+    g_ee_main_mem = (u8*)mmap((void*)0x10000000, EE_MAIN_MEM_SIZE, PROT_READ | PROT_WRITE,
+                              MAP_ANONYMOUS | MAP_PRIVATE | MAP_JIT, -1, 0);
+#elif defined(__APPLE__)
     g_ee_main_mem =
         (u8*)mmap((void*)0x10000000, EE_MAIN_MEM_SIZE, PROT_EXEC | PROT_READ | PROT_WRITE,
-#if defined(__aarch64__) && defined(__APPLE__)
-                  MAP_ANONYMOUS | MAP_PRIVATE | MAP_JIT, -1, 0);
-#elif defined(__APPLE__)
                   MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
 #else
+    g_ee_main_mem =
+        (u8*)mmap((void*)0x10000000, EE_MAIN_MEM_SIZE, PROT_EXEC | PROT_READ | PROT_WRITE,
                   MAP_ANONYMOUS | MAP_32BIT | MAP_PRIVATE | MAP_POPULATE, 0, 0);
 #endif
   } else {
 #if defined(__aarch64__) && defined(__APPLE__)
-    // Apple Silicon has a 16 KB hardware page size, so the null-guard prefix
-    // and all MAP_FIXED replacements must be 16 KB aligned.
-    // Allocate EE_MAIN_MEM_SIZE + 16384: the first 16 KB is the null-guard.
+    // Apple Silicon has a 16 KB hardware page size, so the null-guard prefix must be 16 KB
+    // aligned. Allocate EE_MAIN_MEM_SIZE + 16384: the first 16 KB is the null-guard.
     // g_ee_main_mem = raw + 16384, so EE[-4] (= raw + 16380) reads zero
     // (MAP_ANONYMOUS zero-fills), simulating PS2 null-pointer type-tag behaviour.
     static constexpr size_t kNullGuard = 16384;
     void* raw = mmap((void*)EE_MAIN_MEM_MAP, EE_MAIN_MEM_SIZE + kNullGuard,
-                     PROT_EXEC | PROT_READ | PROT_WRITE,
-                     MAP_ANONYMOUS | MAP_PRIVATE | MAP_JIT, -1, 0);
+                     PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE | MAP_JIT, -1, 0);
     if (raw == MAP_FAILED) {
       lg::debug("Failed to initialize main memory! {}", strerror(errno));
       iface.initialization_complete();
       return;
     }
     g_ee_main_mem = (u8*)raw + kNullGuard;
-    // The null-guard (raw[0..kNullGuard)) is zero-filled by MAP_ANONYMOUS.
-    // No mprotect needed: MAP_JIT exec mode makes it naturally read-only.
+    // The null-guard (raw[0..kNullGuard)) is zero-filled by MAP_ANONYMOUS, so EE[-4] reads zero
+    // the way a PS2 null type tag does.
     lg::info("Null-guard page at 0x{:016x} (EE base 0x{:016x})", (u64)raw, (u64)g_ee_main_mem);
 #else
     g_ee_main_mem =
@@ -244,33 +235,6 @@ void ee_runner(SystemThreadInterface& iface) {
   }
 #endif
 
-#if defined(__aarch64__) && defined(__APPLE__)
-  // Replace data regions with regular (non-MAP_JIT) pages so GOAL heap writes
-  // in exec mode produce no SIGBUS.  The code region [EE_CODE_HEAP_START,
-  // EE_CODE_HEAP_END) is left as MAP_JIT.
-  //
-  // macOS MAP_FIXED over a MAP_JIT region must start at the allocation base (raw).
-  // r1 covers [raw, raw + EE_CODE_HEAP_START + kNullGuard): the 16 KB null-guard
-  // plus data region 1.  All bounds are 16 KB page-aligned (Apple Silicon).
-  {
-    static constexpr size_t kNullGuard = 16384;
-    void* r1 = mmap((u8*)g_ee_main_mem - kNullGuard, EE_CODE_HEAP_START + kNullGuard,
-                    PROT_READ | PROT_WRITE,
-                    MAP_ANONYMOUS | MAP_PRIVATE | MAP_FIXED, -1, 0);
-    void* r2 = mmap(g_ee_main_mem + EE_CODE_HEAP_END,
-                    EE_MAIN_MEM_SIZE - EE_CODE_HEAP_END,
-                    PROT_READ | PROT_WRITE,
-                    MAP_ANONYMOUS | MAP_PRIVATE | MAP_FIXED, -1, 0);
-    if (r1 == MAP_FAILED || r2 == MAP_FAILED) {
-      lg::error("EE data-region split mmap failed: {}", strerror(errno));
-      iface.initialization_complete();
-      return;
-    }
-  }
-  // Start in write mode for C-side init (memset, linker, kinitheap, etc.).
-  pthread_jit_write_protect_np(0);
-#endif
-
   lg::info("Main memory mapped at 0x{:016x}", (u64)(g_ee_main_mem));
   lg::info("Main memory size 0x{:x} bytes ({:.3f} MB)", EE_MAIN_MEM_SIZE,
            (double)EE_MAIN_MEM_SIZE / (1 << 20));
@@ -281,14 +245,8 @@ void ee_runner(SystemThreadInterface& iface) {
   lg::info("[EE] Run!");
   memset((void*)g_ee_main_mem, 0, EE_MAIN_MEM_SIZE);
 
-  // On x86-64, make the first 512 kB PROT_NONE to catch null GOAL pointer dereferences.
-  // On ARM64/macOS GOAL code may legitimately read EE[0] (null = #f, returns 0 like PS2),
-  // so we use PROT_READ to allow harmless reads while still catching writes.
-#if defined(__aarch64__) && defined(__APPLE__)
-  mprotect((void*)g_ee_main_mem, EE_MAIN_MEM_LOW_PROTECT, PROT_READ);
-#else
+  // Make the first 512 kB PROT_NONE to catch null GOAL pointer dereferences.
   mprotect((void*)g_ee_main_mem, EE_MAIN_MEM_LOW_PROTECT, PROT_NONE);
-#endif
   fileio_init_globals();
   jak1::kboot_init_globals();
   jak2::kboot_init_globals();
@@ -353,9 +311,6 @@ void ee_runner(SystemThreadInterface& iface) {
  * be non-blocking)
  */
 void ee_worker_runner(SystemThreadInterface& iface) {
-#if defined(__APPLE__) && defined(__aarch64__)
-  pthread_jit_write_protect_np(0);
-#endif
   iface.initialization_complete();
   while (!iface.get_want_exit()) {
     const auto queues_weres_empty = !g_background_worker.process_queues();
@@ -369,10 +324,6 @@ void ee_worker_runner(SystemThreadInterface& iface) {
  * SystemThread function for running the IOP (separate I/O Processor)
  */
 void iop_runner(SystemThreadInterface& iface, GameVersion version) {
-#if defined(__APPLE__) && defined(__aarch64__)
-  // Darwin 25: new threads start in MAP_JIT exec mode; IOP only writes to EE memory.
-  pthread_jit_write_protect_np(0);
-#endif
   prof().root_event();
   prof().begin_event("iop-init");
   IOP iop;
@@ -526,14 +477,13 @@ static void dump_arm64_crash_context(uint64_t pc,
   // Fault address context
   if (g_ee_main_mem) {
     uintptr_t base = (uintptr_t)g_ee_main_mem;
-    uintptr_t code_heap_start = base + EE_CODE_HEAP_START;
     n = __builtin_snprintf(buf, sizeof(buf),
       "[EE-CRASH] fault addr 0x%016llx  EE offset 0x%llx\n"
-      "[EE-CRASH] PC code-heap offset 0x%llx  LR code-heap offset 0x%llx\n",
+      "[EE-CRASH] PC EE offset 0x%llx  LR EE offset 0x%llx\n",
       (unsigned long long)fault_addr,
       (unsigned long long)(fault_addr - base),
-      (unsigned long long)(pc - code_heap_start),
-      (unsigned long long)(lr - code_heap_start));
+      (unsigned long long)(pc - base),
+      (unsigned long long)(lr - base));
     write(2, buf, n);
   }
 
@@ -694,9 +644,10 @@ static void dump_arm64_crash_context(uint64_t pc,
  * GOAL kernel arguments are currently ignored.
  */
 static void sigbus_handler(int sig, siginfo_t* info, void* ctx) {
-
 #if defined(__aarch64__) && defined(__APPLE__)
-  // SIGBUS counter: print stats every 10k faults so we can gauge performance.
+  // Fault counter. The code heap is protected explicitly now -- writable while the linker fills
+  // it, executable while GOAL runs -- so a fault here means some path writes into it without
+  // asking first, and grepping for this line is how a boot is checked.
   {
     static _Atomic uint64_t s_sigbus_count = 0;
     uint64_t n = ++s_sigbus_count;
@@ -706,459 +657,27 @@ static void sigbus_handler(int sig, siginfo_t* info, void* ctx) {
       write(2, buf, len);
     }
   }
-#endif
 
-#if defined(__aarch64__) && defined(__APPLE__)
-  // On Darwin 25, GOAL code runs in MAP_JIT exec mode (W^X enforced).
-  // GOAL heap writes (str/strb/strh/stp to EE memory) cause SIGBUS.
-  // We emulate the faulting ARM64 register-offset store instruction by:
-  //   1. Switching to write mode (pthread_jit_write_protect_np(0))
-  //   2. Performing the store manually
-  //   3. Switching back to exec mode (pthread_jit_write_protect_np(1))
-  //   4. Advancing PC by 4 (ARM64 instructions are always 4 bytes)
   if (ctx && g_ee_main_mem) {
     ucontext_t* uctx = (ucontext_t*)ctx;
-
-    // Fault must be in the MAP_JIT code region to be a legitimate linker/JIT write.
-    // After the EE memory split, data regions are regular mmap — they cannot SIGBUS.
     uintptr_t fault_addr = (uintptr_t)info->si_addr;
     uintptr_t ee_base = (uintptr_t)g_ee_main_mem;
-    uintptr_t ee_code_start = ee_base + EE_CODE_HEAP_START;
-    uintptr_t ee_code_end   = ee_base + EE_CODE_HEAP_END;
 
-    // Crash loudly if fault is in EE but outside the MAP_JIT code region.
-    if (fault_addr >= ee_base && fault_addr < ee_base + EE_MAIN_MEM_SIZE &&
-        (fault_addr < ee_code_start || fault_addr >= ee_code_end)) {
-      char buf2[256];
-      int n2 = __builtin_snprintf(buf2, sizeof(buf2),
-        "[EE-CRASH] SIGBUS in DATA region at EE+0x%zx — "
-        "data regions are not MAP_JIT; this is a runtime bug.\n",
-        fault_addr - ee_base);
-      write(2, buf2, n2);
-      dump_arm64_crash_context(uctx->uc_mcontext->__ss.__pc,
-                               uctx->uc_mcontext->__ss.__lr,
-                               uctx->uc_mcontext->__ss.__sp,
-                               uctx->uc_mcontext->__ss.__x,
-                               uctx->uc_mcontext->__ss.__fp,
-                               fault_addr);
+    if (fault_addr >= ee_base && fault_addr < ee_base + EE_MAIN_MEM_SIZE) {
+      char buf[256];
+      int n = __builtin_snprintf(
+          buf, sizeof(buf),
+          "[EE-CRASH] unexpected W^X fault at EE+0x%zx: either a write to a page that is "
+          "currently executable, or a null dereference.\n",
+          (size_t)(fault_addr - ee_base));
+      write(2, buf, n);
+      auto& ss = uctx->uc_mcontext->__ss;
+      dump_arm64_crash_context(ss.__pc, ss.__lr, ss.__sp, ss.__x, ss.__fp, fault_addr);
       struct sigaction sa_def{};
       sa_def.sa_handler = SIG_DFL;
-      sigaction(SIGBUS, &sa_def, nullptr);
-      raise(SIGBUS);
+      sigaction(sig, &sa_def, nullptr);
+      raise(sig);
       return;
-    }
-
-    if (fault_addr >= ee_code_start && fault_addr < ee_code_end) {
-
-      // Inventory mode for the W^X migration. With GK_JIT_DETECT=1 in the environment, report
-      // each distinct faulting PC exactly once. The point is to enumerate every code path that
-      // writes into the code heap: once the handler stops emulating, each of those either has to
-      // be covered by an explicit write window or it becomes a hard crash.
-      //
-      // Everything here has to stay async-signal-safe: a fixed open-addressed table, relaxed
-      // atomics, and write(2). No malloc, no snprintf into shared state, no locks.
-      if (g_jit_detect) {
-        // A boot touches a few thousand distinct PCs, so size the table well above that: once it
-        // saturates, every fault reports again and the log becomes useless.
-        constexpr int kSeenSlots = 16384;
-        constexpr int kMaxProbes = 64;
-        static _Atomic uint64_t s_seen_pcs[kSeenSlots] = {};
-        static _Atomic bool s_table_full = false;
-        const uint64_t pc = uctx->uc_mcontext->__ss.__pc;
-        // Fibonacci hash, then linear probe.
-        uint32_t slot = (uint32_t)((pc * 0x9e3779b97f4a7c15ull) >> 50) & (kSeenSlots - 1);
-        bool first_time = false;
-        bool exhausted = true;
-        for (int probe = 0; probe < kMaxProbes; probe++) {
-          uint64_t expected = 0;
-          uint64_t& cell = *(uint64_t*)&s_seen_pcs[(slot + probe) & (kSeenSlots - 1)];
-          if (__atomic_compare_exchange_n(&cell, &expected, pc, false, __ATOMIC_RELAXED,
-                                          __ATOMIC_RELAXED)) {
-            first_time = true;  // claimed an empty slot: this PC is new
-            exhausted = false;
-            break;
-          }
-          if (expected == pc) {
-            exhausted = false;
-            break;
-          }
-        }
-        if (exhausted) {
-          // Say so once rather than silently under-reporting.
-          bool expected_full = false;
-          bool& full_cell = *(bool*)&s_table_full;
-          if (__atomic_compare_exchange_n(&full_cell, &expected_full, true, false,
-                                          __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
-            write(2, "[JIT-DETECT] PC table is full; further sites are not reported\n", 61);
-          }
-        }
-        if (first_time) {
-          char dbuf[192];
-          int dn = __builtin_snprintf(
-              dbuf, sizeof(dbuf),
-              "[JIT-DETECT] pc=0x%llx lr=0x%llx fault=EE+0x%zx region=code+0x%zx\n",
-              (unsigned long long)pc, (unsigned long long)uctx->uc_mcontext->__ss.__lr,
-              (size_t)(fault_addr - ee_base), (size_t)(fault_addr - ee_code_start));
-          write(2, dbuf, dn);
-        }
-      }
-
-      auto& ss = uctx->uc_mcontext->__ss;
-      auto& ns = uctx->uc_mcontext->__ns;
-      auto gpr = [&](int r) -> uint64_t {
-        if (r == 31) return 0;  // XZR / WZR
-        if (r == 29) return ss.__fp;
-        if (r == 30) return ss.__lr;
-        return ss.__x[r];
-      };
-      auto gpr_base = [&](int r) -> uint64_t {  // r31 = SP not XZR
-        if (r == 31) return ss.__sp;
-        if (r == 29) return ss.__fp;
-        if (r == 30) return ss.__lr;
-        return ss.__x[r];
-      };
-      auto write_reg = [&](int r, uint64_t v) {
-        if      (r < 29)  ss.__x[r] = v;
-        else if (r == 29) ss.__fp = v;
-        else if (r == 31) ss.__sp = v;
-        // r==30 (LR) write-back not needed by any store pattern
-      };
-
-      // Execute one store instruction (already in write mode).
-      // Updates cur_pc by 4 on success; updates context registers for write-back forms.
-      // Returns true if the instruction was a recognised store.
-      auto exec_one = [&](uint64_t& cur_pc) -> bool {
-        uint32_t instr = *(const uint32_t*)cur_pc;
-
-        // ── 1. Register-offset GPR stores (all extend options) ──
-        // Handles LSL (GOAL JIT), UXTW/SXTW/SXTX (C++ compiler: e.g. g_ee_main_mem + u32_offset)
-        // Mask 0xFFE00C00: preserves [31:22] and [11:10], clears Rm/option/S/Rn/Rt
-        {
-          uint32_t m = instr & 0xFFE00C00u;
-          int bytes = 0;
-          if      (m == 0xF8200800u) bytes = 8;
-          else if (m == 0xB8200800u) bytes = 4;
-          else if (m == 0x78200800u) bytes = 2;
-          else if (m == 0x38200800u) bytes = 1;
-          if (bytes) {
-            int Rm     = (instr >> 16) & 0x1F;
-            int option = (instr >> 13) & 0x7;
-            int S      = (instr >> 12) & 0x1;
-            int Rn     = (instr >>  5) & 0x1F;
-            int Rt     = instr         & 0x1F;
-            uint64_t rm_val = gpr(Rm);
-            uint64_t offset;
-            switch (option) {
-              case 2: offset = (uint32_t)rm_val; break;                              // UXTW
-              case 6: offset = (uint64_t)(int64_t)(int32_t)(uint32_t)rm_val; break;  // SXTW
-              default: offset = rm_val; break;                                        // LSL/SXTX
-            }
-            if (S) offset <<= (bytes == 8 ? 3 : bytes == 4 ? 2 : bytes == 2 ? 1 : 0);
-            uint64_t addr = gpr_base(Rn) + offset;
-            uint64_t val  = gpr(Rt);
-            switch (bytes) {
-              case 1: *(uint8_t* )addr = (uint8_t )val; break;
-              case 2: *(uint16_t*)addr = (uint16_t)val; break;
-              case 4: *(uint32_t*)addr = (uint32_t)val; break;
-              case 8: *(uint64_t*)addr = val;            break;
-            }
-            cur_pc += 4; return true;
-          }
-        }
-
-        // ── 2. Register-offset SIMD stores ──
-        // STR St [Xn,Xm] 0xBC206800  STR Qt [Xn,Xm] 0x3CA06800
-        {
-          uint32_t m = instr & 0xFFE0FC00u;
-          int bytes = 0;
-          if      (m == 0xBC206800u) bytes = 4;
-          else if (m == 0x3CA06800u) bytes = 16;
-          if (bytes) {
-            int Rm = (instr >> 16) & 0x1F, Rn = (instr >> 5) & 0x1F, Rt = instr & 0x1F;
-            uint64_t addr = gpr_base(Rn) + gpr(Rm);
-            if (bytes == 16) {
-              __uint128_t val = ns.__v[Rt];
-              __builtin_memcpy((void*)addr, &val, 16);
-            } else {
-              uint32_t val; __builtin_memcpy(&val, &ns.__v[Rt], 4);
-              *(uint32_t*)addr = val;
-            }
-            cur_pc += 4; return true;
-          }
-        }
-
-        // ── 2b. SIMD scalar post/pre-index / unscaled stores ──
-        {
-          uint32_t m = instr & 0xFF800C00u;
-          int bytes = 0;
-          if      ((m & ~0xC00u) == 0x3C800000u) bytes = 16;
-          else if ((m & ~0xC00u) == 0xFC000000u) bytes = 8;
-          else if ((m & ~0xC00u) == 0xBC000000u) bytes = 4;
-          else if ((m & ~0xC00u) == 0x7C000000u) bytes = 2;
-          if (bytes) {
-            uint32_t mode = instr & 0xC00u;
-            bool is_post = (mode == 0x400u), is_pre = (mode == 0xC00u);
-            if (mode == 0x800u) bytes = 0; // 10 = register-offset, not here
-          }
-          if (bytes) {
-            int32_t imm9 = (int32_t)((instr >> 12) & 0x1FF);
-            if (imm9 & 0x100) imm9 |= ~(int32_t)0x1FF;
-            int Rn = (instr >> 5) & 0x1F, Rt = instr & 0x1F;
-            uint32_t mode = instr & 0xC00u;
-            bool is_post = (mode == 0x400u), is_pre = (mode == 0xC00u);
-            uint64_t base = gpr_base(Rn);
-            uint64_t addr = is_post ? base : base + (int64_t)imm9;
-            if (bytes == 16) {
-              __uint128_t val = ns.__v[Rt];
-              __builtin_memcpy((void*)addr, &val, 16);
-            } else {
-              uint64_t val = 0; __builtin_memcpy(&val, &ns.__v[Rt], bytes);
-              switch (bytes) {
-                case 2: *(uint16_t*)addr = (uint16_t)val; break;
-                case 4: *(uint32_t*)addr = (uint32_t)val; break;
-                case 8: *(uint64_t*)addr = val;            break;
-              }
-            }
-            if (is_post || is_pre) write_reg(Rn, base + (int64_t)imm9);
-            cur_pc += 4; return true;
-          }
-        }
-
-        // ── 2c. Unsigned-offset SIMD stores (C compiler scalar/vector stores) ──
-        // STR Qt [Xn,#imm*16] 0x3D800000  STR Dt 0xFD000000  STR St 0xBD000000
-        {
-          uint32_t top10 = instr & 0xFFC00000u;
-          int bytes = 0;
-          if      (top10 == 0x3D800000u) bytes = 16;
-          else if (top10 == 0xFD000000u) bytes =  8;
-          else if (top10 == 0xBD000000u) bytes =  4;
-          if (bytes) {
-            uint32_t imm12 = (instr >> 10) & 0xFFF;
-            int Rn = (instr >> 5) & 0x1F;
-            int Rt = instr & 0x1F;
-            uint64_t addr = gpr_base(Rn) + (uint64_t)imm12 * (uint32_t)bytes;
-            if (bytes == 16) {
-              __uint128_t val = ns.__v[Rt];
-              __builtin_memcpy((void*)addr, &val, 16);
-            } else {
-              uint64_t val = 0; __builtin_memcpy(&val, &ns.__v[Rt], bytes);
-              switch (bytes) {
-                case 4: *(uint32_t*)addr = (uint32_t)val; break;
-                case 8: *(uint64_t*)addr = val;            break;
-              }
-            }
-            cur_pc += 4; return true;
-          }
-        }
-
-        // ── 3. Unsigned-offset GPR stores ──
-        {
-          uint32_t top10 = instr & 0xFFC00000u;
-          if (top10 == 0xF9000000u || top10 == 0xB9000000u ||
-              top10 == 0x79000000u || top10 == 0x39000000u) {
-            int scale = (instr >> 30) & 0x3;
-            uint32_t imm12 = (instr >> 10) & 0xFFF;
-            int Rn = (instr >> 5) & 0x1F, Rt = instr & 0x1F;
-            uint64_t addr = gpr_base(Rn) + ((uint64_t)imm12 << scale);
-            uint64_t val  = gpr(Rt);
-            switch (1 << scale) {
-              case 1: *(uint8_t* )addr = (uint8_t )val; break;
-              case 2: *(uint16_t*)addr = (uint16_t)val; break;
-              case 4: *(uint32_t*)addr = (uint32_t)val; break;
-              case 8: *(uint64_t*)addr = val;            break;
-            }
-            cur_pc += 4; return true;
-          }
-        }
-
-        // ── 4. STUR (unscaled signed offset) ──
-        {
-          uint32_t m = instr & 0xFFE00C00u;
-          if (m == 0xF8000000u || m == 0xB8000000u ||
-              m == 0x78000000u || m == 0x38000000u) {
-            int scale = (instr >> 30) & 0x3;
-            int32_t imm9 = (int32_t)((instr >> 12) & 0x1FF);
-            if (imm9 & 0x100) imm9 |= ~(int32_t)0x1FF;
-            int Rn = (instr >> 5) & 0x1F, Rt = instr & 0x1F;
-            uint64_t addr = gpr_base(Rn) + (int64_t)imm9;
-            uint64_t val  = gpr(Rt);
-            switch (1 << scale) {
-              case 1: *(uint8_t* )addr = (uint8_t )val; break;
-              case 2: *(uint16_t*)addr = (uint16_t)val; break;
-              case 4: *(uint32_t*)addr = (uint32_t)val; break;
-              case 8: *(uint64_t*)addr = val;            break;
-            }
-            cur_pc += 4; return true;
-          }
-        }
-
-        // ── 5. Post-indexed GPR stores ──
-        {
-          uint32_t m = instr & 0xFFE00C00u;
-          if (m == 0xF8000400u || m == 0xB8000400u ||
-              m == 0x78000400u || m == 0x38000400u) {
-            int scale = (instr >> 30) & 0x3;
-            int32_t imm9 = (int32_t)((instr >> 12) & 0x1FF);
-            if (imm9 & 0x100) imm9 |= ~(int32_t)0x1FF;
-            int Rn = (instr >> 5) & 0x1F, Rt = instr & 0x1F;
-            uint64_t base = gpr_base(Rn);
-            uint64_t val  = gpr(Rt);
-            switch (1 << scale) {
-              case 1: *(uint8_t* )base = (uint8_t )val; break;
-              case 2: *(uint16_t*)base = (uint16_t)val; break;
-              case 4: *(uint32_t*)base = (uint32_t)val; break;
-              case 8: *(uint64_t*)base = val;            break;
-            }
-            write_reg(Rn, base + (int64_t)imm9);
-            cur_pc += 4; return true;
-          }
-        }
-
-        // ── 5b. Pre-indexed GPR stores ──
-        {
-          uint32_t m = instr & 0xFFE00C00u;
-          if (m == 0xF8000C00u || m == 0xB8000C00u ||
-              m == 0x78000C00u || m == 0x38000C00u) {
-            int scale = (instr >> 30) & 0x3;
-            int32_t imm9 = (int32_t)((instr >> 12) & 0x1FF);
-            if (imm9 & 0x100) imm9 |= ~(int32_t)0x1FF;
-            int Rn = (instr >> 5) & 0x1F, Rt = instr & 0x1F;
-            uint64_t addr = gpr_base(Rn) + (int64_t)imm9;
-            uint64_t val  = gpr(Rt);
-            switch (1 << scale) {
-              case 1: *(uint8_t* )addr = (uint8_t )val; break;
-              case 2: *(uint16_t*)addr = (uint16_t)val; break;
-              case 4: *(uint32_t*)addr = (uint32_t)val; break;
-              case 8: *(uint64_t*)addr = val;            break;
-            }
-            write_reg(Rn, addr);
-            cur_pc += 4; return true;
-          }
-        }
-
-        // ── 6. STP 64-bit GPR pair ──
-        {
-          uint32_t top10 = instr & 0xFFC00000u;
-          if (top10 == 0xA8000000u || top10 == 0xA9000000u ||
-              top10 == 0xA8800000u || top10 == 0xA9800000u) {
-            int32_t imm7 = (int32_t)((instr >> 15) & 0x7F);
-            if (imm7 & 0x40) imm7 |= ~(int32_t)0x7F;
-            int Rt2 = (instr >> 10) & 0x1F, Rn = (instr >> 5) & 0x1F, Rt = instr & 0x1F;
-            uint64_t base = gpr_base(Rn);
-            uint64_t addr = (top10 == 0xA8800000u) ? base : base + (int64_t)imm7 * 8;
-            *(uint64_t*)addr       = gpr(Rt);
-            *(uint64_t*)(addr + 8) = gpr(Rt2);
-            if (top10 == 0xA8800000u || top10 == 0xA9800000u)
-              write_reg(Rn, base + (int64_t)imm7 * 8);
-            cur_pc += 4; return true;
-          }
-        }
-
-        // ── 6b. STP 32-bit GPR pair ──
-        {
-          uint32_t top10 = instr & 0xFFC00000u;
-          if (top10 == 0x28000000u || top10 == 0x29000000u ||
-              top10 == 0x28800000u || top10 == 0x29800000u) {
-            int32_t imm7 = (int32_t)((instr >> 15) & 0x7F);
-            if (imm7 & 0x40) imm7 |= ~(int32_t)0x7F;
-            int Rt2 = (instr >> 10) & 0x1F, Rn = (instr >> 5) & 0x1F, Rt = instr & 0x1F;
-            uint64_t base = gpr_base(Rn);
-            uint64_t addr = (top10 == 0x28800000u) ? base : base + (int64_t)imm7 * 4;
-            *(uint32_t*)addr       = (uint32_t)gpr(Rt);
-            *(uint32_t*)(addr + 4) = (uint32_t)gpr(Rt2);
-            if (top10 == 0x28800000u || top10 == 0x29800000u)
-              write_reg(Rn, base + (int64_t)imm7 * 4);
-            cur_pc += 4; return true;
-          }
-        }
-
-        // ── 7. STP Q-pair (128-bit SIMD) ──
-        {
-          uint32_t top10 = instr & 0xFFC00000u;
-          if (top10 == 0xAC000000u || top10 == 0xAD000000u) {
-            int32_t imm7 = (int32_t)((instr >> 15) & 0x7F);
-            if (imm7 & 0x40) imm7 |= ~(int32_t)0x7F;
-            int Rt2 = (instr >> 10) & 0x1F, Rn = (instr >> 5) & 0x1F, Rt = instr & 0x1F;
-            uint64_t addr = gpr_base(Rn) + (int64_t)imm7 * 16;
-            __uint128_t v1 = ns.__v[Rt], v2 = ns.__v[Rt2];
-            __builtin_memcpy((void*)addr,        &v1, 16);
-            __builtin_memcpy((void*)(addr + 16), &v2, 16);
-            cur_pc += 4; return true;
-          }
-        }
-
-        // ── 8. STP D-pair (64-bit SIMD) ──
-        {
-          uint32_t top10 = instr & 0xFFC00000u;
-          if (top10 == 0x6C000000u || top10 == 0x6D000000u) {
-            int32_t imm7 = (int32_t)((instr >> 15) & 0x7F);
-            if (imm7 & 0x40) imm7 |= ~(int32_t)0x7F;
-            int Rt2 = (instr >> 10) & 0x1F, Rn = (instr >> 5) & 0x1F, Rt = instr & 0x1F;
-            uint64_t addr = gpr_base(Rn) + (int64_t)imm7 * 8;
-            uint64_t v1, v2;
-            __builtin_memcpy(&v1, &ns.__v[Rt],  8);
-            __builtin_memcpy(&v2, &ns.__v[Rt2], 8);
-            *(uint64_t*)addr       = v1;
-            *(uint64_t*)(addr + 8) = v2;
-            cur_pc += 4; return true;
-          }
-        }
-
-        // ── 9. STP S-pair (32-bit SIMD) ──
-        {
-          uint32_t top10 = instr & 0xFFC00000u;
-          if (top10 == 0x2C000000u || top10 == 0x2D000000u) {
-            int32_t imm7 = (int32_t)((instr >> 15) & 0x7F);
-            if (imm7 & 0x40) imm7 |= ~(int32_t)0x7F;
-            int Rt2 = (instr >> 10) & 0x1F, Rn = (instr >> 5) & 0x1F, Rt = instr & 0x1F;
-            uint64_t addr = gpr_base(Rn) + (int64_t)imm7 * 4;
-            uint32_t v1, v2;
-            __builtin_memcpy(&v1, &ns.__v[Rt],  4);
-            __builtin_memcpy(&v2, &ns.__v[Rt2], 4);
-            *(uint32_t*)addr       = v1;
-            *(uint32_t*)(addr + 4) = v2;
-            cur_pc += 4; return true;
-          }
-        }
-
-        return false;
-      }; // exec_one
-
-      // Batch: switch to write mode ONCE, execute up to 32 consecutive store
-      // instructions, switch back to exec mode ONCE.  Amortises the expensive
-      // kernel signal-delivery round-trip over N stores instead of 1.
-      uint64_t cur_pc = ss.__pc;
-      pthread_jit_write_protect_np(0);
-      int n = 0;
-      for (; n < 32; ++n) {
-        if (!exec_one(cur_pc)) break;
-      }
-      pthread_jit_write_protect_np(1);
-
-      if (n > 0) {
-        uctx->uc_mcontext->__ss.__pc = cur_pc;
-        return;
-      }
-
-      // n==0: exec_one couldn't decode the instruction at PC.
-      // If fault_addr == PC this is an instruction-fetch fault (write mode was active
-      // when the CPU tried to execute MAP_JIT code).  exec mode was already restored
-      // above; just return so the CPU retries at the same PC in exec mode.
-      if (fault_addr == (uintptr_t)ss.__pc) {
-        static std::atomic<uint64_t> fetch_fault_count{0};
-        uint64_t fc = ++fetch_fault_count;
-        if (fc <= 5 || (fc % 1000) == 0) {
-          char fbuf[128];
-          int fn = __builtin_snprintf(fbuf, sizeof(fbuf),
-            "[EE-JIT] fetch-fault recovery #%llu at EE+0x%llx instr=0x%08x\n",
-            (unsigned long long)fc,
-            (unsigned long long)(fault_addr - (uintptr_t)g_ee_main_mem),
-            *(const uint32_t*)fault_addr);
-          write(2, fbuf, fn);
-        }
-        return;
-      }
-
     }
   }
 #endif
@@ -1223,10 +742,6 @@ RuntimeExitStatus exec_runtime(GameLaunchOptions game_options, int argc, const c
 #endif
   // Install SIGBUS handler to diagnose MAP_JIT protection faults
   {
-#if defined(__APPLE__) && defined(__aarch64__)
-    // Read before the handler can run, so the handler never touches the environment itself.
-    g_jit_detect = getenv("GK_JIT_DETECT") != nullptr;
-#endif
     struct sigaction sa{};
     sa.sa_sigaction = sigbus_handler;
     sa.sa_flags = SA_SIGINFO | SA_ONSTACK;

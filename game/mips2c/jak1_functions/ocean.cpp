@@ -344,6 +344,27 @@ u64 execute(void* ctxt) {
   // nop                                            // sll r0, r0, 0
   c->sqc2(vf10, 144, a3);                           // sqc2 vf10, 144(a3)
   c->load_symbol(t9, cache.draw_large_polygon_ocean);// lw t9, draw-large-polygon-ocean(s7)
+
+  // The far ocean's outer vertices carry w = 0 in object space, which is what lets them reach
+  // the horizon. A quad seen close to edge-on therefore transforms to a w of exactly 0, and the
+  // perspective divide in draw-large-polygon-ocean divides by it. On the VU that divide saturates
+  // to +/-MAX_FLOAT and the vertex leaves the screen, because the VU has neither infinity nor
+  // NaN. With IEEE math the quotient is an infinity, the following vmulq turns the zero
+  // components into NaN, and vftoi4 lowers the NaN to 0 -- which puts the vertex on the GS origin
+  // and stretches a black, unfogged sliver across the horizon. draw-large-polygon-ocean's clipper
+  // cannot catch this: it clips against +/-x and +/-y only, never against the eye plane, so a
+  // vertex at x = y = w = 0 passes every one of its four tests.
+  //
+  // Reject the quad instead. It is edge-on at this point and covers no pixels, and its neighbours
+  // still cover the horizon. render-ocean-far already handles a quad reporting "not drawn": #f is
+  // its signal for one that fell outside the view.
+  for (int reg : {vf1, vf4, vf7, vf10}) {
+    if (!(c->vfs[reg].f[3] > 0.f)) {
+      c->gprs[v0].du64[0] = c->gprs[s7].du64[0];
+      return c->gprs[v0].du64[0];
+    }
+  }
+
   // Unknown instr: jr t9
   return draw_large_polygon_ocean::execute(c);
   // nop                                            // sll r0, r0, 0

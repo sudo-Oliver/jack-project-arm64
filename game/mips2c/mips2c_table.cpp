@@ -4,6 +4,7 @@
 #include <libkern/OSCacheControl.h>
 #endif
 
+#include "common/jit_memory.h"
 #include "common/log/log.h"
 #include "common/symbols.h"
 
@@ -675,26 +676,6 @@ void LinkedFunctionTable::reg(const std::string& name, u64 (*exec)(void*), u32 s
 
   // this is short stub that will jump to the appropriate function.
   Ptr<u8> jump_to_asm;
-#if defined(__APPLE__) && defined(__aarch64__)
-  Ptr<u8> raw;
-  switch (g_game_version) {
-    case GameVersion::Jak1:
-      raw = kmalloc(kcodeheap, 0x40, KMALLOC_MEMSET, "mips2c-trampoline");
-      *Ptr<u32>(raw.offset) = *(s7 + jak1_symbols::FIX_SYM_FUNCTION_TYPE);
-      break;
-    case GameVersion::Jak2:
-      raw = kmalloc(kcodeheap, 0x40, KMALLOC_MEMSET, "mips2c-trampoline");
-      *Ptr<u32>(raw.offset) = ::jak2::u32_in_fixed_sym(jak2_symbols::FIX_SYM_FUNCTION_TYPE);
-      break;
-    case GameVersion::Jak3:
-      raw = kmalloc(kcodeheap, 0x40, KMALLOC_MEMSET, "mips2c-trampoline");
-      *Ptr<u32>(raw.offset) = ::jak3::u32_in_fixed_sym(jak3_symbols::FIX_SYM_FUNCTION_TYPE);
-      break;
-    default:
-      ASSERT(false);
-  }
-  jump_to_asm = raw + BASIC_OFFSET;
-#else
   switch (g_game_version) {
     case GameVersion::Jak1:
       jump_to_asm = Ptr<u8>(::jak1::alloc_heap_object(s7.offset + jak1_symbols::FIX_SYM_GLOBAL_HEAP,
@@ -714,7 +695,6 @@ void LinkedFunctionTable::reg(const std::string& name, u64 (*exec)(void*), u32 s
     default:
       ASSERT(false);
   }
-#endif
 
   it.first->second.goal_trampoline = jump_to_asm;
 
@@ -751,7 +731,8 @@ void LinkedFunctionTable::reg(const std::string& name, u64 (*exec)(void*), u32 s
 
     // br x8
     write_u32(0xD61F0100u);
-    sys_icache_invalidate(ptr, 0x40);
+    // The page is writable while the stub is written and executable once it is done.
+    jit_memory::make_executable(ptr, 0x40);
   }
 #else
   {

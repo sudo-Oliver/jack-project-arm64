@@ -1382,39 +1382,10 @@
                                  (set! (-> this status) 'suspended)
                                  ;; not sleeping. call resume hook. This will return once the main thread suspends again.
                                  (begin
-                                   (#when ARM64_PORT
-                                     (format 0
-                                             "ARM64 dispatch proc=~X name=~A status=~A main=~X~%"
-                                             (the uint this)
-                                             (-> this name)
-                                             (-> this status)
-                                             (the uint (-> this main-thread)))
-                                     (format 0
-                                             "ARM64 dispatch hook=~X pc=~X sp=~X~%"
-                                             (the uint (-> this main-thread resume-hook))
-                                             (the uint (-> this main-thread pc))
-                                             (the uint (-> this main-thread sp)))
-                                     (format 0
-                                             "ARM64 dispatch r0=~X r1=~X r2=~X~%"
-                                             (the uint (-> this main-thread rreg 0))
-                                             (the uint (-> this main-thread rreg 1))
-                                             (the uint (-> this main-thread rreg 2)))
-                                     (format 0
-                                             "ARM64 dispatch r3=~X r4=~X r5=~X r6=~X~%"
-                                             (the uint (-> this main-thread rreg 3))
-                                             (the uint (-> this main-thread rreg 4))
-                                             (the uint (-> this main-thread rreg 5))
-                                             (the uint (-> this main-thread rreg 6))))
                                    ((-> this main-thread resume-hook) (-> this main-thread))
                                    (#when ARM64_PORT
                                      (set! this (-> *kernel-context* current-process)))
-                                   (#when ARM64_PORT
-                                     (format 0
-                                             "ARM64 dispatch returned proc=~X status=~A pc=~X sp=~X~%"
-                                             (the uint this)
-                                             (-> this status)
-                                             (the uint (-> this main-thread pc))
-                                             (the uint (-> this main-thread sp))))))
+                                   ))
                                ;; check for deadness
                                (cond
                                  ((eq? (-> this status) 'dead)

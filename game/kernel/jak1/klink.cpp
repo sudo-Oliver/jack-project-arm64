@@ -6,6 +6,8 @@
 #endif
 
 #include "common/goal_constants.h"
+#include "common/jit_memory.h"
+#include "common/link_types.h"
 #include "common/log/log.h"
 #include "common/symbols.h"
 
@@ -20,6 +22,15 @@
 #include "game/mips2c/mips2c_table.h"
 
 #include "fmt/format.h"
+
+#if defined(__aarch64__) && defined(__APPLE__)
+// A segment holds code, so it needs whole pages: its functions become read-execute while the
+// static data that follows them stays writable.
+constexpr u32 KMALLOC_CODE_FLAGS = KMALLOC_EXECUTABLE;
+#else
+constexpr u32 KMALLOC_CODE_FLAGS = 0;
+#endif
+
 
 static constexpr bool link_debug_printfs = false;
 /*!
@@ -289,11 +300,9 @@ uint32_t link_control::jak1_work_v3() {
           } else {
             Ptr<u8> src(ofh->code_infos[seg_id].offset);
             ofh->code_infos[seg_id].offset =
-#if defined(__aarch64__) && defined(__APPLE__)
-                kmalloc(kcodeheap, ofh->code_infos[seg_id].size, 0, "debug-segment").offset;
-#else
-                kmalloc(kdebugheap, ofh->code_infos[seg_id].size, 0, "debug-segment").offset;
-#endif
+                kmalloc(kdebugheap, ofh->code_infos[seg_id].size, KMALLOC_CODE_FLAGS,
+                        "debug-segment")
+                    .offset;
             if (ofh->code_infos[seg_id].offset == 0) {
               MsgErr("dkernel: unable to malloc %d bytes for debug-segment\n",
                      ofh->code_infos[seg_id].size);
@@ -309,11 +318,8 @@ uint32_t link_control::jak1_work_v3() {
         } else {
           Ptr<u8> src(ofh->code_infos[seg_id].offset);
           ofh->code_infos[seg_id].offset =
-#if defined(__aarch64__) && defined(__APPLE__)
-              kmalloc(kcodeheap, ofh->code_infos[seg_id].size, 0, "main-segment").offset;
-#else
-              kmalloc(m_heap, ofh->code_infos[seg_id].size, 0, "main-segment").offset;
-#endif
+              kmalloc(m_heap, ofh->code_infos[seg_id].size, KMALLOC_CODE_FLAGS, "main-segment")
+                  .offset;
           if (ofh->code_infos[seg_id].offset == 0) {
             MsgErr("dkernel: unable to malloc %d bytes for main-segment\n",
                    ofh->code_infos[seg_id].size);
@@ -328,13 +334,9 @@ uint32_t link_control::jak1_work_v3() {
         } else {
           Ptr<u8> src(ofh->code_infos[seg_id].offset);
           ofh->code_infos[seg_id].offset =
-#if defined(__aarch64__) && defined(__APPLE__)
-              kmalloc(kcodeheap, ofh->code_infos[seg_id].size, KMALLOC_TOP, "top-level-segment")
+              kmalloc(m_heap, ofh->code_infos[seg_id].size, KMALLOC_TOP | KMALLOC_CODE_FLAGS,
+                      "top-level-segment")
                   .offset;
-#else
-              kmalloc(m_heap, ofh->code_infos[seg_id].size, KMALLOC_TOP, "top-level-segment")
-                  .offset;
-#endif
           if (ofh->code_infos[seg_id].offset == 0) {
             MsgErr("dkernel: unable to malloc %d bytes for top-level-segment\n",
                    ofh->code_infos[seg_id].size);
@@ -622,7 +624,50 @@ uint32_t link_control::jak1_work_v2() {
  * Complete linking. This will execute the top-level code for v3 object files, if requested.
  */
 void link_control::jak1_finish(bool jump_from_c_to_goal) {
+#if defined(__APPLE__) && defined(__aarch64__)
+  // Apple Silicon will not map a page both writable and executable, so the code this link just
+  // wrote has to be handed over explicitly before anything calls into it.
+  //
+  // A v3 object moves each of its segments into the GOAL heap, so m_code_start/m_code_size do not
+  // describe where the code ended up -- code_infos does. The compiler page-aligns a segment's
+  // static data and records the boundary in link_infos[].size, so only the functions below the
+  // boundary become read-execute and the static objects above it stay writable, which is what
+  // GOAL expects of them.
+  ObjectFileHeader* ofh_pre = m_link_block_ptr.cast<ObjectFileHeader>().c();
+  if (ofh_pre->object_file_version == 3) {
+    for (u32 segment = 0; segment < ofh_pre->segment_count; ++segment) {
+      const auto& code = ofh_pre->code_infos[segment];
+      if (!code.offset || !code.size) {
+        continue;
+      }
+      const u32 link_metadata = ofh_pre->link_infos[segment].size;
+      if (!(link_metadata & LINK_ARM64_EXECUTABLE_SIZE_FLAG)) {
+        // Built before the compiler recorded the boundary. Protecting the whole segment would
+        // make its static data read-only and the first write to it would be fatal, so say what
+        // is wrong rather than guessing.
+        static bool warned = false;
+        if (!warned) {
+          warned = true;
+          lg::warn(
+              "{} was built without the ARM64 executable-size boundary; its code heap stays "
+              "writable. Rebuild the CGOs with (mi).",
+              m_object_name);
+        }
+        continue;
+      }
+      const size_t executable_size = link_metadata & ~LINK_ARM64_EXECUTABLE_SIZE_FLAG;
+      if (executable_size) {
+        jit_memory::make_executable(Ptr<u8>(code.offset).c(), executable_size);
+      }
+    }
+  } else if (m_code_size) {
+    // v2/v4 objects are relocated by GOAL after the copy into the heap, so their code has to stay
+    // writable until that has run.
+    jit_memory::make_writable(m_code_start.c(), m_code_size);
+  }
+#else
   CacheFlush(m_code_start.c(), m_code_size);
+#endif
   auto old_debug_segment = DebugSegment;
   if (m_keep_debug) {
     // note - this probably doesn't work because DebugSegment isn't *debug-segment*.
@@ -661,8 +706,6 @@ void link_control::jak1_finish(bool jump_from_c_to_goal) {
     if (m_entry.offset && (m_flags & LINK_FLAG_EXECUTE)) {
 #if defined(__APPLE__) && defined(__aarch64__)
       g_current_goal_module = m_object_name;
-      sys_icache_invalidate(g_ee_main_mem + EE_CODE_HEAP_START, EE_CODE_HEAP_SIZE);
-      pthread_jit_write_protect_np(1);
 #endif
       fprintf(stderr, "[EE-TOPLEVEL] executing top-level: %s\n", m_object_name); fflush(stderr);
       if (jump_from_c_to_goal) {
@@ -671,9 +714,6 @@ void link_control::jak1_finish(bool jump_from_c_to_goal) {
       } else {
         call_goal(m_entry.cast<Function>(), 0, 0, 0, s7.offset, g_ee_main_mem);
       }
-#if defined(__APPLE__) && defined(__aarch64__)
-      pthread_jit_write_protect_np(0);
-#endif
       fprintf(stderr, "[EE-TOPLEVEL] done: %s\n", m_object_name); fflush(stderr);
     }
 
@@ -724,18 +764,10 @@ Ptr<uint8_t> link_and_exec(Ptr<uint8_t> data,
  * Wrapper so this can be called from GOAL. Not in original game.
  */
 u64 link_and_exec_wrapper(u64* args) {
-#if defined(__APPLE__) && defined(__aarch64__)
-  pthread_jit_write_protect_np(0);
-#endif
   // data, name, size, heap, flags
   auto result = link_and_exec(Ptr<u8>(args[0]), Ptr<char>(args[1]).c(), args[2],
                               Ptr<kheapinfo>(args[3]), args[4], false)
                     .offset;
-#if defined(__APPLE__) && defined(__aarch64__)
-  sys_icache_invalidate(g_ee_main_mem + EE_CODE_HEAP_START, EE_CODE_HEAP_SIZE);
-  g_ee_jit_code_dirty = false;
-  pthread_jit_write_protect_np(1);
-#endif
   return result;
 }
 
@@ -745,9 +777,6 @@ u64 link_and_exec_wrapper(u64* args) {
  * 39 -> no 8 (s7)
  */
 uint64_t link_begin(u64* args) {
-#if defined(__APPLE__) && defined(__aarch64__)
-  pthread_jit_write_protect_np(0);
-#endif
   // object data, name size, heap flags
   saved_link_control.jak1_jak2_begin(Ptr<u8>(args[0]), Ptr<char>(args[1]).c(), args[2],
                                      Ptr<kheapinfo>(args[3]), args[4]);
@@ -757,11 +786,6 @@ uint64_t link_begin(u64* args) {
     // called from goal
     saved_link_control.jak1_finish(false);
   }
-#if defined(__APPLE__) && defined(__aarch64__)
-  sys_icache_invalidate(g_ee_main_mem + EE_CODE_HEAP_START, EE_CODE_HEAP_SIZE);
-  g_ee_jit_code_dirty = false;
-  pthread_jit_write_protect_np(1);
-#endif
   return work_result != 0;
 }
 
@@ -769,19 +793,11 @@ uint64_t link_begin(u64* args) {
  * GOAL exported function for doing a small amount of linking work on the saved_link_control
  */
 uint64_t link_resume() {
-#if defined(__APPLE__) && defined(__aarch64__)
-  pthread_jit_write_protect_np(0);
-#endif
   auto work_result = saved_link_control.jak1_work();
   if (work_result) {
     // called from goal
     saved_link_control.jak1_finish(false);
   }
-#if defined(__APPLE__) && defined(__aarch64__)
-  sys_icache_invalidate(g_ee_main_mem + EE_CODE_HEAP_START, EE_CODE_HEAP_SIZE);
-  g_ee_jit_code_dirty = false;
-  pthread_jit_write_protect_np(1);
-#endif
   return work_result != 0;
 }
 

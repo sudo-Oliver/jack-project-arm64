@@ -1,5 +1,7 @@
 #include "kdgo.h"
 
+#include "common/jit_memory.h"
+
 #include "common/common_types.h"
 #include "common/log/log.h"
 
@@ -159,6 +161,12 @@ void load_and_link_dgo_from_c(const char* name,
   // the linker can beat the DVD drive.
   sShowStallMsg = 0;
 
+#if defined(__APPLE__) && defined(__aarch64__)
+  // A previous DGO load may have left these heap pages executable.
+  jit_memory::make_writable(buffer1.c(), (size_t)bufferSize);
+  jit_memory::make_writable(buffer2.c(), (size_t)bufferSize);
+#endif
+
   // start load on IOP.
   BeginLoadingDGO(
       fileName, buffer1, buffer2,
@@ -192,6 +200,12 @@ void load_and_link_dgo_from_c(const char* name,
 
     // inform IOP we are done
     if (!lastObjectLoaded) {
+#if defined(__APPLE__) && defined(__aarch64__)
+      // Linking the object above made part of these buffers executable, and the IOP is about to
+      // DMA the next object into them.
+      jit_memory::make_writable(buffer1.c(), (size_t)bufferSize);
+      jit_memory::make_writable(buffer2.c(), (size_t)bufferSize);
+#endif
       ContinueLoadingDGO(Ptr<u8>((heap->current + 0x3f).offset & 0xffffffc0));
     }
   }

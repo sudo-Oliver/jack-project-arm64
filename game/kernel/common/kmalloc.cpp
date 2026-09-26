@@ -4,6 +4,7 @@
 #include <cstring>
 
 #include "common/goal_constants.h"
+#include "common/jit_memory.h"
 
 #include "game/kernel/common/kprint.h"
 #include "game/kernel/common/kscheme.h"
@@ -25,10 +26,104 @@ enum MemItemsCategory {
 int MemItemsCount[NUM_CATEGORIES] = {0, 0};
 int MemItemsSize[NUM_CATEGORIES] = {0, 0};
 
+#if defined(__APPLE__) && defined(__aarch64__)
+struct Arm64FunctionPool {
+  u32 heap_offset = 0;
+  u32 next = 0;
+  u32 end = 0;
+};
+
+constexpr size_t ARM64_FUNCTION_POOL_COUNT = 32;
+Arm64FunctionPool arm64_function_pools[ARM64_FUNCTION_POOL_COUNT];
+
+Arm64FunctionPool* find_arm64_function_pool(u32 heap_offset) {
+  for (auto& pool : arm64_function_pools) {
+    if (pool.heap_offset == heap_offset && pool.next) {
+      return &pool;
+    }
+  }
+  return nullptr;
+}
+
+Arm64FunctionPool* get_arm64_function_pool(u32 heap_offset) {
+  Arm64FunctionPool* free_pool = nullptr;
+  for (auto& pool : arm64_function_pools) {
+    if (pool.heap_offset == heap_offset) {
+      return &pool;
+    }
+    if (!pool.heap_offset && !free_pool) {
+      free_pool = &pool;
+    }
+  }
+  if (free_pool) {
+    free_pool->heap_offset = heap_offset;
+  }
+  return free_pool;
+}
+
+/*!
+ * Drop a pooled page that the heap no longer owns.
+ *
+ * A pool is keyed on the address of the kheapinfo, and for a level heap that
+ * struct is inline in the level (jak1 level-h.gc: "(heap kheap :inline)"), so
+ * the key is a fixed slot for the whole process — the same pool is reused by
+ * every level that ever occupies that slot.
+ *
+ * Unloading a level rewinds the heap (jak1 level.gc:700, "reset the level
+ * heap!", current = base) WITHOUT telling the pool. That leaves pool->next
+ * dangling in memory the next level is about to hand out for ordinary data;
+ * continuing to bump it aliases JIT'd code onto live data and re-protects
+ * pages the new level is already using.
+ *
+ * The rewind happens in GOAL, with no C-side hook, and is detected here by its
+ * signature: the reset is written as "current = base", so an EMPTY heap
+ * (current == base) that still has a cached page above base can only mean the
+ * heap was reset underneath that page. A pool page is carved out of the bottom
+ * bump region, so a live page always implies current > base — the two states
+ * cannot be confused.
+ *
+ * CRITICALLY, this must be checked on EVERY kmalloc against the heap, not just
+ * on pooled allocations. The reset is only observable while the heap is still
+ * empty, and the next level usually allocates ordinary data before its first
+ * trampoline; a check that runs only on the pooled path never sees the empty
+ * window and misses the rewind entirely.
+ *
+ * Three narrower designs were written and SIMULATED FALSE before this one, all
+ * reproduced by scratchpad/pooltest.cpp:
+ *   1. "pool->end > heap->current" — the next level bumps current past the old
+ *      page before its first trampoline, so the stale pool looks valid.
+ *   2. "heap->current moved backwards since the last pool allocation" — the
+ *      pool only samples current when a trampoline is allocated, so growth
+ *      after the last one is invisible and a later rewind lands above it.
+ *   3. an occupancy counter bumped inside the pooled path — same blind spot as
+ *      (2): if no trampoline is allocated while the heap is empty, the reset
+ *      is never observed.
+ * All three share one root error: polling a state that is only briefly true,
+ * from a code path that is not guaranteed to run while it is true.
+ */
+void arm64_function_pool_note_heap_use(Ptr<kheapinfo> heap) {
+  if (heap->current.offset > heap->base.offset) {
+    return;  // heap is in use; a rewind has not just happened
+  }
+  // Heap is empty. Any cached page inside it belongs to a previous occupant.
+  auto* pool = find_arm64_function_pool(heap.offset);
+  if (pool && pool->end > heap->base.offset) {
+    pool->next = 0;
+    pool->end = 0;
+  }
+}
+
+#endif
+
 void kmalloc_init_globals_common() {
   // _globalheap and _debugheap
   kglobalheap.offset = GLOBAL_HEAP_INFO_ADDR;
   kdebugheap.offset = DEBUG_HEAP_INFO_ADDR;
+#if defined(__APPLE__) && defined(__aarch64__)
+  for (auto& pool : arm64_function_pools) {
+    pool = {};
+  }
+#endif
 #if defined(__aarch64__) && defined(__APPLE__)
   kcodeheap.offset = CODE_HEAP_INFO_ADDR;
 #endif
@@ -135,6 +230,19 @@ u32 kheapused(Ptr<kheapinfo> heap) {
  */
 Ptr<u8> kmalloc(Ptr<kheapinfo> heap, s32 size, u32 flags, char const* name) {
   uint32_t alignment_flag = flags & 0xfff;
+#if defined(__APPLE__) && defined(__aarch64__)
+  const s32 requested_size = size;
+  const bool executable_allocation = (flags & KMALLOC_EXECUTABLE) != 0;
+  uint32_t executable_page_size = 0;
+  if (executable_allocation) {
+    executable_page_size = (uint32_t)jit_memory::page_size();
+    if (size > 0) {
+      size = (s32)(((uint32_t)size + executable_page_size - 1) & ~(executable_page_size - 1));
+    }
+  }
+#else
+  constexpr bool executable_allocation = false;
+#endif
 
   // if we got a null heap, put it on the global heap, but warn about it
   if (!heap.offset) {
@@ -146,9 +254,72 @@ Ptr<u8> kmalloc(Ptr<kheapinfo> heap, s32 size, u32 flags, char const* name) {
 
   uint32_t memstart;
 
+#if defined(__APPLE__) && defined(__aarch64__)
+  // Observe the heap on EVERY allocation so a level-heap rewind (which happens
+  // in GOAL, with no C-side hook) cannot slip past while it is still visible.
+  arm64_function_pool_note_heap_use(heap);
+
+  // C-backed GOAL functions are tiny executable objects. Keep their pages
+  // isolated from mutable heap data, but pack multiple objects into each page
+  // instead of charging one 16 KiB page per 0x40-byte trampoline.
+  if (executable_allocation && !(flags & KMALLOC_TOP) && requested_size > 0 &&
+      static_cast<uint32_t>(requested_size) < executable_page_size &&
+      strcmp(name, "function") == 0) {
+    auto* pool = get_arm64_function_pool(heap.offset);
+    if (!pool) {
+      MsgErr("kmalloc: no ARM64 function pool for heap %x\n", heap.offset);
+      return Ptr<u8>(0);
+    }
+
+    const u32 object_size = (static_cast<u32>(requested_size) + 0xf) & ~0xf;
+    // alloc_heap_object returns the address after the type tag, and the
+    // trampoline writer uses that address for the executable bytes. Reserve
+    // the tag too, so the JIT write range cannot cross into the next page.
+    const u32 allocation_size = object_size + BASIC_OFFSET;
+    if (!pool->next || pool->next + allocation_size > pool->end) {
+      auto page = kmalloc(heap, static_cast<s32>(executable_page_size), KMALLOC_EXECUTABLE,
+                          "function-page");
+      if (!page.offset) {
+        return page;
+      }
+      pool->next = page.offset;
+      pool->end = page.offset + executable_page_size;
+    }
+
+    // The pooled range must lie inside the heap's allocated region. Handing
+    // out memory the heap does not consider used is how a stale pool corrupts
+    // the next level; refuse rather than alias live data. This is a backstop:
+    // if it ever fires, the staleness check above missed a case.
+    if (pool->next < heap->base.offset || pool->end > heap->top.offset ||
+        pool->end > heap->current.offset) {
+      MsgErr("kmalloc: ARM64 function pool for heap %x outside heap bounds "
+             "(pool [%x,%x) heap base %x current %x top %x)\n",
+             heap.offset, pool->next, pool->end, heap->base.offset, heap->current.offset,
+             heap->top.offset);
+      pool->next = 0;
+      pool->end = 0;
+      return Ptr<u8>(0);
+    }
+
+    memstart = pool->next;
+    pool->next += allocation_size;
+    jit_memory::make_writable(Ptr<u8>(memstart).c(), allocation_size);
+    if (flags & KMALLOC_MEMSET) {
+      std::memset(Ptr<u8>(memstart).c(), 0, allocation_size);
+    }
+    return Ptr<u8>(memstart);
+  }
+#endif
+
   if (!(flags & KMALLOC_TOP)) {
     // allocate from bottom
-    if (alignment_flag == KMALLOC_ALIGN_64)
+    if (executable_allocation) {
+#if defined(__APPLE__) && defined(__aarch64__)
+      memstart = (heap->current.offset + executable_page_size - 1) & ~(executable_page_size - 1);
+#else
+      memstart = heap->current.offset;
+#endif
+    } else if (alignment_flag == KMALLOC_ALIGN_64)
       memstart = (0xffffffc0 & (heap->current.offset + 0x40 - 1));
     else if (alignment_flag == KMALLOC_ALIGN_256)
       memstart = (0xffffff00 & (heap->current.offset + 0x100 - 1));
@@ -168,6 +339,11 @@ Ptr<u8> kmalloc(Ptr<kheapinfo> heap, s32 size, u32 flags, char const* name) {
       return Ptr<u8>(0);
     }
 
+#if defined(__APPLE__) && defined(__aarch64__)
+    // A page handed out here may have been executable for a previous owner -- a top-level segment
+    // whose space was given back, say. The caller is about to write to it.
+    jit_memory::make_writable(Ptr<u8>(memstart).c(), (size_t)size);
+#endif
     heap->current.offset = memend;
     if (flags & KMALLOC_MEMSET)
       std::memset(Ptr<u8>(memstart).c(), 0, (size_t)size);
@@ -178,7 +354,15 @@ Ptr<u8> kmalloc(Ptr<kheapinfo> heap, s32 size, u32 flags, char const* name) {
       alignment_flag = KMALLOC_ALIGN_16;
     }
 
-    memstart = (heap->top.offset - size) & (-alignment_flag);
+    if (executable_allocation) {
+#if defined(__APPLE__) && defined(__aarch64__)
+      memstart = (heap->top.offset - size) & ~(executable_page_size - 1);
+#else
+      memstart = heap->top.offset - size;
+#endif
+    } else {
+      memstart = (heap->top.offset - size) & (-alignment_flag);
+    }
 
     if (size == 0) {
       Msg(6, "[WARNING] kmalloc : size 0 allocation from top\n");
@@ -191,6 +375,9 @@ Ptr<u8> kmalloc(Ptr<kheapinfo> heap, s32 size, u32 flags, char const* name) {
       return Ptr<u8>(0);
     }
 
+#if defined(__APPLE__) && defined(__aarch64__)
+    jit_memory::make_writable(Ptr<u8>(memstart).c(), (size_t)size);
+#endif
     heap->top.offset = memstart;
 
     if (flags & KMALLOC_MEMSET)

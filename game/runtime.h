@@ -17,7 +17,6 @@
 extern u8* g_ee_main_mem;
 // ARM64 Darwin: set true whenever link_and_exec writes JIT code without flushing icache.
 // call_goal / call_goal_on_stack check this and flush only when needed.
-extern bool g_ee_jit_code_dirty;
 // On ARM64 Apple (Darwin 25+): GOAL stack lives outside MAP_JIT EE memory.
 // This points to the top of a separate PROT_READ|PROT_WRITE stack region.
 extern u8* g_goal_jit_stack_top;

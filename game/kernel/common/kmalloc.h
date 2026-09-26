@@ -29,6 +29,14 @@ constexpr u32 KMALLOC_ALIGN_256 = 0x100;
 constexpr u32 KMALLOC_ALIGN_64 = 0x40;
 constexpr u32 KMALLOC_ALIGN_16 = 0x10;
 
+#if defined(__aarch64__) && defined(__APPLE__)
+//! Flag for memory that will hold code. Apple Silicon will not map a page both writable and
+//! executable, so such an allocation is aligned to a page and rounded up to whole pages: nothing
+//! that has to stay writable may share a page with it. Small objects named "function" are the
+//! exception -- they are packed together on pages that hold nothing else.
+constexpr u32 KMALLOC_EXECUTABLE = 0x4000;
+#endif
+
 void kmalloc_init_globals_common();
 
 Ptr<u8> ksmalloc(Ptr<kheapinfo> heap, s32 size, u32 flags, char const* name);
